@@ -484,6 +484,25 @@ function sanitizeReminder(raw) {
   };
 }
 
+// A bundled .app launched from Finder/Dock inherits a bare PATH
+// (/usr/bin:/bin:/usr/sbin:/sbin) rather than the login shell's, so `claude`
+// would be ENOENT even when it works fine from a terminal. Append the usual
+// install locations instead of shelling out to the user's shell for its PATH.
+function claudeEnv() {
+  const home = app.getPath('home');
+  const extra = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    path.join(home, '.local', 'bin'),
+    path.join(home, '.claude', 'local'),
+    path.join(home, '.bun', 'bin'),
+    path.join(home, '.npm-global', 'bin'),
+  ];
+  const current = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const merged = current.concat(extra.filter((p) => !current.includes(p)));
+  return { ...process.env, PATH: merged.join(path.delimiter) };
+}
+
 // Run the `claude` CLI non-interactively and return its raw stdout.
 function runClaude(cwd, prompt) {
   return new Promise((resolve) => {
@@ -492,7 +511,7 @@ function runClaude(cwd, prompt) {
       child = spawn(
         'claude',
         ['-p', prompt, '--output-format', 'json', '--allowedTools', 'Read,Glob,Grep'],
-        { cwd }
+        { cwd, env: claudeEnv() }
       );
     } catch (err) {
       resolve({ ok: false, error: String(err) });

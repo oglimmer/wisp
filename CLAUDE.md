@@ -6,8 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - `npm install` — install dependencies (Electron ships a platform-specific native binary; **never copy `node_modules` between machines/OSes** — reinstall on the target, or you'll get `spawn ENOEXEC`).
 - `npm start` — launch the app (`electron .`).
+- `npm run dist` — package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
 
-There is no build step, linter, or test suite configured.
+There is no linter or test suite configured.
+
+## Packaging & release
+
+macOS arm64 is the **only** published target. electron-builder is configured in `package.json`'s
+`build` field; `build/entitlements.mac.plist` (+ `.inherit.`) carry the hardened-runtime entitlements
+Electron needs (JIT, unsigned executable memory, library validation off).
+
+`.github/workflows/release.yml` runs on `v*` tags: it checks the tag matches `package.json`'s version,
+builds signed + notarized (certs and Apple credentials come from repo secrets), publishes a GitHub
+release, then rewrites `version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the
+tap users install from. A manual `workflow_dispatch` run with no secrets present falls back to an
+unsigned ad-hoc build uploaded as a CI artifact, so packaging can be tested without certificates.
+
+Two packaging-specific gotchas worth remembering:
+
+- **The renderer loads `marked`/`turndown` by relative `node_modules/...` path** from `index.html`.
+  That works inside `app.asar`, and electron-builder always bundles production dependencies, so the
+  `files` allowlist only needs the app's own sources.
+- **A bundled `.app` launched from Finder gets a bare `PATH`** (`/usr/bin:/bin:/usr/sbin:/sbin`), which
+  would make `spawn('claude', …)` fail with `ENOENT` even for users who have the CLI. `claudeEnv()` in
+  `main.js` appends the usual install locations before spawning; extend that list rather than assuming
+  the inherited environment.
 
 ## Architecture
 

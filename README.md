@@ -13,7 +13,23 @@ A minimal, Obsidian-like note editor built with [Electron](https://www.electronj
 - Hidden by default: `.git`, `node_modules`, `.obsidian`, `.DS_Store`, `.wisp-reminders.json`.
 - Secure by design: context isolation on, Node integration off, all file access goes through a minimal IPC bridge with path-traversal guards.
 
-## Requirements
+## Install (macOS, Apple Silicon)
+
+```bash
+brew tap oglimmer/wisp https://github.com/oglimmer/wisp
+brew install --cask wisp
+```
+
+The build is signed and notarized, so it opens without a Gatekeeper prompt. `brew upgrade --cask wisp`
+updates it; `brew uninstall --zap --cask wisp` removes the app together with its stored config.
+
+macOS arm64 is the only published target. On anything else, run from source (below).
+
+> **Smart insert needs the `claude` CLI.** The app looks for it on `PATH` plus the usual install
+> locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.claude/local`). If it lives
+> somewhere unusual, launch Wisp from a terminal so it inherits your shell's `PATH`.
+
+## Requirements (running from source)
 
 - [Node.js](https://nodejs.org/) 18+ (tested on 22)
 - npm
@@ -53,7 +69,39 @@ On first launch, click **Open Folder…** and choose any directory of notes.
 | `index.html` | Welcome screen + sidebar/editor layout |
 | `renderer.js` | UI logic: tree rendering, open/save, context menu, keyboard shortcuts |
 | `styles.css` | Dark theme |
-| `package.json` | Metadata, dependencies, and the `start` script |
+| `package.json` | Metadata, dependencies, scripts, and the `electron-builder` config |
+| `build/entitlements.mac.*.plist` | Hardened-runtime entitlements for the signed build |
+| `Casks/wisp.rb` | Homebrew cask (version + sha256 bumped by CI on each tag) |
+| `.github/workflows/release.yml` | Builds, signs, notarizes and releases the macOS arm64 build |
+
+## Releasing
+
+`npm run dist` builds a local `dist/Wisp-<version>-arm64.dmg` (macOS only — signing is skipped
+unless certificates are present in your keychain).
+
+A real release is cut by tagging:
+
+```bash
+npm version patch          # or minor / major — bumps package.json and tags
+git push --follow-tags
+```
+
+The tag must match `package.json`'s version; CI fails fast otherwise. The workflow then builds,
+signs, notarizes, attaches the `.dmg` and `.zip` to a GitHub release, and commits the matching
+cask bump to the default branch.
+
+These repository secrets must be set for a tagged build to succeed:
+
+| Secret | What it is |
+|--------|------------|
+| `MACOS_CERTIFICATE` | base64 of the *Developer ID Application* `.p12` (`base64 -i cert.p12`) |
+| `MACOS_CERTIFICATE_PASSWORD` | password used when exporting that `.p12` |
+| `APPLE_ID` | Apple ID used for notarization |
+| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | 10-character Apple Developer team ID |
+
+Running the workflow manually (**Actions → Release → Run workflow**) with no secrets set produces an
+unsigned ad-hoc build as a downloadable artifact — useful for checking the packaging without certificates.
 
 ## License
 
