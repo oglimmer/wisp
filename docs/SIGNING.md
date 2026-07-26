@@ -35,7 +35,14 @@ signed with the wrong type.
 2. Select the team → **Manage Certificates…**
 3. Click **+** → **Developer ID Application**.
 
-Xcode generates the key pair and installs the certificate into your login keychain.
+The **+** menu lists five similar-sounding options. Only *Developer ID Application* is right:
+*Developer ID Installer* (directly below it) signs `.pkg` installers, which this project doesn't ship,
+and *Apple Development* / *Apple Distribution* / *Mac Installer Distribution* are for local
+development and App Store submission respectively.
+
+Xcode generates the key pair and installs the certificate into your login keychain — on *this* Mac,
+which is therefore the machine you must export the `.p12` from in step 2. A certificate listed as
+**Not in Keychain** in this dialog has its private key on some other machine and is useless for CI.
 
 ### Option B — by hand, no Xcode
 
