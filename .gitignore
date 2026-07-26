@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Electron build output
+dist/
+out/
+
+# Local config / runtime data
+config.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
