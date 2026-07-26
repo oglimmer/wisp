@@ -46,6 +46,11 @@ which is therefore the machine you must export the `.p12` from in step 2. A cert
 
 ### Option B — by hand, no Xcode
 
+**Use this route if Xcode is signed in as a different Apple ID than the enrolled one**, or if several
+accounts are signed in. Keychain Access has no notion of Apple accounts — it only makes a keypair —
+and the certificate is issued by whichever account your *browser* is logged into, so the two never
+have to agree.
+
 1. Open **Keychain Access** → menu **Keychain Access** → **Certificate Assistant** → **Request a
    Certificate From a Certificate Authority…**
 2. Fill in your email and a name. Leave *CA Email Address* empty. Choose **Saved to disk** and tick
@@ -104,6 +109,10 @@ The `tr -d '\n'` matters — a wrapped, multi-line value trips up some CI setups
 ## Step 3 — Create an app-specific password for notarization
 
 Notarization authenticates as your Apple ID, and your real password won't work.
+
+Use the **enrolled** Apple ID — the one that owns the team from step 1. Apple checks that the Apple ID
+belongs to the team behind `APPLE_TEAM_ID`, so credentials from a second account fail with a `401`
+that reads like a wrong password.
 
 1. Go to [appleid.apple.com](https://appleid.apple.com/) → **Sign-In and Security** →
    **App-Specific Passwords**.
