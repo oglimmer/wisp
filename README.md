@@ -95,11 +95,13 @@ unsigned prerelease, and the cask is left alone, so `brew install --cask wisp` n
 Gatekeeper would block. Opening an unsigned build needs
 `xattr -dr com.apple.quarantine /Applications/Wisp.app`.
 
-These repository secrets must be set for a tagged build to succeed:
+These repository secrets are what turn a tagged build into a signed, notarized one.
+**[docs/SIGNING.md](docs/SIGNING.md) walks through obtaining every one of them** — Apple Developer
+enrollment, creating the certificate, exporting the `.p12`, and the app-specific password.
 
 | Secret | What it is |
 |--------|------------|
-| `MACOS_CERTIFICATE` | base64 of the *Developer ID Application* `.p12` (`base64 -i cert.p12`) |
+| `MACOS_CERTIFICATE` | base64 of the *Developer ID Application* `.p12` |
 | `MACOS_CERTIFICATE_PASSWORD` | password used when exporting that `.p12` |
 | `APPLE_ID` | Apple ID used for notarization |
 | `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password for that Apple ID |
