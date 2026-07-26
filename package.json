@@ -1,6 +1,6 @@
 {
   "name": "wisp",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "A minimal Obsidian-like note editor. Shows a folder tree on the left and a raw-text editor on the right.",
   "main": "main.js",
   "scripts": {
@@ -34,8 +34,18 @@
     ],
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64"] },
-        { "target": "zip", "arch": ["arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
       ],
       "category": "public.app-category.productivity",
       "darkModeSupport": true,

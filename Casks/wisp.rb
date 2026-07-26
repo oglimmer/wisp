@@ -1,6 +1,6 @@
 # version and sha256 are rewritten by .github/workflows/release.yml on each tag.
 cask "wisp" do
-  version "1.0.0"
+  version "0.1.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
   url "https://github.com/oglimmer/wisp/releases/download/v#{version}/Wisp-#{version}-arm64.dmg",
