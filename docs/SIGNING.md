@@ -107,11 +107,24 @@ The `tr -d '\n'` matters — a wrapped, multi-line value trips up some CI setups
 Check the password you chose actually opens the file, before it goes anywhere near CI:
 
 ```bash
-openssl pkcs12 -in wisp-signing.p12 -nokeys -noout   # prompts for the password
+/usr/bin/openssl pkcs12 -in wisp-signing.p12 -nokeys -noout   # prompts for the password
 ```
 
 Silence means it opened. `Mac verify error: invalid password?` means the password is wrong — and a
 wrong or empty `MACOS_CERTIFICATE_PASSWORD` in the repo fails much later and far less clearly.
+
+Use the **`/usr/bin/` path** deliberately. That one is LibreSSL; a Homebrew `openssl@3` earlier on
+your `PATH` instead reports
+
+```
+Algorithm (RC2-40-CBC : 0), Properties () ... unsupported
+```
+
+because Keychain Access still encrypts `.p12` exports with RC2-40, which OpenSSL 3 banished to its
+legacy provider. That message says nothing about your password — reaching it at all means the MAC
+already verified, so the password was right. Add `-legacy` if you want to use Homebrew's openssl.
+The export is fine either way: CI imports it with macOS's own `security import`, which reads RC2-40
+happily.
 
 ---
 
