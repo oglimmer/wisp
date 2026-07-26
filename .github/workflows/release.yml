@@ -15,6 +15,10 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
+    # `notarytool --wait` blocks until Apple answers, with no timeout of its own, so a
+    # stuck submission would otherwise hold the runner for GitHub's 6-hour default.
+    # Notarization normally lands well inside 15 minutes; an hour means something is wrong.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
