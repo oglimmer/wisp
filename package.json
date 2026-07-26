@@ -1,6 +1,6 @@
 {
   "name": "wisp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A minimal Obsidian-like note editor. Shows a folder tree on the left and a raw-text editor on the right.",
   "main": "main.js",
   "scripts": {
