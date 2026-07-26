@@ -455,6 +455,20 @@ button:hover {
   color: var(--text-dim);
 }
 
+/* ---- WYSIWYG editor ---- */
+/* Reuses .rendered / .markdown-body styling but is directly editable. */
+.wysiwyg {
+  outline: none;
+  cursor: text;
+}
+
+/* Placeholder shown when the editable area is empty. */
+.wysiwyg:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
 /* ---- Rendered Markdown preview ---- */
 .rendered {
   flex: 1;

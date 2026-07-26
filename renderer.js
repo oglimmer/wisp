@@ -28,13 +28,44 @@ const smartStatusEl = document.getElementById('smart-status');
 const smartPreviewEl = document.getElementById('smart-preview');
 const dividerPreviewEl = document.getElementById('divider-preview');
 const renderedEl = document.getElementById('rendered');
+const wysiwygEl = document.getElementById('wysiwyg');
 const viewToggleEl = document.getElementById('view-toggle');
 const viewRawBtn = document.getElementById('view-raw-btn');
+const viewWysBtn = document.getElementById('view-wys-btn');
 const viewMdBtn = document.getElementById('view-md-btn');
 
-// Editor view for the open file: 'raw' shows the source textarea, 'preview'
-// shows rendered Markdown. Only applies to Markdown files; the choice persists.
-let viewMode = localStorage.getItem('rawNotes.viewMode') === 'preview' ? 'preview' : 'raw';
+// Editor view for the open file: 'raw' shows the source textarea, 'wysiwyg' shows
+// a directly-editable formatted view, 'preview' shows read-only rendered Markdown.
+// Only applies to Markdown files; the choice persists.
+const VIEW_MODES = ['raw', 'wysiwyg', 'preview'];
+let viewMode = VIEW_MODES.includes(localStorage.getItem('rawNotes.viewMode'))
+  ? localStorage.getItem('rawNotes.viewMode')
+  : 'raw';
+
+// Lazily-built HTML→Markdown converter for the WYSIWYG editor. marked handles
+// Markdown→HTML; turndown does the reverse so edits save back as Markdown.
+let turndown = null;
+function getTurndown() {
+  if (turndown || !window.TurndownService) return turndown;
+  turndown = new window.TurndownService({
+    headingStyle: 'atx',
+    hr: '---',
+    bulletListMarker: '-',
+    codeBlockStyle: 'fenced',
+    emDelimiter: '*',
+  });
+  // Emit the vault-relative path we stashed on hydrated images (their live src is
+  // a data: URL), not the inlined base64 — so saved Markdown stays portable.
+  turndown.addRule('vaultImage', {
+    filter: 'img',
+    replacement: (_content, node) => {
+      const alt = node.getAttribute('alt') || '';
+      const src = node.getAttribute('data-md-src') || node.getAttribute('src') || '';
+      return src ? `![${alt}](${src})` : '';
+    },
+  });
+  return turndown;
+}
 
 // Smart-insert state: the last plan Claude returned, and the exact note text it
 // was computed for. If the text changes, the plan is stale and Add re-checks.
@@ -181,7 +212,31 @@ function renderMarkdown() {
     // marked failed to load — fall back to showing the source as-is.
     renderedEl.textContent = editorEl.value || '';
   }
-  hydrateImages();
+  hydrateImages(renderedEl);
+}
+
+// Render the current editor buffer as editable formatted HTML in the WYSIWYG pane.
+function renderWysiwyg() {
+  if (window.marked) {
+    wysiwygEl.innerHTML = window.marked.parse(editorEl.value || '');
+  } else {
+    wysiwygEl.textContent = editorEl.value || '';
+  }
+  hydrateImages(wysiwygEl);
+}
+
+// Convert the WYSIWYG pane's current HTML back to Markdown and write it into the
+// editor buffer (the single source of truth that gets saved). No-op unless we're
+// actually in WYSIWYG mode with a file open and turndown available.
+function syncWysiwygToEditor() {
+  if (viewMode !== 'wysiwyg' || !currentFile) return;
+  // Only fold back when there are real WYSIWYG edits (every edit sets `dirty`).
+  // Skipping when clean keeps an unedited buffer byte-for-byte as loaded, so
+  // turndown's normalisation never silently rewrites a file the user only viewed.
+  if (!dirty) return;
+  const td = getTurndown();
+  if (!td) return; // turndown unavailable — leave the buffer untouched
+  editorEl.value = td.turndown(wysiwygEl.innerHTML);
 }
 
 // marked emits <img src="images/foo.png"> with vault-relative paths, but the app's
@@ -189,11 +244,14 @@ function renderMarkdown() {
 // main process to resolve it (relative to the open file) and inline it as a data
 // URL. Remote (http/data) sources are left alone. Captures the file the render was
 // for so a stale async result from a previous file can't paint over a new one.
-function hydrateImages() {
+function hydrateImages(container) {
   const forFile = currentFile;
-  renderedEl.querySelectorAll('img').forEach(async (img) => {
+  container.querySelectorAll('img').forEach(async (img) => {
     const raw = img.getAttribute('src') || '';
     if (!raw || /^(https?:|data:)/i.test(raw)) return;
+    // Stash the original vault-relative path before we swap in the data: URL, so
+    // WYSIWYG edits can round-trip back to the portable Markdown reference.
+    if (!img.dataset.mdSrc) img.dataset.mdSrc = raw;
     const res = await api.readImage(baseFolder, forFile, raw);
     if (currentFile !== forFile) return; // file switched while we were loading
     if (res && res.ok) {
@@ -205,23 +263,44 @@ function hydrateImages() {
   });
 }
 
-// Show the right pane for the current file + mode. The toggle is only offered
-// for Markdown files; everything else is always edited raw.
+// Show the right pane for the current file + mode. The toggle is only offered for
+// Markdown files; everything else is always edited raw.
 function applyView() {
-  const preview = viewMode === 'preview' && isMarkdown(currentFile) && !!currentFile;
-  viewToggleEl.classList.toggle('hidden', !isMarkdown(currentFile) || !currentFile);
-  if (preview) renderMarkdown();
-  renderedEl.classList.toggle('hidden', !preview);
-  editorEl.classList.toggle('hidden', preview);
-  viewRawBtn.classList.toggle('active', !preview);
-  viewMdBtn.classList.toggle('active', preview);
+  const md = isMarkdown(currentFile) && !!currentFile;
+  // Non-Markdown files (and no file) always fall back to the raw textarea. WYSIWYG
+  // needs turndown to save edits back — without it, degrade to raw.
+  let mode = md ? viewMode : 'raw';
+  if (mode === 'wysiwyg' && !window.TurndownService) mode = 'raw';
+  viewToggleEl.classList.toggle('hidden', !md);
+
+  const showRaw = mode === 'raw';
+  const showWys = mode === 'wysiwyg';
+  const showPreview = mode === 'preview';
+
+  if (showWys) renderWysiwyg();
+  if (showPreview) renderMarkdown();
+
+  editorEl.classList.toggle('hidden', !showRaw);
+  wysiwygEl.classList.toggle('hidden', !showWys);
+  renderedEl.classList.toggle('hidden', !showPreview);
+
+  viewRawBtn.classList.toggle('active', showRaw);
+  viewWysBtn.classList.toggle('active', showWys);
+  viewMdBtn.classList.toggle('active', showPreview);
 }
 
 function setViewMode(mode) {
-  viewMode = mode === 'preview' ? 'preview' : 'raw';
+  if (!VIEW_MODES.includes(mode)) mode = 'raw';
+  if (mode === 'wysiwyg' && !window.TurndownService) mode = 'raw';
+  // Leaving WYSIWYG: fold its edits back into the buffer before we switch panes,
+  // otherwise raw/preview would show the pre-edit source.
+  if (viewMode === 'wysiwyg' && mode !== 'wysiwyg') syncWysiwygToEditor();
+  viewMode = mode;
   localStorage.setItem('rawNotes.viewMode', viewMode);
   applyView();
-  if (viewMode === 'raw' && currentFile) editorEl.focus();
+  if (!currentFile) return;
+  if (viewMode === 'raw') editorEl.focus();
+  else if (viewMode === 'wysiwyg') wysiwygEl.focus();
 }
 
 // ---- File open / edit / save ----
@@ -242,6 +321,7 @@ async function openFile(filePath, rowEl) {
   setStatus('Saved');
   applyView();
   if (viewMode === 'raw' || !isMarkdown(filePath)) editorEl.focus();
+  else if (viewMode === 'wysiwyg') wysiwygEl.focus();
 
   document.querySelectorAll('.node-row.active').forEach((el) => el.classList.remove('active'));
   if (rowEl) rowEl.classList.add('active');
@@ -249,6 +329,9 @@ async function openFile(filePath, rowEl) {
 
 async function saveCurrent() {
   if (!currentFile || !dirty) return;
+  // In WYSIWYG mode the live edits are in the contenteditable pane, not the
+  // textarea — fold them back into the buffer before persisting.
+  syncWysiwygToEditor();
   // Capture the file being saved: it may change if this runs after a switch.
   const target = currentFile;
   const res = await api.writeFile(target, editorEl.value);
@@ -288,6 +371,29 @@ editorEl.addEventListener('input', () => {
   dirty = true;
   setStatus('Saving…');
   scheduleSave();
+});
+
+// WYSIWYG edits mark the buffer dirty too; scheduleSave → saveCurrent folds the
+// contenteditable HTML back to Markdown at write time via syncWysiwygToEditor.
+wysiwygEl.addEventListener('input', () => {
+  if (!currentFile || viewMode !== 'wysiwyg') return;
+  dirty = true;
+  setStatus('Saving…');
+  scheduleSave();
+});
+
+// Basic formatting shortcuts inside the WYSIWYG editor (bold / italic). execCommand
+// is deprecated but remains the simplest reliable contenteditable API in Chromium.
+wysiwygEl.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+  const key = e.key.toLowerCase();
+  if (key === 'b') {
+    e.preventDefault();
+    document.execCommand('bold');
+  } else if (key === 'i') {
+    e.preventDefault();
+    document.execCommand('italic');
+  }
 });
 
 function setStatus(text, isError) {
@@ -727,7 +833,10 @@ smartCheckBtn.addEventListener('click', smartCheck);
 smartAddBtn.addEventListener('click', smartAdd);
 smartInputEl.addEventListener('input', invalidateSmartPlan);
 viewRawBtn.addEventListener('click', () => setViewMode('raw'));
+viewWysBtn.addEventListener('click', () => setViewMode('wysiwyg'));
 viewMdBtn.addEventListener('click', () => setViewMode('preview'));
+// Turndown powers WYSIWYG→Markdown; if it didn't load, don't offer the mode.
+if (!window.TurndownService) viewWysBtn.classList.add('hidden');
 
 // Links in the rendered Markdown must not navigate the app window. Open
 // http(s)/mailto links in the real browser; ignore relative/in-vault links.
@@ -753,7 +862,32 @@ function insertAtCursor(text) {
   editorEl.selectionStart = editorEl.selectionEnd = pos;
 }
 
-async function handleDroppedFiles(fileList) {
+// A collapsed Range at the very end of the visual editor — the fallback drop point
+// when we can't resolve where the drop landed.
+function endOfWysiwygRange() {
+  const range = document.createRange();
+  range.selectNodeContents(wysiwygEl);
+  range.collapse(false); // to the end
+  return range;
+}
+
+// Insert an <img> for a freshly-imported image at `range` in the visual editor.
+// The src is the vault-relative ref (hydrateImages swaps in the data URL); the
+// stashed data-md-src is the portable path turndown re-emits on save. Returns a
+// new range just after the image so successive drops keep their order.
+function insertImageNode(range, ref, alt) {
+  const img = document.createElement('img');
+  img.setAttribute('src', ref);
+  img.dataset.mdSrc = ref;
+  img.alt = alt;
+  range.insertNode(img);
+  const after = document.createRange();
+  after.setStartAfter(img);
+  after.collapse(true);
+  return after;
+}
+
+async function handleDroppedFiles(fileList, dropRange) {
   if (!currentFile) {
     setStatus('Open a file before adding images.', true);
     return;
@@ -762,6 +896,11 @@ async function handleDroppedFiles(fileList) {
     (f) => /^image\//.test(f.type) || IMAGE_RE.test(f.name)
   );
   if (!images.length) return;
+
+  // In the visual editor, insert <img> nodes at the drop caret (falling back to
+  // the end); other modes edit the Markdown source buffer.
+  const wys = viewMode === 'wysiwyg' && isMarkdown(currentFile);
+  let range = wys ? dropRange || endOfWysiwygRange() : null;
 
   let added = 0;
   for (const file of images) {
@@ -779,12 +918,14 @@ async function handleDroppedFiles(fileList) {
       continue;
     }
     const alt = file.name.replace(/\.[^.]+$/, '');
-    const snippet = `![${alt}](${res.ref})`;
-    if (viewMode === 'raw' || !isMarkdown(currentFile)) {
-      insertAtCursor(snippet + '\n');
+    if (wys) {
+      range = insertImageNode(range, res.ref, alt);
+    } else if (viewMode === 'raw' || !isMarkdown(currentFile)) {
+      insertAtCursor(`![${alt}](${res.ref})\n`);
     } else {
+      // Preview has no text cursor — append the ref to the source buffer.
       const sep = !editorEl.value || editorEl.value.endsWith('\n') ? '' : '\n';
-      editorEl.value += sep + snippet + '\n';
+      editorEl.value += sep + `![${alt}](${res.ref})` + '\n';
     }
     added++;
   }
@@ -793,7 +934,17 @@ async function handleDroppedFiles(fileList) {
     dirty = true;
     setStatus('Saving…');
     scheduleSave();
-    if (viewMode === 'preview' && isMarkdown(currentFile)) renderMarkdown();
+    if (wys) {
+      hydrateImages(wysiwygEl); // resolve the newly inserted <img>s to data URLs
+      // Leave the caret after the last inserted image so typing continues there.
+      if (range) {
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    } else if (viewMode === 'preview' && isMarkdown(currentFile)) {
+      renderMarkdown();
+    }
     await refreshTree(); // surface the new images/ folder + files
   }
 }
@@ -812,10 +963,17 @@ function setupDrop(el) {
     if (!e.dataTransfer || !e.dataTransfer.files.length) return;
     e.preventDefault();
     el.classList.remove('drag-over');
-    handleDroppedFiles(e.dataTransfer.files);
+    // For the visual editor, resolve where the drop landed so images insert at
+    // that point rather than at the end. (caretRangeFromPoint is Chromium/Electron.)
+    let dropRange = null;
+    if (el === wysiwygEl && document.caretRangeFromPoint) {
+      dropRange = document.caretRangeFromPoint(e.clientX, e.clientY);
+    }
+    handleDroppedFiles(e.dataTransfer.files, dropRange);
   });
 }
 setupDrop(editorEl);
+setupDrop(wysiwygEl);
 setupDrop(renderedEl);
 
 // Stop a stray drop elsewhere in the window from navigating the app to the file.
@@ -929,6 +1087,7 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('beforeunload', () => {
   cancelPendingSave();
   if (currentFile && dirty) {
+    syncWysiwygToEditor();
     const res = api.writeFileSync(currentFile, editorEl.value);
     if (res && res.ok) dirty = false;
   }
