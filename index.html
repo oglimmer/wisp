@@ -60,6 +60,11 @@
 
         <div class="editor-header">
           <span id="current-file" class="current-file">No file open</span>
+          <!-- Raw / rendered switch, shown only for Markdown files -->
+          <div id="view-toggle" class="view-toggle hidden">
+            <button id="view-raw-btn" class="view-btn active" title="Edit the raw source">Raw</button>
+            <button id="view-md-btn" class="view-btn" title="Preview rendered Markdown">Preview</button>
+          </div>
           <span id="status" class="status"></span>
         </div>
         <textarea
@@ -69,9 +74,12 @@
           placeholder="Select a file from the tree to start editing…"
           disabled
         ></textarea>
+        <!-- Rendered Markdown view; swapped in for the textarea in Preview mode -->
+        <div id="rendered" class="rendered markdown-body hidden"></div>
       </main>
     </div>
 
+    <script src="node_modules/marked/lib/marked.umd.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

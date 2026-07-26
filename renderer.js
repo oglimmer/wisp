@@ -27,6 +27,14 @@ const smartAddBtn = document.getElementById('smart-add-btn');
 const smartStatusEl = document.getElementById('smart-status');
 const smartPreviewEl = document.getElementById('smart-preview');
 const dividerPreviewEl = document.getElementById('divider-preview');
+const renderedEl = document.getElementById('rendered');
+const viewToggleEl = document.getElementById('view-toggle');
+const viewRawBtn = document.getElementById('view-raw-btn');
+const viewMdBtn = document.getElementById('view-md-btn');
+
+// Editor view for the open file: 'raw' shows the source textarea, 'preview'
+// shows rendered Markdown. Only applies to Markdown files; the choice persists.
+let viewMode = localStorage.getItem('rawNotes.viewMode') === 'preview' ? 'preview' : 'raw';
 
 // Smart-insert state: the last plan Claude returned, and the exact note text it
 // was computed for. If the text changes, the plan is stale and Add re-checks.
@@ -61,6 +69,7 @@ async function openFolder(folder) {
   currentFileEl.textContent = 'No file open';
   editorEl.value = '';
   editorEl.disabled = true;
+  applyView();
   // Drop any smart-insert preview carried over from a previous folder.
   smartInputEl.value = '';
   smartPlan = null;
@@ -159,6 +168,40 @@ function renderNode(node, depth) {
   return wrapper;
 }
 
+// ---- Raw / Markdown view ----
+function isMarkdown(filePath) {
+  return /\.(md|markdown|mdown|mkd)$/i.test(filePath || '');
+}
+
+// Render the current editor buffer as Markdown into the preview pane.
+function renderMarkdown() {
+  if (window.marked) {
+    renderedEl.innerHTML = window.marked.parse(editorEl.value || '');
+  } else {
+    // marked failed to load — fall back to showing the source as-is.
+    renderedEl.textContent = editorEl.value || '';
+  }
+}
+
+// Show the right pane for the current file + mode. The toggle is only offered
+// for Markdown files; everything else is always edited raw.
+function applyView() {
+  const preview = viewMode === 'preview' && isMarkdown(currentFile) && !!currentFile;
+  viewToggleEl.classList.toggle('hidden', !isMarkdown(currentFile) || !currentFile);
+  if (preview) renderMarkdown();
+  renderedEl.classList.toggle('hidden', !preview);
+  editorEl.classList.toggle('hidden', preview);
+  viewRawBtn.classList.toggle('active', !preview);
+  viewMdBtn.classList.toggle('active', preview);
+}
+
+function setViewMode(mode) {
+  viewMode = mode === 'preview' ? 'preview' : 'raw';
+  localStorage.setItem('rawNotes.viewMode', viewMode);
+  applyView();
+  if (viewMode === 'raw' && currentFile) editorEl.focus();
+}
+
 // ---- File open / edit / save ----
 async function openFile(filePath, rowEl) {
   // Autosave means there's nothing to discard — just flush the current file first.
@@ -175,7 +218,8 @@ async function openFile(filePath, rowEl) {
   dirty = false;
   currentFileEl.textContent = relativePath(filePath);
   setStatus('Saved');
-  editorEl.focus();
+  applyView();
+  if (viewMode === 'raw' || !isMarkdown(filePath)) editorEl.focus();
 
   document.querySelectorAll('.node-row.active').forEach((el) => el.classList.remove('active'));
   if (rowEl) rowEl.classList.add('active');
@@ -428,6 +472,7 @@ async function deleteNode(node) {
     editorEl.disabled = true;
     currentFileEl.textContent = 'No file open';
     setStatus('');
+    applyView();
   }
   await refreshTree();
 }
@@ -659,6 +704,18 @@ document.getElementById('new-folder-btn').addEventListener('click', newFolder);
 smartCheckBtn.addEventListener('click', smartCheck);
 smartAddBtn.addEventListener('click', smartAdd);
 smartInputEl.addEventListener('input', invalidateSmartPlan);
+viewRawBtn.addEventListener('click', () => setViewMode('raw'));
+viewMdBtn.addEventListener('click', () => setViewMode('preview'));
+
+// Links in the rendered Markdown must not navigate the app window. Open
+// http(s)/mailto links in the real browser; ignore relative/in-vault links.
+renderedEl.addEventListener('click', (e) => {
+  const a = e.target.closest('a');
+  if (!a) return;
+  e.preventDefault();
+  const href = a.getAttribute('href');
+  if (href) api.openExternal(href);
+});
 
 // ---- Resizable sidebar / editor split ----
 (function setupDivider() {

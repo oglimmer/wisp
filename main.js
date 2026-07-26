@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -99,6 +99,15 @@ app.on('window-all-closed', () => {
 // ---- IPC handlers ----
 
 // Return the last-used base folder (if it still exists).
+// Open a URL in the user's default browser. Used by the Markdown preview so
+// clicking a link doesn't navigate the app window away. Only http(s)/mailto are
+// allowed through — anything else is ignored.
+ipcMain.handle('open-external', (_e, url) => {
+  if (typeof url === 'string' && /^(https?:|mailto:)/i.test(url)) {
+    shell.openExternal(url);
+  }
+});
+
 ipcMain.handle('get-last-folder', () => {
   const cfg = loadConfig();
   if (cfg.baseFolder && fs.existsSync(cfg.baseFolder)) return cfg.baseFolder;

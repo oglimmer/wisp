@@ -19,4 +19,6 @@ contextBridge.exposeInMainWorld('api', {
   deletePath: (baseFolder, target) => ipcRenderer.invoke('delete-path', baseFolder, target),
   renamePath: (baseFolder, oldPath, newName) =>
     ipcRenderer.invoke('rename-path', baseFolder, oldPath, newName),
+  // Open a link from the Markdown preview in the default browser.
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
 });
