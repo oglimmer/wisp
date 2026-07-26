@@ -91,6 +91,13 @@ CI has no keychain, so the certificate *and its private key* have to travel as a
 2. Find **Developer ID Application: Your Name (TEAMID)**. Click the disclosure triangle — there must
    be a **private key** nested underneath it. If there isn't, the key lives on the Mac that generated
    the CSR and you have to export from that machine instead (or redo step 1 here).
+
+   **Select that one row and nothing else.** A keychain that has done any iOS or Mac development also
+   holds *Apple Development: …* certificates, which look almost identical in this list and sort right
+   next to it. Exporting one of those produces a `.p12` that imports cleanly, signs without error, and
+   is then rejected by notarization with *"The binary is not signed with a valid Developer ID
+   certificate"* against every binary in the app. The workflow now checks for this before building,
+   but it is far easier to get right here.
 3. Right-click the certificate → **Export "Developer ID Application: …"** → format
    **Personal Information Exchange (.p12)** → save as `wisp-signing.p12`.
 4. Set a strong password when prompted. This becomes `MACOS_CERTIFICATE_PASSWORD`. It is not
@@ -118,7 +125,15 @@ Check the password you chose actually opens the file, before it goes anywhere ne
 /usr/bin/openssl pkcs12 -in wisp-signing.p12 -nokeys -noout   # prompts for the password
 ```
 
-Press Return at the prompt if you exported without one. Silence means it opened. `Mac verify error: invalid password?` means the password is wrong — and a
+Press Return at the prompt if you exported without one. Silence means it opened.
+
+To see *which* certificate you actually exported — the check that would have caught the mix-up above:
+
+```bash
+/usr/bin/openssl pkcs12 -in wisp-signing.p12 -nokeys -passin pass: | grep friendlyName
+```
+
+Every certificate in the file is listed. Exactly one should read `Developer ID Application: …`. `Mac verify error: invalid password?` means the password is wrong — and a
 wrong or empty `MACOS_CERTIFICATE_PASSWORD` in the repo fails much later and far less clearly.
 
 Use the **`/usr/bin/` path** deliberately. That one is LibreSSL; a Homebrew `openssl@3` earlier on

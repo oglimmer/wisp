@@ -81,6 +81,34 @@ jobs:
             echo "signed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Fail in seconds on the wrong certificate rather than after a four-minute build
+      # and a round trip to Apple. electron-builder cannot be relied on to notice: when it
+      # finds no "Developer ID Application" identity it falls back to any non-Apple one,
+      # and its skip-list still names "Mac Developer:", the pre-Xcode-11 spelling — so an
+      # "Apple Development:" certificate silently signs a build that notarization then
+      # rejects with "not signed with a valid Developer ID certificate".
+      - name: Verify the certificate is a Developer ID Application identity
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          p12="$RUNNER_TEMP/verify.p12"
+          keychain="$RUNNER_TEMP/verify.keychain-db"
+          printf '%s' "$CERT" | base64 --decode > "$p12"
+          security create-keychain -p "" "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          security import "$p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          # Certificate names are embedded in every signed binary — not secret.
+          identities=$(security find-identity -v -p codesigning "$keychain")
+          echo "$identities"
+          security delete-keychain "$keychain"
+          rm -f "$p12"
+          if ! printf '%s' "$identities" | grep -q "Developer ID Application:"; then
+            echo "::error::MACOS_CERTIFICATE holds no 'Developer ID Application' identity — see docs/SIGNING.md step 2. An Apple Development certificate cannot notarize."
+            exit 1
+          fi
+
       - name: Build (signed + notarized)
         if: steps.signing.outputs.signed == 'true'
         env:
