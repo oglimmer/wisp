@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline';" />
+    <title>Raw Notes</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Welcome screen shown until a base folder is chosen -->
+    <div id="welcome" class="welcome">
+      <div class="welcome-card">
+        <h1>Raw Notes</h1>
+        <p>Choose a base folder to open your notes.</p>
+        <button id="welcome-open-btn">Open Folder…</button>
+      </div>
+    </div>
+
+    <!-- Main workspace -->
+    <div id="workspace" class="workspace hidden">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <span id="vault-name" class="vault-name" title="">Vault</span>
+          <div class="sidebar-actions">
+            <button id="new-file-btn" title="New file">＋</button>
+            <button id="new-folder-btn" title="New folder">🗀</button>
+            <button id="refresh-btn" title="Refresh">⟳</button>
+            <button id="change-folder-btn" title="Change folder">⋯</button>
+          </div>
+        </div>
+        <div id="tree" class="tree"></div>
+      </aside>
+
+      <main class="editor-pane">
+        <div class="editor-header">
+          <span id="current-file" class="current-file">No file open</span>
+          <span id="status" class="status"></span>
+        </div>
+        <textarea
+          id="editor"
+          class="editor"
+          spellcheck="false"
+          placeholder="Select a file from the tree to start editing…"
+          disabled
+        ></textarea>
+      </main>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

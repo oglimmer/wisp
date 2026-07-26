@@ -1,0 +1,259 @@
+:root {
+  --bg: #1e1e1e;
+  --bg-alt: #252526;
+  --bg-hover: #2a2d2e;
+  --bg-active: #37373d;
+  --border: #333;
+  --text: #d4d4d4;
+  --text-dim: #888;
+  --accent: #4a9eff;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---- Welcome screen ---- */
+.welcome {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.welcome-card {
+  text-align: center;
+  padding: 40px 48px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.welcome-card h1 {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+
+.welcome-card p {
+  color: var(--text-dim);
+  margin-bottom: 24px;
+}
+
+button {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-active);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+#welcome-open-btn {
+  font-size: 15px;
+  padding: 12px 28px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#welcome-open-btn:hover {
+  filter: brightness(1.1);
+}
+
+/* ---- Workspace layout ---- */
+.workspace {
+  display: flex;
+  height: 100%;
+}
+
+.sidebar {
+  width: 280px;
+  min-width: 160px;
+  max-width: 600px;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  resize: horizontal;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  gap: 6px;
+}
+
+.vault-name {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sidebar-actions button {
+  padding: 3px 7px;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid transparent;
+  line-height: 1;
+}
+
+.sidebar-actions button:hover {
+  background: var(--bg-hover);
+  border-color: transparent;
+}
+
+/* ---- Tree ---- */
+.tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 4px;
+  user-select: none;
+}
+
+.tree-node {
+  font-size: 13px;
+}
+
+.node-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.node-row:hover {
+  background: var(--bg-hover);
+}
+
+.node-row.active {
+  background: var(--bg-active);
+}
+
+.node-arrow {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.node-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.node-children {
+  margin-left: 12px;
+}
+
+/* ---- Editor ---- */
+.editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.current-file {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.editor {
+  flex: 1;
+  width: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 16px 20px;
+  tab-size: 4;
+}
+
+.editor:disabled {
+  color: var(--text-dim);
+}
+
+/* ---- Scrollbars ---- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4f4f4f;
+}

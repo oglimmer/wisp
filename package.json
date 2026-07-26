@@ -1,0 +1,14 @@
+{
+  "name": "raw-notes",
+  "version": "1.0.0",
+  "description": "A minimal Obsidian-like note editor. Shows a folder tree on the left and a raw-text editor on the right.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^32.0.0"
+  }
+}
