@@ -29,4 +29,10 @@ contextBridge.exposeInMainWorld('api', {
   importImage: (baseFolder, currentFile, srcPath, originalName) =>
     ipcRenderer.invoke('import-image', baseFolder, currentFile, srcPath, originalName),
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  // Reminders: the list is stored as one JSON file in the vault root. alertWindow
+  // brings the window forward (and flashes the taskbar) when one comes due.
+  readReminders: (baseFolder) => ipcRenderer.invoke('read-reminders', baseFolder),
+  writeReminders: (baseFolder, reminders) =>
+    ipcRenderer.invoke('write-reminders', baseFolder, reminders),
+  alertWindow: () => ipcRenderer.invoke('alert-window'),
 });

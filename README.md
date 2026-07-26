@@ -9,7 +9,8 @@ A minimal, Obsidian-like note editor built with [Electron](https://www.electronj
 - **Raw-text editor** with a monospace font. No Markdown rendering — just the source.
 - **Save** with `Ctrl/Cmd+S`; a status indicator shows `Saved` / `Unsaved changes`, and you're warned before discarding unsaved edits.
 - **File management**: create files (supports nested paths like `folder/note.md`), create folders, rename, and delete (via right-click), plus refresh and change-folder buttons.
-- Hidden by default: `.git`, `node_modules`, `.obsidian`, `.DS_Store`.
+- **Reminders**: a list in the lower half of the sidebar (drag the separator to resize), soonest first, with overdue entries highlighted. Add one with `＋`, or right-click a file in the tree. Reminders can repeat daily/weekly/monthly/yearly and can link to a note. When one falls due the app raises its window and shows a large popup with snooze / open-note / done. The list is stored as plain JSON in `.wisp-reminders.json` at the vault root.
+- Hidden by default: `.git`, `node_modules`, `.obsidian`, `.DS_Store`, `.wisp-reminders.json`.
 - Secure by design: context isolation on, Node integration off, all file access goes through a minimal IPC bridge with path-traversal guards.
 
 ## Requirements
@@ -37,6 +38,9 @@ On first launch, click **Open Folder…** and choose any directory of notes.
 | New file | `＋` in the sidebar header (name can include subfolders, e.g. `ideas/todo.md`) |
 | New folder | 🗀 in the sidebar header |
 | Rename / delete | Right-click an item in the tree |
+| New reminder | `＋` in the Reminders header, or right-click a file → *Add reminder…* |
+| Edit a reminder | Click it in the list (right-click for open / complete / delete) |
+| Complete a reminder | `✓` on hover — repeating ones roll forward to the next occurrence |
 | Refresh tree | `⟳` in the sidebar header |
 | Change base folder | `⋯` in the sidebar header |
 

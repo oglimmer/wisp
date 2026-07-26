@@ -33,6 +33,9 @@ const viewToggleEl = document.getElementById('view-toggle');
 const viewRawBtn = document.getElementById('view-raw-btn');
 const viewWysBtn = document.getElementById('view-wys-btn');
 const viewMdBtn = document.getElementById('view-md-btn');
+const reminderListEl = document.getElementById('reminder-list');
+const reminderCountEl = document.getElementById('reminder-count');
+const newReminderBtn = document.getElementById('new-reminder-btn');
 
 // Editor view for the open file: 'raw' shows the source textarea, 'wysiwyg' shows
 // a directly-editable formatted view, 'preview' shows read-only rendered Markdown.
@@ -71,6 +74,9 @@ function getTurndown() {
 // was computed for. If the text changes, the plan is stale and Add re-checks.
 let smartPlan = null;
 let smartPlanFor = null;
+// Whether the reminder Claude proposed alongside the plan will be created on Add
+// (the checkbox in the preview). Reset every time a fresh plan is rendered.
+let smartReminderOn = false;
 
 // ---- Startup ----
 init();
@@ -105,9 +111,11 @@ async function openFolder(folder) {
   smartInputEl.value = '';
   smartPlan = null;
   smartPlanFor = null;
+  smartReminderOn = false;
   hideSmartPreview();
   setSmartStatus('');
   await refreshTree();
+  await loadReminders();
 }
 
 async function chooseFolder() {
@@ -193,7 +201,11 @@ function renderNode(node, depth) {
 
   row.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    showContextMenu(e, node);
+    showContextMenu(e, [
+      { label: 'Add reminder…', fn: () => newReminder(node.type === 'file' ? node.path : null) },
+      { label: 'Rename', fn: () => renameNode(node) },
+      { label: 'Delete', fn: () => deleteNode(node) },
+    ]);
   });
 
   return wrapper;
@@ -519,10 +531,11 @@ function expandAncestors(filePath) {
   }
 }
 
-// ---- Context menu (rename / delete) ----
+// ---- Context menu ----
+// `items` is a list of { label, fn } — shared by the tree and the reminder list.
 let menuEl = null;
 
-function showContextMenu(e, node) {
+function showContextMenu(e, items) {
   removeContextMenu();
   menuEl = document.createElement('div');
   Object.assign(menuEl.style, {
@@ -552,8 +565,7 @@ function showContextMenu(e, node) {
     return item;
   };
 
-  menuEl.appendChild(mkItem('Rename', () => renameNode(node)));
-  menuEl.appendChild(mkItem('Delete', () => deleteNode(node)));
+  for (const item of items) menuEl.appendChild(mkItem(item.label, item.fn));
   document.body.appendChild(menuEl);
 }
 
@@ -657,6 +669,7 @@ async function smartCheck() {
   if (!res.ok) {
     smartPlan = null;
     smartPlanFor = null;
+    smartReminderOn = false;
     hideSmartPreview();
     setSmartStatus(res.error, true);
     return null;
@@ -697,11 +710,26 @@ async function smartAdd() {
     return;
   }
 
+  // The file landed; now create the reminder Claude proposed, if it's still ticked.
+  let remNote = '';
+  if (plan.reminder && smartReminderOn) {
+    await upsertReminder({
+      id: plan.reminder.id || newReminderId(),
+      title: plan.reminder.title,
+      due: plan.reminder.due,
+      repeat: plan.reminder.repeat || 'none',
+      note: typeof plan.reminder.note === 'string' ? plan.reminder.note : text,
+      file: typeof plan.reminder.file === 'string' ? plan.reminder.file : plan.targetFile,
+    });
+    remNote = ' · reminder ' + formatDue(plan.reminder.due);
+  }
+
   smartInputEl.value = '';
   smartPlan = null;
   smartPlanFor = null;
+  smartReminderOn = false;
   hideSmartPreview();
-  setSmartStatus('Added to ' + plan.targetFile);
+  setSmartStatus('Added to ' + plan.targetFile + remNote);
 
   // Reveal and open the file we just wrote so the change is visible.
   expandAncestors(res.path);
@@ -716,6 +744,7 @@ function invalidateSmartPlan() {
   if (smartPlanFor !== null && smartInputEl.value.trim() !== smartPlanFor) {
     smartPlan = null;
     smartPlanFor = null;
+    smartReminderOn = false;
     hideSmartPreview();
     setSmartStatus('');
   }
@@ -744,6 +773,11 @@ function renderPreview(plan) {
     smartPreviewEl.appendChild(reason);
   }
 
+  // Every check also asks Claude whether the note implies a reminder. When it
+  // does, offer it here — opt-out, editable, and only created when Add is pressed.
+  smartReminderOn = !!plan.reminder;
+  if (plan.reminder) smartPreviewEl.appendChild(renderReminderProposal(plan));
+
   const diff = document.createElement('pre');
   diff.className = 'sp-diff';
   for (const line of lineDiff(plan.oldContent || '', plan.newContent || '')) {
@@ -755,6 +789,77 @@ function renderPreview(plan) {
   }
   smartPreviewEl.appendChild(diff);
   showSmartPreview();
+}
+
+// The reminder card inside the smart-insert preview: a checkbox to include it,
+// what it will fire as, and an Edit… button that opens the normal reminder editor.
+function renderReminderProposal(plan) {
+  const card = document.createElement('div');
+  card.className = 'sp-reminder';
+
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'sp-rem-check';
+  check.checked = smartReminderOn;
+  check.addEventListener('change', () => (smartReminderOn = check.checked));
+
+  const body = document.createElement('div');
+  body.className = 'sp-rem-body';
+
+  const head = document.createElement('div');
+  head.className = 'sp-rem-head';
+  const badge = document.createElement('span');
+  badge.className = 'sp-badge sp-rem-badge';
+  badge.textContent = 'REMINDER';
+  const title = document.createElement('span');
+  title.className = 'sp-rem-title';
+  title.textContent = plan.reminder.title;
+  head.appendChild(badge);
+  head.appendChild(title);
+
+  const meta = document.createElement('div');
+  meta.className = 'sp-rem-meta';
+  const bits = [formatDue(plan.reminder.due)];
+  if (plan.reminder.repeat && plan.reminder.repeat !== 'none') {
+    bits.push(REPEAT_LABELS[plan.reminder.repeat]);
+  }
+  meta.textContent = bits.join(' · ');
+
+  body.appendChild(head);
+  body.appendChild(meta);
+  if (plan.reminder.reason) {
+    const why = document.createElement('div');
+    why.className = 'sp-rem-why';
+    why.textContent = plan.reminder.reason;
+    body.appendChild(why);
+  }
+
+  const edit = document.createElement('button');
+  edit.className = 'sp-rem-edit';
+  edit.textContent = 'Edit…';
+  edit.addEventListener('click', async () => {
+    const res = await reminderModal({
+      id: newReminderId(),
+      title: plan.reminder.title,
+      due: plan.reminder.due,
+      repeat: plan.reminder.repeat,
+      note: smartInputEl.value.trim(),
+      file: plan.targetFile,
+    });
+    if (!res) return;
+    if (res.action === 'delete') {
+      plan.reminder = null;
+      smartReminderOn = false;
+    } else if (res.action === 'save') {
+      plan.reminder = { ...res.reminder, reason: plan.reminder.reason };
+    }
+    renderPreview(plan);
+  });
+
+  card.appendChild(check);
+  card.appendChild(body);
+  card.appendChild(edit);
+  return card;
 }
 
 // Line-level diff via a longest-common-subsequence table, then collapse long
@@ -823,6 +928,608 @@ function condenseDiff(ops) {
   return out;
 }
 
+// ---- Reminders ----
+// The list lives in `.wisp-reminders.json` at the vault root and is held here in
+// memory; every change rewrites the whole file (it's small, and it keeps the file
+// and the UI trivially in sync). A ticker watches for due entries and raises a
+// full-screen alert; each entry stores its *next* due time, so a repeating
+// reminder is rolled forward rather than duplicated.
+
+const REPEAT_LABELS = {
+  none: 'Once',
+  daily: 'Daily',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+  yearly: 'Yearly',
+};
+const REMINDER_TICK_MS = 15000;
+const SNOOZE_OPTIONS = [
+  { label: 'Snooze 10 min', minutes: 10 },
+  { label: 'Snooze 1 hour', minutes: 60 },
+  { label: 'Snooze 1 day', minutes: 60 * 24 },
+];
+
+let reminders = [];
+let reminderTicker = null;
+// Which `id@due` pairs have already popped this session, so a reminder left
+// overdue in the list doesn't re-alert every tick. A restart alerts again on
+// purpose — an unhandled reminder should still be in your face.
+const alerted = new Set();
+const alertQueue = [];
+let alertShowing = false;
+let overdueSig = ''; // last-rendered set of overdue ids; drives re-renders
+
+function newReminderId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// ISO ⇄ the local "YYYY-MM-DD" / "HH:mm" pair the date and time inputs speak.
+function toLocalParts(iso) {
+  const d = new Date(iso);
+  return {
+    date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+    time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
+  };
+}
+
+function fromLocalParts(date, time) {
+  if (!date) return null;
+  const d = new Date(`${date}T${time || '09:00'}`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// New reminders default to the next whole hour.
+function defaultDue() {
+  const d = new Date(Date.now() + 3600000);
+  d.setMinutes(0, 0, 0);
+  return d.toISOString();
+}
+
+// Whole calendar days between two dates, ignoring the time of day.
+function dayDelta(from, to) {
+  const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const b = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  return Math.round((b - a) / 86400000);
+}
+
+function formatDue(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const now = new Date();
+  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const days = dayDelta(now, d);
+  if (days === 0) return `Today ${time}`;
+  if (days === 1) return `Tomorrow ${time}`;
+  if (days === -1) return `Yesterday ${time}`;
+  const opts =
+    d.getFullYear() === now.getFullYear()
+      ? { weekday: 'short', day: 'numeric', month: 'short' }
+      : { day: 'numeric', month: 'short', year: 'numeric' };
+  return `${d.toLocaleDateString(undefined, opts)}, ${time}`;
+}
+
+// The nth occurrence after `start`, always recomputed from the original date so a
+// month-end anchor (the 31st) doesn't drift forward through the short months.
+function occurrenceAt(start, repeat, steps) {
+  const d = new Date(start);
+  if (repeat === 'daily') {
+    d.setDate(d.getDate() + steps);
+  } else if (repeat === 'weekly') {
+    d.setDate(d.getDate() + 7 * steps);
+  } else if (repeat === 'monthly' || repeat === 'yearly') {
+    const months = (repeat === 'yearly' ? 12 : 1) * steps;
+    const day = d.getDate();
+    d.setDate(1); // avoid setMonth overflowing (31 Jan + 1 month → 3 Mar)
+    d.setMonth(d.getMonth() + months);
+    d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  } else {
+    return null;
+  }
+  return d;
+}
+
+// Roll a repeating reminder forward to its next occurrence strictly in the future.
+// Returns null for one-off reminders (nothing to roll forward to).
+function nextOccurrence(iso, repeat) {
+  if (!repeat || repeat === 'none') return null;
+  const start = new Date(iso);
+  if (Number.isNaN(start.getTime())) return null;
+  for (let steps = 1; steps <= 4000; steps++) {
+    const d = occurrenceAt(start, repeat, steps);
+    if (!d) return null;
+    if (d.getTime() > Date.now()) return d.toISOString();
+  }
+  return null;
+}
+
+// Tolerate a hand-edited reminders file: drop anything without a usable title/date.
+function normalizeReminder(r) {
+  if (!r || typeof r !== 'object') return null;
+  const title = typeof r.title === 'string' ? r.title.trim() : '';
+  const when = new Date(typeof r.due === 'string' ? r.due : '');
+  if (!title || Number.isNaN(when.getTime())) return null;
+  return {
+    id: typeof r.id === 'string' && r.id ? r.id : newReminderId(),
+    title,
+    due: when.toISOString(),
+    repeat: REPEAT_LABELS[r.repeat] ? r.repeat : 'none',
+    note: typeof r.note === 'string' ? r.note : '',
+    file: typeof r.file === 'string' ? r.file : '',
+  };
+}
+
+async function loadReminders() {
+  const res = await api.readReminders(baseFolder);
+  reminders = (res.reminders || []).map(normalizeReminder).filter(Boolean);
+  alerted.clear();
+  alertQueue.length = 0;
+  overdueSig = '';
+  sortReminders();
+  renderReminders();
+  startReminderTicker();
+}
+
+function sortReminders() {
+  reminders.sort((a, b) => Date.parse(a.due) - Date.parse(b.due));
+}
+
+async function persistReminders() {
+  sortReminders();
+  renderReminders();
+  const res = await api.writeReminders(baseFolder, reminders);
+  if (!res.ok) setStatus('Error saving reminders: ' + res.error, true);
+}
+
+async function upsertReminder(rem) {
+  const i = reminders.findIndex((r) => r.id === rem.id);
+  if (i === -1) reminders.push(rem);
+  else reminders[i] = rem;
+  await persistReminders();
+}
+
+// Completing a repeating reminder rolls it forward; a one-off is done for good.
+async function completeReminder(id) {
+  const i = reminders.findIndex((r) => r.id === id);
+  if (i === -1) return;
+  const next = nextOccurrence(reminders[i].due, reminders[i].repeat);
+  if (next) reminders[i] = { ...reminders[i], due: next };
+  else reminders.splice(i, 1);
+  await persistReminders();
+}
+
+async function snoozeReminder(id, minutes) {
+  const rem = reminders.find((r) => r.id === id);
+  if (!rem) return;
+  rem.due = new Date(Date.now() + minutes * 60000).toISOString();
+  await persistReminders();
+}
+
+async function removeReminder(id) {
+  const i = reminders.findIndex((r) => r.id === id);
+  if (i === -1) return;
+  reminders.splice(i, 1);
+  await persistReminders();
+}
+
+// ---- Reminder list UI ----
+function renderReminders() {
+  reminderListEl.innerHTML = '';
+  const now = Date.now();
+  let overdue = 0;
+
+  if (!reminders.length) {
+    const empty = document.createElement('div');
+    empty.className = 'reminder-empty';
+    empty.textContent = 'No reminders. Use ＋ to add one.';
+    reminderListEl.appendChild(empty);
+  }
+
+  for (const rem of reminders) {
+    const isOverdue = Date.parse(rem.due) <= now;
+    if (isOverdue) overdue++;
+
+    const row = document.createElement('div');
+    row.className = 'reminder-row' + (isOverdue ? ' overdue' : '');
+    row.title = rem.note || rem.title;
+
+    const icon = document.createElement('span');
+    icon.className = 'reminder-icon';
+    icon.textContent = isOverdue ? '🔔' : '⏰';
+
+    const body = document.createElement('div');
+    body.className = 'reminder-body';
+
+    const title = document.createElement('div');
+    title.className = 'reminder-title';
+    title.textContent = rem.title;
+
+    const meta = document.createElement('div');
+    meta.className = 'reminder-meta';
+    const bits = [formatDue(rem.due)];
+    if (rem.repeat && rem.repeat !== 'none') bits.push(REPEAT_LABELS[rem.repeat]);
+    if (rem.file) bits.push(rem.file);
+    meta.textContent = bits.join(' · ');
+
+    body.appendChild(title);
+    body.appendChild(meta);
+
+    const done = document.createElement('button');
+    done.className = 'reminder-done';
+    done.textContent = '✓';
+    done.title = rem.repeat === 'none' ? 'Complete' : 'Complete this occurrence';
+    done.addEventListener('click', (e) => {
+      e.stopPropagation();
+      completeReminder(rem.id);
+    });
+
+    row.appendChild(icon);
+    row.appendChild(body);
+    row.appendChild(done);
+
+    row.addEventListener('click', () => editReminder(rem));
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const items = [{ label: 'Edit…', fn: () => editReminder(rem) }];
+      if (rem.file) items.push({ label: 'Open note', fn: () => openReminderNote(rem.file) });
+      items.push({ label: 'Complete', fn: () => completeReminder(rem.id) });
+      items.push({ label: 'Delete', fn: () => removeReminder(rem.id) });
+      showContextMenu(e, items);
+    });
+
+    reminderListEl.appendChild(row);
+  }
+
+  reminderCountEl.textContent = String(overdue);
+  reminderCountEl.classList.toggle('hidden', overdue === 0);
+}
+
+// Open the note a reminder points at (a vault-relative path).
+async function openReminderNote(rel) {
+  if (!rel || !baseFolder) return;
+  const sep = baseFolder.includes('\\') ? '\\' : '/';
+  const full = baseFolder + sep + String(rel).split('/').join(sep);
+  expandAncestors(full);
+  await refreshTree();
+  const row = treeEl.querySelector(`[data-path="${cssEscape(full)}"]`);
+  await openFile(full, row);
+}
+
+async function newReminder(forFilePath) {
+  const file = forFilePath || currentFile;
+  const res = await reminderModal(null, file ? relativePath(file) : '');
+  if (res && res.action === 'save') await upsertReminder(res.reminder);
+}
+
+async function editReminder(rem) {
+  const res = await reminderModal(rem);
+  if (!res) return;
+  if (res.action === 'save') await upsertReminder(res.reminder);
+  else if (res.action === 'delete') await removeReminder(rem.id);
+  else if (res.action === 'open') await openReminderNote(rem.file);
+}
+
+// ---- Reminder editor ----
+// Same promise-based pattern as promptModal (Electron has no window.prompt), but
+// with the fields a reminder needs. Resolves to { action, reminder } or null.
+function reminderModal(existing, defaultFile = '') {
+  return new Promise((resolve) => {
+    const base = existing || {
+      id: newReminderId(),
+      title: '',
+      due: defaultDue(),
+      repeat: 'none',
+      note: '',
+      file: defaultFile,
+    };
+    const parts = toLocalParts(base.due);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const box = document.createElement('div');
+    box.className = 'modal-box rm-box';
+
+    const heading = document.createElement('div');
+    heading.className = 'modal-title';
+    heading.textContent = existing ? 'Edit reminder' : 'New reminder';
+    box.appendChild(heading);
+
+    // label + control, stacked
+    const field = (labelText, control, className) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'rm-field' + (className ? ' ' + className : '');
+      const label = document.createElement('label');
+      label.className = 'rm-label';
+      label.textContent = labelText;
+      wrap.appendChild(label);
+      wrap.appendChild(control);
+      box.appendChild(wrap);
+      return wrap;
+    };
+
+    const titleInput = document.createElement('input');
+    titleInput.className = 'modal-input';
+    titleInput.type = 'text';
+    titleInput.value = base.title;
+    titleInput.placeholder = 'What should you be reminded of?';
+    field('Reminder', titleInput);
+
+    // Date / time / repeat share one row.
+    const whenRow = document.createElement('div');
+    whenRow.className = 'rm-row';
+    const dateInput = document.createElement('input');
+    dateInput.className = 'modal-input';
+    dateInput.type = 'date';
+    dateInput.value = parts.date;
+    const timeInput = document.createElement('input');
+    timeInput.className = 'modal-input';
+    timeInput.type = 'time';
+    timeInput.value = parts.time;
+    const repeatSelect = document.createElement('select');
+    repeatSelect.className = 'modal-input';
+    for (const [value, label] of Object.entries(REPEAT_LABELS)) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      repeatSelect.appendChild(opt);
+    }
+    repeatSelect.value = REPEAT_LABELS[base.repeat] ? base.repeat : 'none';
+
+    const cell = (labelText, control) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'rm-field';
+      const label = document.createElement('label');
+      label.className = 'rm-label';
+      label.textContent = labelText;
+      wrap.appendChild(label);
+      wrap.appendChild(control);
+      whenRow.appendChild(wrap);
+    };
+    cell('Date', dateInput);
+    cell('Time', timeInput);
+    cell('Repeat', repeatSelect);
+    box.appendChild(whenRow);
+
+    const noteInput = document.createElement('textarea');
+    noteInput.className = 'modal-input rm-note';
+    noteInput.rows = 3;
+    noteInput.value = base.note;
+    noteInput.placeholder = 'Optional details shown in the popup';
+    field('Details', noteInput);
+
+    const fileInput = document.createElement('input');
+    fileInput.className = 'modal-input';
+    fileInput.type = 'text';
+    fileInput.value = base.file;
+    fileInput.placeholder = 'Optional — e.g. work/projects.md';
+    field('Linked note', fileInput);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions rm-actions';
+    if (existing) {
+      const delBtn = document.createElement('button');
+      delBtn.textContent = 'Delete';
+      delBtn.className = 'rm-danger';
+      delBtn.addEventListener('click', () => close({ action: 'delete' }));
+      actions.appendChild(delBtn);
+    }
+    if (existing && base.file) {
+      const openBtn = document.createElement('button');
+      openBtn.textContent = 'Open note';
+      openBtn.addEventListener('click', () => close({ action: 'open' }));
+      actions.appendChild(openBtn);
+    }
+    const spacer = document.createElement('div');
+    spacer.className = 'rm-spacer';
+    actions.appendChild(spacer);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    const okBtn = document.createElement('button');
+    okBtn.textContent = 'Save';
+    okBtn.className = 'modal-primary';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+    box.appendChild(actions);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    let done = false;
+    function close(value) {
+      if (done) return;
+      done = true;
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(value);
+    }
+    function submit() {
+      const title = titleInput.value.trim();
+      if (!title) {
+        titleInput.classList.add('invalid');
+        titleInput.focus();
+        return;
+      }
+      const due = fromLocalParts(dateInput.value, timeInput.value);
+      if (!due) {
+        dateInput.classList.add('invalid');
+        dateInput.focus();
+        return;
+      }
+      close({
+        action: 'save',
+        reminder: {
+          id: base.id,
+          title,
+          due,
+          repeat: repeatSelect.value,
+          note: noteInput.value.trim(),
+          file: fileInput.value.trim(),
+        },
+      });
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close(null);
+      } else if (e.key === 'Enter' && e.target !== noteInput) {
+        e.preventDefault();
+        submit();
+      }
+    }
+
+    box.addEventListener('input', (e) => e.target.classList.remove('invalid'));
+    okBtn.addEventListener('click', submit);
+    cancelBtn.addEventListener('click', () => close(null));
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) close(null);
+    });
+    document.addEventListener('keydown', onKey, true);
+
+    titleInput.focus();
+    titleInput.select();
+  });
+}
+
+// ---- Due watching + the alert popup ----
+function startReminderTicker() {
+  if (reminderTicker) clearInterval(reminderTicker);
+  reminderTicker = setInterval(checkDueReminders, REMINDER_TICK_MS);
+  checkDueReminders();
+}
+
+function checkDueReminders() {
+  const now = Date.now();
+  const due = [];
+  for (const rem of reminders) {
+    const t = Date.parse(rem.due);
+    if (Number.isNaN(t) || t > now) continue;
+    due.push(rem.id);
+    const key = rem.id + '@' + rem.due;
+    if (alerted.has(key)) continue;
+    alerted.add(key);
+    alertQueue.push(rem.id);
+  }
+  // Only repaint when the overdue set actually changed, so the list doesn't
+  // flicker under the cursor every tick.
+  const sig = due.join(',');
+  if (sig !== overdueSig) {
+    overdueSig = sig;
+    renderReminders();
+  }
+  drainAlerts();
+}
+
+// Show queued alerts one at a time — several reminders can come due together.
+function drainAlerts() {
+  if (alertShowing) return;
+  while (alertQueue.length) {
+    const rem = reminders.find((r) => r.id === alertQueue.shift());
+    if (rem) {
+      showReminderAlert(rem);
+      return;
+    }
+  }
+}
+
+function showReminderAlert(rem) {
+  alertShowing = true;
+  api.alertWindow(); // bring the window forward / flash the taskbar
+
+  const overlay = document.createElement('div');
+  overlay.className = 'alert-overlay';
+
+  const box = document.createElement('div');
+  box.className = 'alert-box';
+
+  const bell = document.createElement('div');
+  bell.className = 'alert-bell';
+  bell.textContent = '🔔';
+
+  const kicker = document.createElement('div');
+  kicker.className = 'alert-kicker';
+  kicker.textContent = rem.repeat === 'none' ? 'Reminder' : REPEAT_LABELS[rem.repeat] + ' reminder';
+
+  const title = document.createElement('div');
+  title.className = 'alert-title';
+  title.textContent = rem.title;
+
+  const when = document.createElement('div');
+  when.className = 'alert-when';
+  when.textContent = formatDue(rem.due);
+
+  box.appendChild(bell);
+  box.appendChild(kicker);
+  box.appendChild(title);
+  box.appendChild(when);
+
+  if (rem.note) {
+    const note = document.createElement('div');
+    note.className = 'alert-note';
+    note.textContent = rem.note;
+    box.appendChild(note);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'alert-actions';
+
+  const mkBtn = (label, className, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (className) b.className = className;
+    b.addEventListener('click', fn);
+    actions.appendChild(b);
+    return b;
+  };
+
+  for (const opt of SNOOZE_OPTIONS) {
+    mkBtn(opt.label, 'alert-snooze', () => {
+      close();
+      snoozeReminder(rem.id, opt.minutes);
+    });
+  }
+  if (rem.file) {
+    mkBtn('Open note', '', () => {
+      close();
+      openReminderNote(rem.file);
+    });
+  }
+  const doneBtn = mkBtn(
+    rem.repeat === 'none' ? 'Done' : 'Done — next ' + REPEAT_LABELS[rem.repeat].toLowerCase(),
+    'alert-primary',
+    () => {
+      close();
+      completeReminder(rem.id);
+    }
+  );
+
+  box.appendChild(actions);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  let closed = false;
+  function close() {
+    if (closed) return;
+    closed = true;
+    overlay.remove();
+    document.removeEventListener('keydown', onKey, true);
+    alertShowing = false;
+    renderReminders(); // the entry is overdue now — repaint it as such
+    drainAlerts();
+  }
+  // Escape just dismisses the popup; the reminder stays in the list, overdue.
+  function onKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  }
+  document.addEventListener('keydown', onKey, true);
+  doneBtn.focus();
+}
+
 // ---- Wire up buttons & shortcuts ----
 document.getElementById('welcome-open-btn').addEventListener('click', chooseFolder);
 document.getElementById('change-folder-btn').addEventListener('click', chooseFolder);
@@ -832,6 +1539,7 @@ document.getElementById('new-folder-btn').addEventListener('click', newFolder);
 smartCheckBtn.addEventListener('click', smartCheck);
 smartAddBtn.addEventListener('click', smartAdd);
 smartInputEl.addEventListener('input', invalidateSmartPlan);
+newReminderBtn.addEventListener('click', () => newReminder(null));
 viewRawBtn.addEventListener('click', () => setViewMode('raw'));
 viewWysBtn.addEventListener('click', () => setViewMode('wysiwyg'));
 viewMdBtn.addEventListener('click', () => setViewMode('preview'));
@@ -1026,9 +1734,12 @@ window.addEventListener('drop', (e) => e.preventDefault());
 // Each row divider resizes the panel directly above it by setting its height;
 // the editor is flex:1 and absorbs whatever's left. RESERVE keeps the editor
 // from being squeezed away entirely.
-function makeRowDivider(divider, panel, storageKey, minPx) {
-  const paneEl = document.querySelector('.editor-pane');
-  const RESERVE = 140;
+// `opts.below` marks a panel that sits *under* its divider (the reminder list),
+// so dragging up grows it instead of down.
+function makeRowDivider(divider, panel, storageKey, minPx, opts = {}) {
+  const paneEl = opts.container || document.querySelector('.editor-pane');
+  const RESERVE = opts.reserve ?? 140;
+  const dir = opts.below ? -1 : 1;
   const clamp = (h) =>
     Math.max(minPx, Math.min(h, paneEl.getBoundingClientRect().height - RESERVE));
 
@@ -1050,7 +1761,7 @@ function makeRowDivider(divider, panel, storageKey, minPx) {
   });
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
-    panel.style.height = clamp(startH + (e.clientY - startY)) + 'px';
+    panel.style.height = clamp(startH + dir * (e.clientY - startY)) + 'px';
   });
   window.addEventListener('mouseup', () => {
     if (!dragging) return;
@@ -1073,6 +1784,13 @@ makeRowDivider(
   document.getElementById('smart-preview'),
   'rawNotes.previewHeight',
   60
+);
+makeRowDivider(
+  document.getElementById('divider-reminders'),
+  document.getElementById('reminders'),
+  'rawNotes.remindersHeight',
+  92,
+  { container: document.getElementById('sidebar'), reserve: 120, below: true }
 );
 
 window.addEventListener('keydown', (e) => {

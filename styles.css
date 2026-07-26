@@ -208,6 +208,134 @@ button:hover {
   margin-left: 12px;
 }
 
+/* ---- Reminders (sidebar, below the tree) ---- */
+.reminders {
+  flex-shrink: 0;
+  height: 190px; /* resized by #divider-reminders */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-alt);
+}
+
+.reminders-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reminders-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* Count of overdue reminders; hidden when there are none. */
+.reminder-count {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 9px;
+  background: #a3271f;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.reminders-header .sidebar-actions {
+  margin-left: auto;
+}
+
+.reminder-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+  user-select: none;
+}
+
+.reminder-empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.reminder-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.reminder-row:hover {
+  background: var(--bg-hover);
+}
+
+.reminder-icon {
+  font-size: 12px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.reminder-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.reminder-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reminder-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* An overdue reminder shouts a little. */
+.reminder-row.overdue .reminder-title {
+  color: #ff9a93;
+  font-weight: 600;
+}
+
+.reminder-row.overdue .reminder-meta {
+  color: #d97066;
+}
+
+/* Complete button, revealed on hover. */
+.reminder-done {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+  visibility: hidden;
+}
+
+.reminder-row:hover .reminder-done {
+  visibility: visible;
+}
+
+.reminder-done:hover {
+  background: var(--bg-active);
+  border-color: transparent;
+  color: #7ee2a8;
+}
+
 /* ---- Smart insert ---- */
 .smart-insert {
   border-bottom: 1px solid var(--border);
@@ -336,6 +464,66 @@ button:hover {
   font-size: 12px;
   color: var(--text-dim);
   margin-bottom: 6px;
+}
+
+/* Reminder Claude proposed alongside the filing plan. */
+.sp-reminder {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+}
+
+.sp-rem-check {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.sp-rem-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.sp-rem-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sp-rem-badge {
+  background: #1e3a5c;
+  color: #8ec5ff;
+}
+
+.sp-rem-title {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-rem-meta {
+  font-size: 12px;
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.sp-rem-why {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.sp-rem-edit {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 12px;
 }
 
 .sp-diff {
@@ -682,6 +870,193 @@ button:hover {
 .modal-primary:hover {
   filter: brightness(1.1);
   background: var(--accent);
+}
+
+/* ---- Reminder editor modal ---- */
+.rm-box {
+  min-width: 460px;
+}
+
+.rm-field {
+  margin-bottom: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.rm-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+/* Date / time / repeat on one line. */
+.rm-row {
+  display: flex;
+  gap: 10px;
+}
+
+.rm-note {
+  font-family: var(--font-ui);
+  resize: vertical;
+  line-height: 1.5;
+}
+
+select.modal-input {
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+
+.modal-input.invalid {
+  border-color: #ff6b6b;
+}
+
+.rm-actions {
+  align-items: center;
+}
+
+/* Pushes Cancel / Save to the right, away from Delete. */
+.rm-spacer {
+  flex: 1;
+}
+
+.rm-danger {
+  color: #ff9a93;
+}
+
+.rm-danger:hover {
+  border-color: #ff6b6b;
+}
+
+/* ---- Due reminder popup ---- */
+.alert-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3000;
+  animation: alert-fade 0.18s ease-out;
+}
+
+.alert-box {
+  width: min(680px, 84vw);
+  max-height: 84vh;
+  overflow-y: auto;
+  text-align: center;
+  padding: 40px 44px 32px;
+  background: linear-gradient(160deg, #2b2f3a 0%, var(--bg-alt) 60%);
+  border: 1px solid var(--accent);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(74, 158, 255, 0.15);
+  animation: alert-pop 0.22s cubic-bezier(0.2, 1.3, 0.5, 1);
+}
+
+@keyframes alert-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes alert-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+}
+
+.alert-bell {
+  font-size: 56px;
+  line-height: 1;
+  margin-bottom: 14px;
+  animation: alert-ring 1.4s ease-in-out 2;
+  transform-origin: 50% 10%;
+}
+
+@keyframes alert-ring {
+  0%,
+  60%,
+  100% {
+    transform: rotate(0deg);
+  }
+  10%,
+  30%,
+  50% {
+    transform: rotate(12deg);
+  }
+  20%,
+  40% {
+    transform: rotate(-12deg);
+  }
+}
+
+.alert-kicker {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.alert-title {
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.25;
+  word-wrap: break-word;
+  margin-bottom: 10px;
+}
+
+.alert-when {
+  font-size: 15px;
+  color: var(--text-dim);
+}
+
+.alert-note {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.alert-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 28px;
+}
+
+.alert-actions button {
+  padding: 10px 18px;
+  font-size: 14px;
+}
+
+.alert-snooze {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.alert-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.alert-primary:hover {
+  background: var(--accent);
+  filter: brightness(1.1);
 }
 
 /* ---- Scrollbars ---- */

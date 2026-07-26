@@ -29,6 +29,21 @@
           </div>
         </div>
         <div id="tree" class="tree"></div>
+
+        <!-- Drag handle: resize the reminder list below -->
+        <div id="divider-reminders" class="hdivider" title="Drag to resize"></div>
+
+        <!-- Reminder list: everything pending, soonest first -->
+        <section id="reminders" class="reminders">
+          <div class="reminders-header">
+            <span class="reminders-title">Reminders</span>
+            <span id="reminder-count" class="reminder-count hidden"></span>
+            <div class="sidebar-actions">
+              <button id="new-reminder-btn" title="New reminder">＋</button>
+            </div>
+          </div>
+          <div id="reminder-list" class="reminder-list"></div>
+        </section>
       </aside>
 
       <!-- Drag handle to resize the sidebar / editor split -->

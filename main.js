@@ -23,8 +23,12 @@ function saveConfig(cfg) {
   }
 }
 
+// The reminder list lives in the vault root so it travels with the notes, but it
+// is app state rather than a note — hidden from the tree (and from smart insert).
+const REMINDERS_FILE = '.wisp-reminders.json';
+
 // Directories we never want to show in the tree.
-const IGNORED = new Set(['.git', 'node_modules', '.obsidian', '.DS_Store']);
+const IGNORED = new Set(['.git', 'node_modules', '.obsidian', '.DS_Store', REMINDERS_FILE]);
 
 // Image extensions we can embed (preview) and import (drag & drop), mapped to
 // the MIME type used when inlining them as data URLs.
@@ -90,6 +94,13 @@ function createWindow() {
   });
 
   mainWindow.loadFile('index.html');
+
+  // Stop the taskbar flash we start when a reminder comes due, once the user looks.
+  mainWindow.on('focus', () => {
+    try {
+      mainWindow.flashFrame(false);
+    } catch {}
+  });
 }
 
 // Guard against path-traversal: ensure `target` stays inside `base`.
@@ -238,6 +249,51 @@ ipcMain.handle('rename-path', async (_e, baseFolder, oldPath, newName) => {
   }
 });
 
+// ---- Reminders ----
+
+// The whole list is read and written as one JSON document — same philosophy as the
+// tree (rebuild, don't mutate). It's small, and keeping it a single plain file means
+// the vault stays self-describing with no index to fall out of sync.
+ipcMain.handle('read-reminders', async (_e, baseFolder) => {
+  try {
+    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: true, reminders: [] };
+    const file = path.join(baseFolder, REMINDERS_FILE);
+    if (!fs.existsSync(file)) return { ok: true, reminders: [] };
+    const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+    const list = Array.isArray(parsed) ? parsed : parsed && parsed.reminders;
+    return { ok: true, reminders: Array.isArray(list) ? list : [] };
+  } catch (err) {
+    return { ok: false, error: String(err), reminders: [] };
+  }
+});
+
+ipcMain.handle('write-reminders', async (_e, baseFolder, reminders) => {
+  try {
+    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
+    const file = path.join(baseFolder, REMINDERS_FILE);
+    const body = JSON.stringify({ reminders: Array.isArray(reminders) ? reminders : [] }, null, 2);
+    await fsp.writeFile(file, body, 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// A reminder has come due: make sure the window is actually in front of the user,
+// and flash the taskbar entry / bounce the dock if it isn't.
+ipcMain.handle('alert-window', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    if (!mainWindow.isFocused()) {
+      mainWindow.flashFrame(true);
+      if (process.platform === 'darwin' && app.dock) app.dock.bounce('informational');
+    }
+    mainWindow.focus();
+  } catch {}
+});
+
 // ---- Images ----
 
 // Resolve a Markdown image reference (relative to the open file) and return it as
@@ -341,8 +397,21 @@ async function gatherFiles(baseFolder) {
   return out;
 }
 
+// Human-readable local "now", so Claude can resolve relative dates in a note
+// ("tomorrow", "next Friday", "in two weeks") into an absolute reminder time.
+function describeNow() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const day = now.toLocaleDateString('en-US', { weekday: 'long' });
+  return `${stamp} (${day})`;
+}
+
 // Build the instruction we hand to the `claude` CLI. It must reply with a single
-// JSON object describing where the note goes and the file's full new content.
+// JSON object describing where the note goes, the file's full new content, and
+// whether the note implies a reminder.
 function buildInsertPrompt(files, text, currentRel) {
   let filesSection;
   if (!files.length) {
@@ -377,9 +446,42 @@ function buildInsertPrompt(files, text, currentRel) {
     '- You may lightly adjust wording for fit, but never invent unrelated content or delete existing content.',
     '- Contents above are provided inline; only use Read for files marked as large.',
     '',
+    `The current local date and time is ${describeNow()}.`,
+    'Then decide whether this note also warrants a reminder:',
+    '- Create one only for a genuine time-bound commitment: a deadline, appointment, booking,',
+    '  renewal, follow-up, or an explicit "remind me" / "don\'t forget".',
+    '- A plain fact, idea or reference needs no reminder — use null in that case.',
+    '- "due" must be an absolute LOCAL date-time in "YYYY-MM-DDTHH:mm" form, resolved against',
+    '  the current date and time above, and it must be in the future.',
+    '- If the note implies a day but no time of day, use 09:00.',
+    '- For something recurring, set "repeat" to daily, weekly, monthly or yearly; otherwise "none".',
+    '- "title" is a short imperative label (e.g. "Renew passport"), not the whole note.',
+    '',
     'Respond with ONLY a JSON object (no prose, no code fence) of exactly this shape:',
-    '{"targetFile":"<relative path>","isNew":<true|false>,"reason":"<one short sentence>","newContent":"<the complete new content of the target file>"}',
+    '{"targetFile":"<relative path>","isNew":<true|false>,"reason":"<one short sentence>",' +
+      '"newContent":"<the complete new content of the target file>",' +
+      '"reminder":{"title":"<short label>","due":"<YYYY-MM-DDTHH:mm>","repeat":"<none|daily|weekly|monthly|yearly>","reason":"<why this needs a reminder>"}}',
+    'Set "reminder" to null when no reminder is warranted.',
   ].join('\n');
+}
+
+// Validate the reminder Claude proposed. Anything malformed (or in the past) is
+// dropped rather than surfaced — a bogus alarm is worse than no alarm.
+const REPEATS = new Set(['none', 'daily', 'weekly', 'monthly', 'yearly']);
+function sanitizeReminder(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+  const due = typeof raw.due === 'string' ? raw.due.trim() : '';
+  if (!title || !due) return null;
+  // "YYYY-MM-DDTHH:mm" with no zone is parsed as local time, which is what we want.
+  const when = new Date(due);
+  if (Number.isNaN(when.getTime())) return null;
+  return {
+    title,
+    due: when.toISOString(),
+    repeat: REPEATS.has(raw.repeat) ? raw.repeat : 'none',
+    reason: typeof raw.reason === 'string' ? raw.reason.trim() : '',
+  };
 }
 
 // Run the `claude` CLI non-interactively and return its raw stdout.
@@ -492,6 +594,7 @@ ipcMain.handle('smart-check', async (_e, baseFolder, currentFile, text) => {
       reason: typeof plan.reason === 'string' ? plan.reason : '',
       newContent: plan.newContent,
       oldContent,
+      reminder: sanitizeReminder(plan.reminder),
     },
   };
 });
