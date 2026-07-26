@@ -1,0 +1,170 @@
+name: Release (macOS arm64)
+
+# Tag push -> signed, notarized release + Homebrew cask bump.
+# Manual run  -> unsigned ad-hoc build uploaded as a CI artifact, so the
+#                packaging can be smoke-tested without touching certificates.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Resolve version
+        id: v
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag=${GITHUB_REF_NAME#v}
+            if [ "$tag" != "$pkg" ]; then
+              echo "::error::tag v$tag does not match package.json version $pkg"
+              exit 1
+            fi
+          fi
+          echo "version=$pkg" >> "$GITHUB_OUTPUT"
+
+      - name: Check signing secrets
+        id: signing
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=
+          for name in CERT CERT_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            eval "value=\${$name}"
+            [ -n "$value" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::missing signing secrets:$missing — building unsigned (ad-hoc)"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (signed + notarized)
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --arm64
+
+      - name: Build (unsigned, ad-hoc)
+        if: steps.signing.outputs.signed != 'true'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npx electron-builder --mac --arm64 \
+            -c.mac.identity=- \
+            -c.mac.notarize=false \
+            -c.mac.hardenedRuntime=false
+
+      - name: Inspect the built app
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          app="dist/mac-arm64/Wisp.app"
+          plist="$app/Contents/Info.plist"
+          # Handy for keeping the cask's `depends_on macos:` honest.
+          echo "LSMinimumSystemVersion: $(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if [ "$SIGNED" = "true" ]; then
+            spctl --assess --type execute --verbose=4 "$app"
+            xcrun stapler validate "$app"
+          fi
+
+      - name: Upload dry-run artifact
+        if: steps.signing.outputs.signed != 'true' && github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisp-macos-arm64-unsigned
+          path: |
+            dist/*.dmg
+            dist/*.zip
+
+      - name: Publish release
+        if: github.ref_type == 'tag' && steps.signing.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Wisp $VERSION" \
+            --generate-notes \
+            "dist/Wisp-$VERSION-arm64.dmg" \
+            "dist/Wisp-$VERSION-arm64.zip"
+
+      # A tag built without signing secrets still publishes, but as a clearly
+      # labelled prerelease — and the cask is deliberately NOT bumped, so
+      # `brew install` never serves a build Gatekeeper will block.
+      - name: Publish unsigned prerelease
+        if: github.ref_type == 'tag' && steps.signing.outputs.signed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Wisp $VERSION (unsigned test build)" \
+            --prerelease \
+            --notes 'Unsigned, un-notarized test build — no Apple signing secrets were
+          configured when this tag was built. macOS will refuse to open it until you
+          strip the download quarantine:
+
+          ```
+          xattr -dr com.apple.quarantine /Applications/Wisp.app
+          ```
+
+          `brew install --cask wisp` does **not** serve this build: the cask is only
+          bumped for signed, notarized releases.' \
+            "dist/Wisp-$VERSION-arm64.dmg" \
+            "dist/Wisp-$VERSION-arm64.zip"
+
+      # The tag was built from a detached HEAD, so land the cask bump on the
+      # default branch — that is the ref `brew tap` actually reads.
+      - name: Bump Homebrew cask
+        if: github.ref_type == 'tag' && steps.signing.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          SHA=$(shasum -a 256 "dist/Wisp-$VERSION-arm64.dmg" | cut -d' ' -f1)
+          export SHA
+          branch=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)
+          git fetch origin "$branch"
+          git checkout -B "$branch" "origin/$branch"
+          node -e '
+            const fs = require("fs");
+            const file = "Casks/wisp.rb";
+            let src = fs.readFileSync(file, "utf8");
+            src = src.replace(/^(\s*version\s+)".*"$/m, `$1"${process.env.VERSION}"`);
+            src = src.replace(/^(\s*sha256\s+)".*"$/m, `$1"${process.env.SHA}"`);
+            fs.writeFileSync(file, src);
+          '
+          if git diff --quiet -- Casks/wisp.rb; then
+            echo "cask already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "cask: wisp $VERSION" -- Casks/wisp.rb
+          git push origin "$branch"

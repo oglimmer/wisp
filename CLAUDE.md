@@ -19,8 +19,9 @@ Electron needs (JIT, unsigned executable memory, library validation off).
 `.github/workflows/release.yml` runs on `v*` tags: it checks the tag matches `package.json`'s version,
 builds signed + notarized (certs and Apple credentials come from repo secrets), publishes a GitHub
 release, then rewrites `version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the
-tap users install from. A manual `workflow_dispatch` run with no secrets present falls back to an
-unsigned ad-hoc build uploaded as a CI artifact, so packaging can be tested without certificates.
+tap users install from. Without signing secrets the build still happens, ad-hoc signed instead: a
+`workflow_dispatch` run uploads it as a CI artifact, a tag publishes it as a prerelease. Both skip the
+cask bump, so `brew install` only ever serves a signed, notarized build.
 
 Two packaging-specific gotchas worth remembering:
 

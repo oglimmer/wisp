@@ -90,6 +90,11 @@ The tag must match `package.json`'s version; CI fails fast otherwise. The workfl
 signs, notarizes, attaches the `.dmg` and `.zip` to a GitHub release, and commits the matching
 cask bump to the default branch.
 
+If the signing secrets below are **not** configured, a tagged build still publishes — but as an
+unsigned prerelease, and the cask is left alone, so `brew install --cask wisp` never serves a build
+Gatekeeper would block. Opening an unsigned build needs
+`xattr -dr com.apple.quarantine /Applications/Wisp.app`.
+
 These repository secrets must be set for a tagged build to succeed:
 
 | Secret | What it is |
