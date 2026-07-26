@@ -47,11 +47,25 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # Test each variable directly. This used to look them up indirectly with
+          # `eval "value=\${$name}"`, which silently reported a secret as missing
+          # whenever its value began with `#` — bash took the rest of the line as a
+          # comment — and would have tried to *run* the tail of any value containing
+          # a space. Never round-trip a secret through eval.
           missing=
-          for name in CERT CERT_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            eval "value=\${$name}"
-            [ -n "$value" ] || missing="$missing $name"
-          done
+          check() {
+            if [ -n "$2" ]; then
+              echo "$1: set"
+            else
+              echo "$1: MISSING"
+              missing="$missing $1"
+            fi
+          }
+          check MACOS_CERTIFICATE "$CERT"
+          check MACOS_CERTIFICATE_PASSWORD "$CERT_PASSWORD"
+          check APPLE_ID "$APPLE_ID"
+          check APPLE_APP_SPECIFIC_PASSWORD "$APPLE_APP_SPECIFIC_PASSWORD"
+          check APPLE_TEAM_ID "$APPLE_TEAM_ID"
           if [ -n "$missing" ]; then
             echo "::warning::missing signing secrets:$missing — building unsigned (ad-hoc)"
             echo "signed=false" >> "$GITHUB_OUTPUT"

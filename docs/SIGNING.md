@@ -104,6 +104,15 @@ base64 -i wisp-signing.p12 | tr -d '\n' > wisp-signing.p12.base64
 
 The `tr -d '\n'` matters — a wrapped, multi-line value trips up some CI setups.
 
+Check the password you chose actually opens the file, before it goes anywhere near CI:
+
+```bash
+openssl pkcs12 -in wisp-signing.p12 -nokeys -noout   # prompts for the password
+```
+
+Silence means it opened. `Mac verify error: invalid password?` means the password is wrong — and a
+wrong or empty `MACOS_CERTIFICATE_PASSWORD` in the repo fails much later and far less clearly.
+
 ---
 
 ## Step 3 — Create an app-specific password for notarization
@@ -202,6 +211,7 @@ warning on a machine that has never run it before, it's done.
 | Symptom | Cause |
 |---------|-------|
 | `No identity found` / `skipped macOS application code signing` | `MACOS_CERTIFICATE` is empty, truncated, or not valid base64. Re-encode with the `tr -d '\n'` pipe. |
+| Workflow warns `missing signing secrets` for a secret `gh secret list` shows | The secret exists but its value is empty — pressing Return at `gh secret set`'s hidden prompt stores an empty string just as happily as a real one. Set it again and watch for the confirmation line. |
 | `The specified item could not be found in the keychain` | The `.p12` was exported without its private key. Redo step 2 and check for the nested key. |
 | `Team is not yet configured for notarization` | Membership isn't fully active, or there are unsigned agreements — log into App Store Connect and accept any pending contracts. |
 | `HTTP status code: 401` from notarytool | Wrong app-specific password, or the Apple ID isn't a member of the team whose ID you supplied. |
