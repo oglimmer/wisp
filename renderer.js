@@ -181,6 +181,28 @@ function renderMarkdown() {
     // marked failed to load — fall back to showing the source as-is.
     renderedEl.textContent = editorEl.value || '';
   }
+  hydrateImages();
+}
+
+// marked emits <img src="images/foo.png"> with vault-relative paths, but the app's
+// file:// origin + CSP won't load those directly. For each local image, ask the
+// main process to resolve it (relative to the open file) and inline it as a data
+// URL. Remote (http/data) sources are left alone. Captures the file the render was
+// for so a stale async result from a previous file can't paint over a new one.
+function hydrateImages() {
+  const forFile = currentFile;
+  renderedEl.querySelectorAll('img').forEach(async (img) => {
+    const raw = img.getAttribute('src') || '';
+    if (!raw || /^(https?:|data:)/i.test(raw)) return;
+    const res = await api.readImage(baseFolder, forFile, raw);
+    if (currentFile !== forFile) return; // file switched while we were loading
+    if (res && res.ok) {
+      img.src = res.dataUrl;
+    } else {
+      img.classList.add('img-missing');
+      img.title = 'Image not found: ' + raw;
+    }
+  });
 }
 
 // Show the right pane for the current file + mode. The toggle is only offered
@@ -716,6 +738,89 @@ renderedEl.addEventListener('click', (e) => {
   const href = a.getAttribute('href');
   if (href) api.openExternal(href);
 });
+
+// ---- Drag & drop images ----
+// Dropping image files copies them into the vault's images/ folder and inserts a
+// Markdown reference. In raw view the ref lands at the cursor; in preview view
+// (where there's no cursor) it's appended to the end of the buffer.
+const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+
+function insertAtCursor(text) {
+  const start = editorEl.selectionStart ?? editorEl.value.length;
+  const end = editorEl.selectionEnd ?? editorEl.value.length;
+  editorEl.value = editorEl.value.slice(0, start) + text + editorEl.value.slice(end);
+  const pos = start + text.length;
+  editorEl.selectionStart = editorEl.selectionEnd = pos;
+}
+
+async function handleDroppedFiles(fileList) {
+  if (!currentFile) {
+    setStatus('Open a file before adding images.', true);
+    return;
+  }
+  const images = Array.from(fileList).filter(
+    (f) => /^image\//.test(f.type) || IMAGE_RE.test(f.name)
+  );
+  if (!images.length) return;
+
+  let added = 0;
+  for (const file of images) {
+    let srcPath = '';
+    try {
+      srcPath = api.getPathForFile(file);
+    } catch {}
+    if (!srcPath) {
+      setStatus('Could not read the dropped file.', true);
+      continue;
+    }
+    const res = await api.importImage(baseFolder, currentFile, srcPath, file.name);
+    if (!res.ok) {
+      setStatus('Error: ' + res.error, true);
+      continue;
+    }
+    const alt = file.name.replace(/\.[^.]+$/, '');
+    const snippet = `![${alt}](${res.ref})`;
+    if (viewMode === 'raw' || !isMarkdown(currentFile)) {
+      insertAtCursor(snippet + '\n');
+    } else {
+      const sep = !editorEl.value || editorEl.value.endsWith('\n') ? '' : '\n';
+      editorEl.value += sep + snippet + '\n';
+    }
+    added++;
+  }
+
+  if (added) {
+    dirty = true;
+    setStatus('Saving…');
+    scheduleSave();
+    if (viewMode === 'preview' && isMarkdown(currentFile)) renderMarkdown();
+    await refreshTree(); // surface the new images/ folder + files
+  }
+}
+
+function setupDrop(el) {
+  el.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    el.classList.add('drag-over');
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (e.target === el) el.classList.remove('drag-over');
+  });
+  el.addEventListener('drop', (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    el.classList.remove('drag-over');
+    handleDroppedFiles(e.dataTransfer.files);
+  });
+}
+setupDrop(editorEl);
+setupDrop(renderedEl);
+
+// Stop a stray drop elsewhere in the window from navigating the app to the file.
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
 
 // ---- Resizable sidebar / editor split ----
 (function setupDivider() {

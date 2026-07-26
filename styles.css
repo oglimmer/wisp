@@ -587,6 +587,26 @@ button:hover {
 
 .markdown-body img {
   max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* An image reference that couldn't be resolved on disk. */
+.markdown-body img.img-missing {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  background: var(--bg-active);
+}
+
+/* Highlight the editor / preview while an image is being dragged over it. */
+.editor.drag-over,
+.rendered.drag-over {
+  outline: 2px dashed var(--accent, #6c9);
+  outline-offset: -6px;
+  background: var(--bg-hover);
 }
 
 /* ---- Modal (prompt replacement) ---- */

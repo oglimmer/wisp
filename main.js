@@ -26,6 +26,20 @@ function saveConfig(cfg) {
 // Directories we never want to show in the tree.
 const IGNORED = new Set(['.git', 'node_modules', '.obsidian', '.DS_Store']);
 
+// Image extensions we can embed (preview) and import (drag & drop), mapped to
+// the MIME type used when inlining them as data URLs.
+const IMAGE_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.avif': 'image/avif',
+};
+
 // Recursively build a folder/file tree rooted at dirPath.
 async function buildTree(dirPath) {
   let entries;
@@ -219,6 +233,68 @@ ipcMain.handle('rename-path', async (_e, baseFolder, oldPath, newName) => {
     if (fs.existsSync(target)) return { ok: false, error: 'Target already exists' };
     await fsp.rename(oldPath, target);
     return { ok: true, path: target };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// ---- Images ----
+
+// Resolve a Markdown image reference (relative to the open file) and return it as
+// a base64 data URL. The renderer swaps these in after rendering because the
+// app's file:// origin + CSP won't load vault-relative image paths directly.
+// Only local paths that stay inside the vault are served.
+ipcMain.handle('read-image', async (_e, baseFolder, currentFile, src) => {
+  try {
+    if (!baseFolder || !src) return { ok: false };
+    let ref = String(src).trim();
+    if (/^(https?:|data:|file:)/i.test(ref)) return { ok: false }; // not a local ref
+    try {
+      ref = decodeURIComponent(ref);
+    } catch {}
+    const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
+    const target = path.resolve(fromDir, ref);
+    if (!isInside(baseFolder, target)) return { ok: false };
+    const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
+    if (!mime) return { ok: false };
+    const buf = await fsp.readFile(target);
+    return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
+  } catch {
+    return { ok: false };
+  }
+});
+
+// Copy a dropped image file into the vault's `images/` folder (deduping the name)
+// and return a Markdown reference relative to the open file so it works both in
+// the raw source and the rendered preview, and stays portable if the vault moves.
+ipcMain.handle('import-image', async (_e, baseFolder, currentFile, srcPath, originalName) => {
+  try {
+    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
+    if (!srcPath || !fs.existsSync(srcPath)) return { ok: false, error: 'Source file not found.' };
+    const ext = path.extname(originalName || srcPath).toLowerCase();
+    if (!IMAGE_MIME[ext]) return { ok: false, error: 'Unsupported image type.' };
+
+    const imagesDir = path.join(baseFolder, 'images');
+    await fsp.mkdir(imagesDir, { recursive: true });
+
+    // URL-safe base name (avoids escaping headaches in Markdown refs / data-url resolution).
+    let base =
+      path
+        .basename(originalName || srcPath, path.extname(originalName || srcPath))
+        .replace(/[^a-zA-Z0-9-_]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'image';
+    let name = base + ext;
+    let n = 1;
+    while (fs.existsSync(path.join(imagesDir, name))) {
+      name = `${base}-${n}${ext}`;
+      n++;
+    }
+    const dest = path.join(imagesDir, name);
+    await fsp.copyFile(srcPath, dest);
+
+    const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
+    const ref = path.relative(fromDir, dest).split(path.sep).join('/');
+    return { ok: true, path: dest, ref };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

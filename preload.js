@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // Safe, minimal API exposed to the renderer.
 contextBridge.exposeInMainWorld('api', {
@@ -21,4 +21,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('rename-path', baseFolder, oldPath, newName),
   // Open a link from the Markdown preview in the default browser.
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  // Images: resolve a vault-relative ref to a data URL for preview, and import a
+  // dropped file into the vault. getPathForFile turns a dropped File into its
+  // absolute path (Electron 32 removed File.path; webUtils is the replacement).
+  readImage: (baseFolder, currentFile, src) =>
+    ipcRenderer.invoke('read-image', baseFolder, currentFile, src),
+  importImage: (baseFolder, currentFile, srcPath, originalName) =>
+    ipcRenderer.invoke('import-image', baseFolder, currentFile, srcPath, originalName),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
 });
