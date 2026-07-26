@@ -102,7 +102,7 @@ enrollment, creating the certificate, exporting the `.p12`, and the app-specific
 | Secret | What it is |
 |--------|------------|
 | `MACOS_CERTIFICATE` | base64 of the *Developer ID Application* `.p12` |
-| `MACOS_CERTIFICATE_PASSWORD` | password used when exporting that `.p12` |
+| `MACOS_CERTIFICATE_PASSWORD` | password used when exporting that `.p12` — may be empty if you exported without one |
 | `APPLE_ID` | Apple ID used for notarization |
 | `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password for that Apple ID |
 | `APPLE_TEAM_ID` | 10-character Apple Developer team ID |

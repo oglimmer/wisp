@@ -96,6 +96,14 @@ CI has no keychain, so the certificate *and its private key* have to travel as a
 4. Set a strong password when prompted. This becomes `MACOS_CERTIFICATE_PASSWORD`. It is not
    recoverable — store it in your password manager now.
 
+Keychain Access also lets you press Return and export with **no password**, and that works: the
+workflow treats `MACOS_CERTIFICATE_PASSWORD` as optional and electron-builder passes an empty
+password through to `security import`. The trade-off is local, not in CI — both the certificate and
+its password live in the same GitHub secret store, so the password protects nothing there, but an
+unprotected `.p12` on disk *is* a complete signing identity for anyone who can read the file. If you
+export without a password, treat the file like a private key: keep it encrypted or delete it once the
+secret is set, and re-export from Keychain when you need it again.
+
 Then base64-encode it, because GitHub secrets hold text:
 
 ```bash
@@ -110,7 +118,7 @@ Check the password you chose actually opens the file, before it goes anywhere ne
 /usr/bin/openssl pkcs12 -in wisp-signing.p12 -nokeys -noout   # prompts for the password
 ```
 
-Silence means it opened. `Mac verify error: invalid password?` means the password is wrong — and a
+Press Return at the prompt if you exported without one. Silence means it opened. `Mac verify error: invalid password?` means the password is wrong — and a
 wrong or empty `MACOS_CERTIFICATE_PASSWORD` in the repo fails much later and far less clearly.
 
 Use the **`/usr/bin/` path** deliberately. That one is LibreSSL; a Homebrew `openssl@3` earlier on
@@ -224,7 +232,7 @@ warning on a machine that has never run it before, it's done.
 | Symptom | Cause |
 |---------|-------|
 | `No identity found` / `skipped macOS application code signing` | `MACOS_CERTIFICATE` is empty, truncated, or not valid base64. Re-encode with the `tr -d '\n'` pipe. |
-| Workflow warns `missing signing secrets` for a secret `gh secret list` shows | The secret exists but its value is empty — pressing Return at `gh secret set`'s hidden prompt stores an empty string just as happily as a real one. Set it again and watch for the confirmation line. |
+| Workflow warns `missing signing secrets` for a secret `gh secret list` shows | The secret exists but its value is empty — pressing Return at `gh secret set`'s hidden prompt stores an empty string just as happily as a real one. Set it again and watch for the confirmation line. (`MACOS_CERTIFICATE_PASSWORD` is exempt: empty is legitimate there.) |
 | `The specified item could not be found in the keychain` | The `.p12` was exported without its private key. Redo step 2 and check for the nested key. |
 | `Team is not yet configured for notarization` | Membership isn't fully active, or there are unsigned agreements — log into App Store Connect and accept any pending contracts. |
 | `HTTP status code: 401` from notarytool | Wrong app-specific password, or the Apple ID isn't a member of the team whose ID you supplied. |

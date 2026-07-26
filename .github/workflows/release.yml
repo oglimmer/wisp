@@ -62,10 +62,18 @@ jobs:
             fi
           }
           check MACOS_CERTIFICATE "$CERT"
-          check MACOS_CERTIFICATE_PASSWORD "$CERT_PASSWORD"
           check APPLE_ID "$APPLE_ID"
           check APPLE_APP_SPECIFIC_PASSWORD "$APPLE_APP_SPECIFIC_PASSWORD"
           check APPLE_TEAM_ID "$APPLE_TEAM_ID"
+          # Deliberately not required. Keychain Access lets you export a .p12 with no
+          # password at all, and electron-builder handles that: an empty CSC_KEY_PASSWORD
+          # is passed through to `security import` as "". Demanding a non-empty value here
+          # would reject a perfectly valid identity.
+          if [ -n "$CERT_PASSWORD" ]; then
+            echo "MACOS_CERTIFICATE_PASSWORD: set"
+          else
+            echo "MACOS_CERTIFICATE_PASSWORD: empty (fine if the .p12 was exported without one)"
+          fi
           if [ -n "$missing" ]; then
             echo "::warning::missing signing secrets:$missing — building unsigned (ad-hoc)"
             echo "signed=false" >> "$GITHUB_OUTPUT"
