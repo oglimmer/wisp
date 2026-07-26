@@ -67,7 +67,7 @@ function createWindow() {
     height: 800,
     minWidth: 640,
     minHeight: 400,
-    title: 'Raw Notes',
+    title: 'Wisp',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

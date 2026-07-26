@@ -1,4 +1,4 @@
-# Raw Notes
+# Wisp
 
 A minimal, Obsidian-like note editor built with [Electron](https://www.electronjs.org/). It opens a base folder ("vault"), shows a folder/file tree on the left, and edits files as **raw text** on the right. Every text file is assumed to be Markdown, but nothing is rendered — you always see and edit the plain source.
 

@@ -11,7 +11,7 @@ There is no build step, linter, or test suite configured.
 
 ## Architecture
 
-Raw Notes is a single-window Electron app: a folder/file tree on the left, a raw-text editor on the right. It treats every text file as Markdown but never renders it — the source is always shown and edited as plain text.
+Wisp is a single-window Electron app: a folder/file tree on the left, a raw-text editor on the right. It treats every text file as Markdown but never renders it — the source is always shown and edited as plain text.
 
 The whole app is built around Electron's **three-context security model**, and understanding the boundary between the contexts is the key to working here:
 
