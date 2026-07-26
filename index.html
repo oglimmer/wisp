@@ -18,7 +18,7 @@
 
     <!-- Main workspace -->
     <div id="workspace" class="workspace hidden">
-      <aside class="sidebar">
+      <aside id="sidebar" class="sidebar">
         <div class="sidebar-header">
           <span id="vault-name" class="vault-name" title="">Vault</span>
           <div class="sidebar-actions">
@@ -31,7 +31,33 @@
         <div id="tree" class="tree"></div>
       </aside>
 
+      <!-- Drag handle to resize the sidebar / editor split -->
+      <div id="divider" class="divider" title="Drag to resize"></div>
+
       <main class="editor-pane">
+        <!-- Smart insert: jot a note, let Claude file it into the right place -->
+        <div id="smart-insert" class="smart-insert">
+          <textarea
+            id="smart-input"
+            class="smart-input"
+            spellcheck="false"
+            placeholder="Jot a note here — Check previews where Claude will file it, Add applies it."
+          ></textarea>
+          <div class="smart-bar">
+            <button id="smart-check-btn" title="Preview where this note will be filed">Check</button>
+            <button id="smart-add-btn" title="File this note into your vault">Add</button>
+            <span id="smart-status" class="smart-status"></span>
+          </div>
+        </div>
+
+        <!-- Drag handle: resize the note box above -->
+        <div id="divider-input" class="hdivider" title="Drag to resize"></div>
+
+        <div id="smart-preview" class="smart-preview hidden"></div>
+
+        <!-- Drag handle: resize the preview above (only shown with a preview) -->
+        <div id="divider-preview" class="hdivider hidden" title="Drag to resize"></div>
+
         <div class="editor-header">
           <span id="current-file" class="current-file">No file open</span>
           <span id="status" class="status"></span>

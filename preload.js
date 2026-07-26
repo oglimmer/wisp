@@ -11,6 +11,11 @@ contextBridge.exposeInMainWorld('api', {
   writeFileSync: (filePath, content) => ipcRenderer.sendSync('write-file-sync', filePath, content),
   createFile: (baseFolder, relPath) => ipcRenderer.invoke('create-file', baseFolder, relPath),
   createFolder: (baseFolder, relPath) => ipcRenderer.invoke('create-folder', baseFolder, relPath),
+  // Smart insert: ask Claude where a note belongs, then apply the result.
+  smartCheck: (baseFolder, currentFile, text) =>
+    ipcRenderer.invoke('smart-check', baseFolder, currentFile, text),
+  smartApply: (baseFolder, relPath, content) =>
+    ipcRenderer.invoke('smart-apply', baseFolder, relPath, content),
   deletePath: (baseFolder, target) => ipcRenderer.invoke('delete-path', baseFolder, target),
   renamePath: (baseFolder, oldPath, newName) =>
     ipcRenderer.invoke('rename-path', baseFolder, oldPath, newName),

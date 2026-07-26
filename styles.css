@@ -94,12 +94,26 @@ button:hover {
   width: 280px;
   min-width: 160px;
   max-width: 600px;
+  flex-shrink: 0;
   background: var(--bg-alt);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  resize: horizontal;
   overflow: hidden;
+}
+
+/* ---- Resizable split ---- */
+.divider {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.12s;
+}
+
+.divider:hover,
+.divider.dragging {
+  background: var(--accent);
 }
 
 .sidebar-header {
@@ -194,12 +208,171 @@ button:hover {
   margin-left: 12px;
 }
 
+/* ---- Smart insert ---- */
+.smart-insert {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 110px; /* resized by #divider-input */
+  overflow: hidden;
+}
+
+.smart-input {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 10px;
+}
+
+/* ---- Row divider (vertical stacking in the editor pane) ---- */
+.hdivider {
+  height: 5px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: var(--border);
+  transition: background 0.12s;
+}
+
+.hdivider:hover,
+.hdivider.dragging {
+  background: var(--accent);
+}
+
+.smart-input:focus {
+  border-color: var(--accent);
+}
+
+.smart-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#smart-add-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#smart-add-btn:hover {
+  filter: brightness(1.1);
+  background: var(--accent);
+}
+
+.smart-bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  filter: none;
+}
+
+.smart-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.smart-status.error {
+  color: #ff6b6b;
+}
+
+.smart-preview {
+  flex-shrink: 0;
+  height: 200px; /* resized by #divider-preview */
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px;
+  overflow: auto;
+}
+
+.sp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.sp-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.sp-badge.sp-new {
+  background: #1f3d2a;
+  color: #7ee2a8;
+}
+
+.sp-path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-reason {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.sp-diff {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sp-line {
+  padding: 0 2px;
+}
+.sp-line.sp-add {
+  background: rgba(46, 160, 67, 0.18);
+  color: #7ee2a8;
+}
+.sp-line.sp-del {
+  background: rgba(248, 81, 73, 0.15);
+  color: #ff9a93;
+}
+.sp-line.sp-ctx {
+  color: var(--text-dim);
+}
+.sp-line.sp-gap {
+  color: var(--text-dim);
+  opacity: 0.6;
+  font-style: italic;
+}
+
 /* ---- Editor ---- */
 .editor-pane {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
 }
 
 .editor-header {
@@ -228,6 +401,7 @@ button:hover {
 
 .editor {
   flex: 1;
+  min-height: 0;
   width: 100%;
   resize: none;
   border: none;
@@ -243,6 +417,67 @@ button:hover {
 
 .editor:disabled {
   color: var(--text-dim);
+}
+
+/* ---- Modal (prompt replacement) ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.modal-box {
+  min-width: 360px;
+  max-width: 80vw;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.modal-title {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.modal-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.modal-input:focus {
+  border-color: var(--accent);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.modal-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.modal-primary:hover {
+  filter: brightness(1.1);
+  background: var(--accent);
 }
 
 /* ---- Scrollbars ---- */

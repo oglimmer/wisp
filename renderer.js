@@ -21,6 +21,17 @@ const editorEl = document.getElementById('editor');
 const currentFileEl = document.getElementById('current-file');
 const statusEl = document.getElementById('status');
 const vaultNameEl = document.getElementById('vault-name');
+const smartInputEl = document.getElementById('smart-input');
+const smartCheckBtn = document.getElementById('smart-check-btn');
+const smartAddBtn = document.getElementById('smart-add-btn');
+const smartStatusEl = document.getElementById('smart-status');
+const smartPreviewEl = document.getElementById('smart-preview');
+const dividerPreviewEl = document.getElementById('divider-preview');
+
+// Smart-insert state: the last plan Claude returned, and the exact note text it
+// was computed for. If the text changes, the plan is stale and Add re-checks.
+let smartPlan = null;
+let smartPlanFor = null;
 
 // ---- Startup ----
 init();
@@ -50,6 +61,12 @@ async function openFolder(folder) {
   currentFileEl.textContent = 'No file open';
   editorEl.value = '';
   editorEl.disabled = true;
+  // Drop any smart-insert preview carried over from a previous folder.
+  smartInputEl.value = '';
+  smartPlan = null;
+  smartPlanFor = null;
+  hideSmartPreview();
+  setSmartStatus('');
   await refreshTree();
 }
 
@@ -219,9 +236,83 @@ function relativePath(filePath) {
   return rel || filePath;
 }
 
+// A promise-based text-input dialog. Electron does NOT support window.prompt()
+// (it silently returns null), so anything that needs typed input uses this.
+// Resolves to the trimmed string, or null if cancelled / left empty.
+function promptModal(title, defaultValue = '') {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+
+    const box = document.createElement('div');
+    box.className = 'modal-box';
+
+    const label = document.createElement('div');
+    label.className = 'modal-title';
+    label.textContent = title;
+
+    const input = document.createElement('input');
+    input.className = 'modal-input';
+    input.type = 'text';
+    input.value = defaultValue;
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    const okBtn = document.createElement('button');
+    okBtn.textContent = 'OK';
+    okBtn.className = 'modal-primary';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+
+    box.appendChild(label);
+    box.appendChild(input);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    let done = false;
+    function close(value) {
+      if (done) return;
+      done = true;
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(value);
+    }
+    function submit() {
+      const v = input.value.trim();
+      close(v || null);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close(null);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    }
+
+    okBtn.addEventListener('click', submit);
+    cancelBtn.addEventListener('click', () => close(null));
+    // Click on the dimmed backdrop (but not the box) cancels.
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) close(null);
+    });
+    document.addEventListener('keydown', onKey, true);
+
+    // Focus and preselect the base name (before the extension) for fast editing.
+    input.focus();
+    const dot = defaultValue.lastIndexOf('.');
+    if (dot > 0) input.setSelectionRange(0, dot);
+    else input.select();
+  });
+}
+
 // ---- Toolbar actions ----
 async function newFile() {
-  const name = window.prompt('New file name (e.g. notes.md or folder/note.md):', 'untitled.md');
+  const name = await promptModal('New file name (e.g. notes.md or folder/note.md):', 'untitled.md');
   if (!name) return;
   const res = await api.createFile(baseFolder, name);
   if (!res.ok) {
@@ -235,7 +326,7 @@ async function newFile() {
 }
 
 async function newFolder() {
-  const name = window.prompt('New folder name:', 'new-folder');
+  const name = await promptModal('New folder name:', 'new-folder');
   if (!name) return;
   const res = await api.createFolder(baseFolder, name);
   if (!res.ok) {
@@ -304,7 +395,7 @@ function removeContextMenu() {
 document.addEventListener('click', removeContextMenu);
 
 async function renameNode(node) {
-  const newName = window.prompt('Rename to:', node.name);
+  const newName = await promptModal('Rename to:', node.name);
   if (!newName || newName === node.name) return;
   // Flush first so the pending write lands on the old path before it moves,
   // rather than re-creating the old file after the rename.
@@ -346,12 +437,323 @@ function cssEscape(str) {
   return str.replace(/["\\]/g, '\\$&');
 }
 
+// ---- Smart insert ----
+
+function setSmartStatus(text, isError) {
+  smartStatusEl.textContent = text || '';
+  smartStatusEl.classList.toggle('error', !!isError);
+}
+
+// Show / hide the preview panel and its resize divider together.
+function showSmartPreview() {
+  smartPreviewEl.classList.remove('hidden');
+  dividerPreviewEl.classList.remove('hidden');
+}
+function hideSmartPreview() {
+  smartPreviewEl.classList.add('hidden');
+  dividerPreviewEl.classList.add('hidden');
+}
+
+// Toggle the busy state: disable inputs and show a message while Claude runs.
+function smartBusy(busy, message) {
+  smartInputEl.disabled = busy;
+  smartCheckBtn.disabled = busy;
+  smartAddBtn.disabled = busy;
+  if (message) setSmartStatus(message);
+}
+
+// Ask Claude where the current note belongs. Renders a preview; writes nothing.
+// Returns the plan on success, or null on failure / empty input.
+async function smartCheck() {
+  const text = smartInputEl.value.trim();
+  if (!text) {
+    setSmartStatus('Type a note first.', true);
+    return null;
+  }
+  // Make sure the open file's latest edits are on disk before Claude reads it.
+  await flushSave();
+
+  smartBusy(true, 'Checking…');
+  let res;
+  try {
+    res = await api.smartCheck(baseFolder, currentFile, text);
+  } finally {
+    smartBusy(false);
+  }
+
+  if (!res.ok) {
+    smartPlan = null;
+    smartPlanFor = null;
+    hideSmartPreview();
+    setSmartStatus(res.error, true);
+    return null;
+  }
+  smartPlan = res.plan;
+  smartPlanFor = text;
+  renderPreview(res.plan);
+  setSmartStatus('Review below, then Add to apply.');
+  return res.plan;
+}
+
+// File the note. Re-checks automatically if there's no fresh plan for this text.
+async function smartAdd() {
+  const text = smartInputEl.value.trim();
+  if (!text) {
+    setSmartStatus('Type a note first.', true);
+    return;
+  }
+  // Flush any pending editor change first so applying can't be clobbered by a
+  // later autosave/flush of the currently-open file.
+  await flushSave();
+
+  let plan = smartPlan;
+  if (!plan || smartPlanFor !== text) {
+    plan = await smartCheck();
+    if (!plan) return;
+  }
+
+  smartBusy(true, 'Adding…');
+  let res;
+  try {
+    res = await api.smartApply(baseFolder, plan.targetFile, plan.newContent);
+  } finally {
+    smartBusy(false);
+  }
+  if (!res.ok) {
+    setSmartStatus(res.error, true);
+    return;
+  }
+
+  smartInputEl.value = '';
+  smartPlan = null;
+  smartPlanFor = null;
+  hideSmartPreview();
+  setSmartStatus('Added to ' + plan.targetFile);
+
+  // Reveal and open the file we just wrote so the change is visible.
+  expandAncestors(res.path);
+  await refreshTree();
+  const row = treeEl.querySelector(`[data-path="${cssEscape(res.path)}"]`);
+  await openFile(res.path, row);
+}
+
+// A checked plan is only valid for the text it was computed from; once the note
+// changes, drop the stale preview so Add re-checks rather than mis-filing.
+function invalidateSmartPlan() {
+  if (smartPlanFor !== null && smartInputEl.value.trim() !== smartPlanFor) {
+    smartPlan = null;
+    smartPlanFor = null;
+    hideSmartPreview();
+    setSmartStatus('');
+  }
+}
+
+// Build a preview: target file, a NEW/EXISTING badge, Claude's reason, and a diff.
+function renderPreview(plan) {
+  smartPreviewEl.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'sp-head';
+  const badge = document.createElement('span');
+  badge.className = 'sp-badge' + (plan.isNew ? ' sp-new' : '');
+  badge.textContent = plan.isNew ? 'NEW FILE' : 'EXISTING';
+  const pathEl = document.createElement('span');
+  pathEl.className = 'sp-path';
+  pathEl.textContent = plan.targetFile;
+  head.appendChild(badge);
+  head.appendChild(pathEl);
+  smartPreviewEl.appendChild(head);
+
+  if (plan.reason) {
+    const reason = document.createElement('div');
+    reason.className = 'sp-reason';
+    reason.textContent = plan.reason;
+    smartPreviewEl.appendChild(reason);
+  }
+
+  const diff = document.createElement('pre');
+  diff.className = 'sp-diff';
+  for (const line of lineDiff(plan.oldContent || '', plan.newContent || '')) {
+    const el = document.createElement('div');
+    el.className = 'sp-line sp-' + line.type;
+    const prefix = line.type === 'add' ? '+ ' : line.type === 'del' ? '- ' : line.type === 'gap' ? '' : '  ';
+    el.textContent = prefix + line.text;
+    diff.appendChild(el);
+  }
+  smartPreviewEl.appendChild(diff);
+  showSmartPreview();
+}
+
+// Line-level diff via a longest-common-subsequence table, then collapse long
+// runs of unchanged context so the preview stays focused on what changed.
+function lineDiff(a, b) {
+  const A = a.split('\n');
+  const B = b.split('\n');
+  const n = A.length;
+  const m = B.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) {
+      ops.push({ type: 'ctx', text: A[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: 'del', text: A[i] });
+      i++;
+    } else {
+      ops.push({ type: 'add', text: B[j] });
+      j++;
+    }
+  }
+  while (i < n) ops.push({ type: 'del', text: A[i++] });
+  while (j < m) ops.push({ type: 'add', text: B[j++] });
+
+  return condenseDiff(ops);
+}
+
+// Keep 2 lines of context around each change; replace larger unchanged gaps with
+// a single "⋯ N unchanged lines" marker.
+function condenseDiff(ops) {
+  const CONTEXT = 2;
+  const keep = new Array(ops.length).fill(false);
+  for (let k = 0; k < ops.length; k++) {
+    if (ops[k].type !== 'ctx') {
+      for (let d = -CONTEXT; d <= CONTEXT; d++) {
+        if (k + d >= 0 && k + d < ops.length) keep[k + d] = true;
+      }
+    }
+  }
+  const out = [];
+  let k = 0;
+  while (k < ops.length) {
+    if (keep[k]) {
+      out.push(ops[k]);
+      k++;
+    } else {
+      let count = 0;
+      while (k < ops.length && !keep[k]) {
+        count++;
+        k++;
+      }
+      out.push({ type: 'gap', text: `⋯ ${count} unchanged line${count === 1 ? '' : 's'}` });
+    }
+  }
+  return out;
+}
+
 // ---- Wire up buttons & shortcuts ----
 document.getElementById('welcome-open-btn').addEventListener('click', chooseFolder);
 document.getElementById('change-folder-btn').addEventListener('click', chooseFolder);
 document.getElementById('refresh-btn').addEventListener('click', refreshTree);
 document.getElementById('new-file-btn').addEventListener('click', newFile);
 document.getElementById('new-folder-btn').addEventListener('click', newFolder);
+smartCheckBtn.addEventListener('click', smartCheck);
+smartAddBtn.addEventListener('click', smartAdd);
+smartInputEl.addEventListener('input', invalidateSmartPlan);
+
+// ---- Resizable sidebar / editor split ----
+(function setupDivider() {
+  const divider = document.getElementById('divider');
+  const sidebar = document.getElementById('sidebar');
+  const MIN = 160;
+  const MAX = 600; // keep in sync with .sidebar min/max-width in styles.css
+
+  const clamp = (w) => Math.max(MIN, Math.min(MAX, w));
+
+  // Restore a persisted width from a previous session.
+  const saved = parseInt(localStorage.getItem('rawNotes.sidebarWidth'), 10);
+  if (!Number.isNaN(saved)) sidebar.style.width = clamp(saved) + 'px';
+
+  let dragging = false;
+
+  function onMove(e) {
+    if (!dragging) return;
+    const left = workspaceEl.getBoundingClientRect().left;
+    sidebar.style.width = clamp(e.clientX - left) + 'px';
+  }
+
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem('rawNotes.sidebarWidth', parseInt(sidebar.style.width, 10));
+  }
+
+  divider.addEventListener('mousedown', (e) => {
+    dragging = true;
+    divider.classList.add('dragging');
+    // Lock the cursor and stop text selection while dragging over the editor.
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+})();
+
+// ---- Resizable vertical stack (note box / preview / editor) ----
+// Each row divider resizes the panel directly above it by setting its height;
+// the editor is flex:1 and absorbs whatever's left. RESERVE keeps the editor
+// from being squeezed away entirely.
+function makeRowDivider(divider, panel, storageKey, minPx) {
+  const paneEl = document.querySelector('.editor-pane');
+  const RESERVE = 140;
+  const clamp = (h) =>
+    Math.max(minPx, Math.min(h, paneEl.getBoundingClientRect().height - RESERVE));
+
+  const saved = parseInt(localStorage.getItem(storageKey), 10);
+  if (!Number.isNaN(saved)) panel.style.height = clamp(saved) + 'px';
+
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+
+  divider.addEventListener('mousedown', (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startH = panel.getBoundingClientRect().height;
+    divider.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    panel.style.height = clamp(startH + (e.clientY - startY)) + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(storageKey, parseInt(panel.style.height, 10));
+  });
+}
+
+makeRowDivider(
+  document.getElementById('divider-input'),
+  document.getElementById('smart-insert'),
+  'rawNotes.inputHeight',
+  70
+);
+makeRowDivider(
+  document.getElementById('divider-preview'),
+  document.getElementById('smart-preview'),
+  'rawNotes.previewHeight',
+  60
+);
 
 window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
