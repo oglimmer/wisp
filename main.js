@@ -337,6 +337,27 @@ ipcMain.handle('read-image', async (_e, baseFolder, currentFile, src) => {
   }
 });
 
+// Open an image file picked in the tree. Same idea as `read-image`, but the target
+// is an absolute vault path rather than a Markdown reference resolved against the
+// open note — the renderer shows the picture instead of the editor showing bytes.
+ipcMain.handle('read-image-file', async (_e, baseFolder, filePath) => {
+  try {
+    if (!baseFolder || !filePath) return { ok: false, error: 'No file.' };
+    const target = path.resolve(filePath);
+    if (!isInside(baseFolder, target)) return { ok: false, error: 'Outside the vault.' };
+    const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
+    if (!mime) return { ok: false, error: 'Unsupported image type.' };
+    const buf = await fsp.readFile(target);
+    return {
+      ok: true,
+      dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+      size: buf.length,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // Copy a dropped image file into the vault's `images/` folder (deduping the name)
 // and return a Markdown reference relative to the open file so it works both in
 // the raw source and the rendered preview, and stays portable if the vault moves.

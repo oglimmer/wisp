@@ -33,6 +33,9 @@ contextBridge.exposeInMainWorld('api', {
   // absolute path (Electron 32 removed File.path; webUtils is the replacement).
   readImage: (baseFolder, currentFile, src) =>
     ipcRenderer.invoke('read-image', baseFolder, currentFile, src),
+  // An image opened from the tree, by absolute path, for the viewer pane.
+  readImageFile: (baseFolder, filePath) =>
+    ipcRenderer.invoke('read-image-file', baseFolder, filePath),
   importImage: (baseFolder, currentFile, srcPath, originalName) =>
     ipcRenderer.invoke('import-image', baseFolder, currentFile, srcPath, originalName),
   getPathForFile: (file) => webUtils.getPathForFile(file),

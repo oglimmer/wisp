@@ -30,6 +30,9 @@ const smartPreviewEl = document.getElementById('smart-preview');
 const dividerPreviewEl = document.getElementById('divider-preview');
 const renderedEl = document.getElementById('rendered');
 const wysiwygEl = document.getElementById('wysiwyg');
+const imageViewEl = document.getElementById('image-view');
+const imageViewImgEl = document.getElementById('image-view-img');
+const imageViewMetaEl = document.getElementById('image-view-meta');
 const viewToggleEl = document.getElementById('view-toggle');
 const viewRawBtn = document.getElementById('view-raw-btn');
 const viewWysBtn = document.getElementById('view-wys-btn');
@@ -234,7 +237,7 @@ function renderNode(node, depth) {
     });
   } else {
     arrow.textContent = '';
-    icon.textContent = '📄';
+    icon.textContent = isImage(node.path) ? '🖼' : '📄';
     row.addEventListener('click', () => openFile(node.path, row));
   }
 
@@ -254,6 +257,16 @@ function renderNode(node, depth) {
 // ---- Raw / Markdown view ----
 function isMarkdown(filePath) {
   return /\.(md|markdown|mdown|mkd)$/i.test(filePath || '');
+}
+
+// The image extensions the app knows about — what drag & drop imports, and what
+// opens in the viewer pane instead of the text editor. (Kept in step with
+// IMAGE_MIME in main.js, which decides what can actually be read.)
+const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+
+// Image files aren't text: opening one shows the picture, not its bytes.
+function isImage(filePath) {
+  return IMAGE_RE.test(filePath || '');
 }
 
 // Render the current editor buffer as Markdown into the preview pane.
@@ -319,6 +332,8 @@ function hydrateImages(container) {
 // non-Markdown files (and no file) always fall back to the raw textarea, and
 // WYSIWYG needs turndown to save edits back — without it, it degrades to raw.
 function effectiveViewMode() {
+  // An image file has no text to edit at all — it always shows in the viewer.
+  if (currentFile && isImage(currentFile)) return 'image';
   const md = !!currentFile && isMarkdown(currentFile);
   let mode = md ? viewMode : 'raw';
   if (mode === 'wysiwyg' && !window.TurndownService) mode = 'raw';
@@ -330,26 +345,32 @@ function activePaneEl() {
   const mode = effectiveViewMode();
   if (mode === 'wysiwyg') return wysiwygEl;
   if (mode === 'preview') return renderedEl;
+  if (mode === 'image') return imageViewEl;
   return editorEl;
 }
 
 // Show the right pane for the current file + mode. The toggle is only offered for
 // Markdown files; everything else is always edited raw.
 function applyView() {
-  const md = isMarkdown(currentFile) && !!currentFile;
   const mode = effectiveViewMode();
+  const md = mode !== 'image' && isMarkdown(currentFile) && !!currentFile;
   viewToggleEl.classList.toggle('hidden', !md);
 
   const showRaw = mode === 'raw';
   const showWys = mode === 'wysiwyg';
   const showPreview = mode === 'preview';
+  const showImage = mode === 'image';
 
   if (showWys) renderWysiwyg();
   if (showPreview) renderMarkdown();
+  // The picture itself is loaded by openFile; dropping it when the pane goes away
+  // keeps a big data URL from sitting in memory behind the next file.
+  if (!showImage) clearImageView();
 
   editorEl.classList.toggle('hidden', !showRaw);
   wysiwygEl.classList.toggle('hidden', !showWys);
   renderedEl.classList.toggle('hidden', !showPreview);
+  imageViewEl.classList.toggle('hidden', !showImage);
 
   viewRawBtn.classList.toggle('active', showRaw);
   viewWysBtn.classList.toggle('active', showWys);
@@ -374,24 +395,83 @@ function setViewMode(mode) {
   else if (viewMode === 'wysiwyg') wysiwygEl.focus();
 }
 
+// ---- Image view ----
+// Images are read as a data URL by main (same reason as the preview: the app's
+// file:// origin + CSP won't load vault paths directly) and shown read-only.
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let n = bytes / 1024;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+}
+
+// File size is known up front; the pixel dimensions only once the image decodes.
+function updateImageMeta() {
+  const size = imageViewEl.dataset.size || '';
+  const w = imageViewImgEl.naturalWidth;
+  const h = imageViewImgEl.naturalHeight;
+  imageViewMetaEl.textContent = w && h ? `${w} × ${h}${size ? ' · ' + size : ''}` : size;
+}
+
+function showImageView(filePath, res) {
+  imageViewEl.dataset.size = formatBytes(res.size);
+  imageViewImgEl.alt = filePath.split(/[\\/]/).pop() || '';
+  imageViewImgEl.src = res.dataUrl;
+  updateImageMeta();
+}
+
+function clearImageView() {
+  if (!imageViewImgEl.getAttribute('src')) return;
+  // removeAttribute rather than src='' — an empty src would count as a failed load.
+  imageViewImgEl.removeAttribute('src');
+  imageViewImgEl.alt = '';
+  imageViewMetaEl.textContent = '';
+  delete imageViewEl.dataset.size;
+}
+
+imageViewImgEl.addEventListener('load', updateImageMeta);
+imageViewImgEl.addEventListener('error', () => {
+  if (!imageViewImgEl.getAttribute('src')) return; // cleared, not broken
+  imageViewMetaEl.textContent = 'This image could not be displayed.';
+});
+
 // ---- File open / edit / save ----
 async function openFile(filePath, rowEl) {
   // Autosave means there's nothing to discard — just flush the current file first.
   await flushSave();
 
-  const res = await api.readFile(filePath);
+  // An image is fetched as a data URL and shown; only text files reach the editor.
+  const image = isImage(filePath);
+  const res = image ? await api.readImageFile(baseFolder, filePath) : await api.readFile(filePath);
   if (!res.ok) {
     setStatus('Error: ' + res.error, true);
     return;
   }
   currentFile = filePath;
-  editorEl.value = res.content;
-  editorEl.disabled = false;
   dirty = false;
+  if (image) {
+    // Keep the buffer empty and disabled: there is no text behind an image, so
+    // nothing can be typed — and no autosave can overwrite the file with text.
+    editorEl.value = '';
+    editorEl.disabled = true;
+    showImageView(filePath, res);
+  } else {
+    editorEl.value = res.content;
+    editorEl.disabled = false;
+  }
   currentFileEl.textContent = relativePath(filePath);
-  setStatus('Saved');
+  setStatus(image ? 'Read-only' : 'Saved');
   applyView();
-  if (viewMode === 'raw' || !isMarkdown(filePath)) editorEl.focus();
+  if (image) {
+    /* nothing to focus — the viewer takes no input */
+  } else if (viewMode === 'raw' || !isMarkdown(filePath)) editorEl.focus();
   else if (viewMode === 'wysiwyg') wysiwygEl.focus();
 
   document.querySelectorAll('.node-row.active').forEach((el) => el.classList.remove('active'));
@@ -669,8 +749,13 @@ async function renameNode(node) {
     return;
   }
   if (currentFile === node.path) {
+    const wasImage = isImage(node.path);
     currentFile = res.path;
     currentFileEl.textContent = relativePath(res.path);
+    // A rename can change what kind of file this is (image ↔ text), and with it
+    // which pane should be showing — re-open rather than leave the old one up.
+    if (wasImage !== isImage(res.path)) await openFile(res.path);
+    else applyView();
   }
   await refreshTree();
 }
@@ -1908,7 +1993,8 @@ function refreshFind(anchor) {
 
   const mode = effectiveViewMode();
   const query = findInputEl.value;
-  if (query) {
+  // 'image' is the one mode with nothing to search — the pane holds a picture.
+  if (query && mode !== 'image') {
     findMatches = mode === 'raw' ? findInText(editorEl.value, query) : findInDom(activePaneEl(), query);
   }
   if (findMatches.length) {
@@ -1958,7 +2044,9 @@ function selectionSeed() {
 function openFind(withReplace) {
   // Replace rewrites the Markdown source; the visual panes are projections of it,
   // so switch to the buffer itself rather than offering a control that can't work.
-  if (withReplace && currentFile && effectiveViewMode() !== 'raw') {
+  // (Not for an image: there's no source buffer behind it to switch to.)
+  const mode = effectiveViewMode();
+  if (withReplace && currentFile && mode !== 'raw' && mode !== 'image') {
     setViewMode('raw');
     setStatus('Switched to Raw view to replace');
   }
@@ -2111,7 +2199,6 @@ renderedEl.addEventListener('click', (e) => {
 // Dropping image files copies them into the vault's images/ folder and inserts a
 // Markdown reference. In raw view the ref lands at the cursor; in preview view
 // (where there's no cursor) it's appended to the end of the buffer.
-const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
 
 function insertAtCursor(text) {
   const start = editorEl.selectionStart ?? editorEl.value.length;
@@ -2269,6 +2356,11 @@ async function analyzeImported(imports, forFile) {
 async function handleDroppedFiles(fileList, dropRange) {
   if (!currentFile) {
     setStatus('Open a file before adding images.', true);
+    return;
+  }
+  // An image is open, not a note — there's no buffer to insert a reference into.
+  if (isImage(currentFile)) {
+    setStatus('Open a note before adding images.', true);
     return;
   }
   const images = Array.from(fileList).filter(

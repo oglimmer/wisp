@@ -89,6 +89,13 @@ Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two thin
 
 - **Preview embeds via data URLs.** `marked` emits `<img src="…">` with vault-relative paths the page can't load directly. After every render, `hydrateImages()` (renderer) asks the `read-image` handler (main) to resolve each local `src` **relative to the open file**, then inlines it as a base64 `data:` URL. So CSP stays tight (`img-src 'self' data:`) and all disk access stays in main. Remote (`http(s)`/`data:`) sources are left untouched; unresolvable refs get an `.img-missing` marker.
 - **Drag & drop imports.** Dropping image files onto the editor (or preview) copies each into the vault's `images/` folder via the `import-image` handler (name-deduped, path-guarded) and inserts a reference to the open file — at the cursor in Raw view; in the WYSIWYG **Editor** an `<img>` node is inserted at the drop point (`caretRangeFromPoint`) and hydrated in place; in read-only Preview (no cursor) the Markdown ref is appended to the buffer. Dropped `File`s are turned into absolute paths with `webUtils.getPathForFile` (Electron 32 removed `File.path`), exposed as `api.getPathForFile` from preload. A window-level `drop`/`dragover` `preventDefault` stops stray drops from navigating the app away.
+- **Clicking an image in the tree shows the picture.** An image file has no text behind it, so
+  `openFile()` routes it past `read-file` to `read-image-file` (main resolves the absolute vault path
+  to a data URL, same guard and MIME table as `read-image`) and shows it in the read-only `#image-view`
+  pane. `effectiveViewMode()` reports `'image'` for it — that one derived mode hides the Raw/Editor/
+  Preview toggle, keeps the buffer empty and the textarea disabled (so no autosave can write text over
+  a `.png`), turns find into "no results", and refuses an image drop for want of a buffer to reference
+  it from. `applyView()` drops the data URL whenever the pane goes away.
 - **Every import is described by Claude.** After `import-image` copies a file in, the renderer calls
   `analyze-image` (main), which runs the same `claude` CLI as smart insert on the image and returns
   `{alt, description}`. The image is inserted **immediately** with the file name as alt so the drop
