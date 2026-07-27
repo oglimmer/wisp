@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('rename-path', baseFolder, oldPath, newName),
   // Open a link from the Markdown preview in the default browser.
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  // Show a vault file/folder in the OS file manager. `platform` is only used to
+  // label that menu entry the way the host OS calls it.
+  revealPath: (baseFolder, target) => ipcRenderer.invoke('reveal-path', baseFolder, target),
+  platform: process.platform,
   // Images: resolve a vault-relative ref to a data URL for preview, and import a
   // dropped file into the vault. getPathForFile turns a dropped File into its
   // absolute path (Electron 32 removed File.path; webUtils is the replacement).

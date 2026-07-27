@@ -215,6 +215,7 @@ function renderNode(node, depth) {
     e.preventDefault();
     showContextMenu(e, [
       { label: 'Add reminder…', fn: () => newReminder(node.type === 'file' ? node.path : null) },
+      { label: revealLabel(), fn: () => revealNode(node) },
       { label: 'Rename', fn: () => renameNode(node) },
       { label: 'Delete', fn: () => deleteNode(node) },
     ]);
@@ -613,6 +614,21 @@ function removeContextMenu() {
 }
 
 document.addEventListener('click', removeContextMenu);
+
+// What the host OS calls its file manager, so the menu entry reads natively.
+function revealLabel() {
+  if (api.platform === 'darwin') return 'Reveal in Finder';
+  if (api.platform === 'win32') return 'Show in Explorer';
+  return 'Show in File Manager';
+}
+
+// Select the entry in the OS file manager. Flush first for the open file, so what
+// the user finds on disk matches what they see in the editor.
+async function revealNode(node) {
+  if (currentFile === node.path) await flushSave();
+  const res = await api.revealPath(baseFolder, node.path);
+  if (!res.ok) setStatus('Error: ' + res.error, true);
+}
 
 async function renameNode(node) {
   const newName = await promptModal('Rename to:', node.name);

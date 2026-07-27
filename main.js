@@ -133,6 +133,18 @@ ipcMain.handle('open-external', (_e, url) => {
   }
 });
 
+// Reveal a tree entry in the OS file manager (Finder on macOS), selecting it in
+// its parent folder. Path-guarded like every other handler that takes a target
+// from the renderer, so it can only ever point at something inside the vault.
+ipcMain.handle('reveal-path', (_e, baseFolder, target) => {
+  if (typeof baseFolder !== 'string' || typeof target !== 'string')
+    return { ok: false, error: 'Invalid path.' };
+  if (!isInside(baseFolder, target)) return { ok: false, error: 'Outside the vault.' };
+  if (!fs.existsSync(target)) return { ok: false, error: 'Not found on disk.' };
+  shell.showItemInFolder(target);
+  return { ok: true };
+});
+
 ipcMain.handle('get-last-folder', () => {
   const cfg = loadConfig();
   if (cfg.baseFolder && fs.existsSync(cfg.baseFolder)) return cfg.baseFolder;
