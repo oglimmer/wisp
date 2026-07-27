@@ -89,6 +89,26 @@ Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two thin
 
 - **Preview embeds via data URLs.** `marked` emits `<img src="…">` with vault-relative paths the page can't load directly. After every render, `hydrateImages()` (renderer) asks the `read-image` handler (main) to resolve each local `src` **relative to the open file**, then inlines it as a base64 `data:` URL. So CSP stays tight (`img-src 'self' data:`) and all disk access stays in main. Remote (`http(s)`/`data:`) sources are left untouched; unresolvable refs get an `.img-missing` marker.
 - **Drag & drop imports.** Dropping image files onto the editor (or preview) copies each into the vault's `images/` folder via the `import-image` handler (name-deduped, path-guarded) and inserts a reference to the open file — at the cursor in Raw view; in the WYSIWYG **Editor** an `<img>` node is inserted at the drop point (`caretRangeFromPoint`) and hydrated in place; in read-only Preview (no cursor) the Markdown ref is appended to the buffer. Dropped `File`s are turned into absolute paths with `webUtils.getPathForFile` (Electron 32 removed `File.path`), exposed as `api.getPathForFile` from preload. A window-level `drop`/`dragover` `preventDefault` stops stray drops from navigating the app away.
+- **Every import is described by Claude.** After `import-image` copies a file in, the renderer calls
+  `analyze-image` (main), which runs the same `claude` CLI as smart insert on the image and returns
+  `{alt, description}`. The image is inserted **immediately** with the file name as alt so the drop
+  never stalls; `analyseImported()` folds each result in when it lands (~8s, all images in parallel) —
+  replacing the alt and appending a collapsed `<details>` block, which is what makes the picture's
+  content findable via `⌘F` later. Anything that moved on in the meantime is dropped rather than
+  forced: a different file open, or the `![…](ref)` reference no longer in the buffer. Only the types
+  Claude can actually look at are sent (`ANALYZABLE_IMAGE` in `main.js`); `.svg`/`.bmp`/`.ico`/`.avif`
+  import as before, silently unanalysed. A failure (no `claude` on PATH, say) is a status-line
+  message, never a lost image.
+
+Two details keep the description block from corrupting the note:
+
+- **It is written without blank lines**, because a blank line ends an HTML block in Markdown — so the
+  model's description is collapsed to a single line in `sanitizeAnalysis()` (which also HTML-escapes
+  it, so a description can only ever be read as text, never as markup the preview renders).
+- **turndown re-emits it via a `detailsBlock` rule**, not `keep` — `<details>` isn't in turndown's
+  block list, so a plain keep would splice it inline and it would stop being its own HTML block. The
+  rule rebuilds the block instead of echoing `outerHTML` because turndown collapses whitespace before
+  rules run, which would otherwise fold the block onto one line on every WYSIWYG save.
 
 ### Reminders
 

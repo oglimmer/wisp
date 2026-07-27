@@ -44,6 +44,11 @@ const IMAGE_MIME = {
   '.avif': 'image/avif',
 };
 
+// The subset of those the `claude` CLI can actually look at (what its Read tool
+// accepts as an image). The rest still import fine — they just skip analysis
+// rather than having Claude read e.g. an .svg as source text and describe markup.
+const ANALYZABLE_IMAGE = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+
 // Recursively build a folder/file tree rooted at dirPath.
 async function buildTree(dirPath) {
   let entries;
@@ -628,6 +633,81 @@ ipcMain.handle('smart-check', async (_e, baseFolder, currentFile, text) => {
       reminder: sanitizeReminder(plan.reminder),
     },
   };
+});
+
+// ---- Image analysis (Claude-powered alt text + description) ----
+
+function buildImagePrompt(rel) {
+  return [
+    'Read the image file below and describe what it actually shows.',
+    '',
+    rel,
+    '',
+    'It has just been added to a plain-text notes vault (your working directory). The',
+    'description is stored in the note next to the image and is what the user will search',
+    'later, so be concrete and factual.',
+    '- "alt": one short line naming what the image is, under 100 characters, for the',
+    '  Markdown alt text (e.g. "a bar chart of Q3 revenue by region").',
+    '- "description": a fuller account in plain prose — the kind of image it is, its key',
+    '  elements, and any text, numbers or labels visible in it, transcribed accurately.',
+    '  A few sentences, at most about 150 words. One paragraph: no lists, no line breaks,',
+    '  no Markdown or HTML formatting.',
+    '- Describe only what you can actually see. Never guess at anything else.',
+    '- Do not open any other file; the image above is all you need.',
+    '',
+    'Respond with ONLY a JSON object (no prose, no code fence) of exactly this shape:',
+    '{"alt":"<one short line>","description":"<a few sentences>"}',
+  ].join('\n');
+}
+
+// Escape text that will be embedded in the note's HTML <details> block, so a model
+// description can only ever be read as text — never as markup the preview renders.
+function escapeHtmlText(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Keep only a well-formed { alt, description }: both single-line (the block is
+// written without blank lines so it stays one HTML block) and length-capped.
+function sanitizeAnalysis(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const flatten = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
+  // `]` would close the Markdown alt early; brackets add nothing to a description.
+  let alt = flatten(raw.alt).replace(/[[\]]/g, '').slice(0, 120).trim();
+  let description = escapeHtmlText(flatten(raw.description)).slice(0, 2000).trim();
+  if (!alt && !description) return null;
+  if (!alt) alt = description.slice(0, 100).trim();
+  return { alt, description };
+}
+
+// Describe a freshly-imported image with Claude. Returns { alt, description } for
+// the renderer to fold into the note; writes nothing itself. `skipped` marks an
+// image type Claude can't look at, which is not an error worth reporting.
+ipcMain.handle('analyze-image', async (_e, baseFolder, imagePath) => {
+  try {
+    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
+    const target = path.resolve(imagePath || '');
+    if (!isInside(baseFolder, target)) return { ok: false, error: 'Image is outside the vault.' };
+    if (!fs.existsSync(target)) return { ok: false, error: 'Image not found.' };
+    if (!ANALYZABLE_IMAGE.has(path.extname(target).toLowerCase())) {
+      return { ok: false, skipped: true, error: 'Claude can’t read this image type.' };
+    }
+
+    const rel = path.relative(baseFolder, target).split(path.sep).join('/');
+    const res = await runClaude(baseFolder, buildImagePrompt(rel));
+    if (!res.ok) return res;
+
+    let envelope = null;
+    try {
+      envelope = JSON.parse(res.stdout);
+    } catch {}
+    const modelText =
+      envelope && typeof envelope.result === 'string' ? envelope.result : res.stdout;
+    const analysis = sanitizeAnalysis(extractJson(modelText));
+    if (!analysis) return { ok: false, error: 'Could not understand Claude’s response.' };
+    return { ok: true, ...analysis };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 });
 
 // Apply a previously-checked plan: write the new content (creating parent dirs).

@@ -57,6 +57,9 @@ let viewMode = VIEW_MODES.includes(localStorage.getItem('rawNotes.viewMode'))
   ? localStorage.getItem('rawNotes.viewMode')
   : 'raw';
 
+// Heading of the collapsed block holding Claude's description of an image.
+const IMAGE_SUMMARY = 'Image description';
+
 // Lazily-built HTML→Markdown converter for the WYSIWYG editor. marked handles
 // Markdown→HTML; turndown does the reverse so edits save back as Markdown.
 let turndown = null;
@@ -77,6 +80,25 @@ function getTurndown() {
       const alt = node.getAttribute('alt') || '';
       const src = node.getAttribute('data-md-src') || node.getAttribute('src') || '';
       return src ? `![${alt}](${src})` : '';
+    },
+  });
+  // Image-description blocks are raw HTML in the note; re-emit them as HTML
+  // rather than letting turndown flatten them to their text. Not turndown.keep:
+  // <details> isn't in turndown's block list, so a plain keep would splice it
+  // inline and it would stop being its own HTML block. Rebuilt rather than echoed
+  // via outerHTML because turndown collapses whitespace before rules run, which
+  // would fold the block onto one line on every WYSIWYG save.
+  turndown.addRule('detailsBlock', {
+    filter: 'details',
+    replacement: (_content, node) => {
+      const summary = node.querySelector('summary');
+      const label = summary ? summary.textContent.trim() : IMAGE_SUMMARY;
+      const rest = node.cloneNode(true);
+      const stale = rest.querySelector('summary');
+      if (stale) stale.parentNode.removeChild(stale);
+      // innerHTML, so escaped entities stay escaped exactly as they sit in the note.
+      const body = rest.innerHTML.trim();
+      return `\n\n<details>\n<summary>${label}</summary>\n${body}\n</details>\n\n`;
     },
   });
   return turndown;
@@ -2018,6 +2040,126 @@ function insertImageNode(range, ref, alt) {
   return after;
 }
 
+// ---- Claude image analysis ----
+// Every imported image is sent to Claude to be described. The image is inserted
+// straight away (alt = the file name) so the drop stays instant; when the analysis
+// lands we swap in a real alt and append a collapsed description block, which is
+// what makes the image's content findable in the note later.
+let analyzing = 0; // in-flight analyses, so the status line can count them
+
+// The description block as it lives in the Markdown source. Deliberately free of
+// blank lines: one uninterrupted HTML block, so Markdown can't reopen inside it.
+function describeBlock(description) {
+  return `<details>\n<summary>${IMAGE_SUMMARY}</summary>\n${description}\n</details>`;
+}
+
+// Rewrite the alt text of the `![…](ref)` reference in `text` and insert the
+// description block after the line holding it. Returns null if that reference is
+// gone — the user is free to edit or delete it while Claude is still thinking.
+function withImageAnalysis(text, ref, alt, description) {
+  const tail = `](${ref})`;
+  const at = text.indexOf(tail);
+  if (at === -1) return null;
+  const open = text.lastIndexOf('![', at);
+  if (open === -1) return null;
+
+  const head = text.slice(0, open) + `![${alt}](${ref})`;
+  let rest = text.slice(at + tail.length);
+  if (!description) return head + rest;
+
+  // Split off the remainder of the image's own line; the block goes after it.
+  const nl = rest.indexOf('\n');
+  const cut = nl === -1 ? rest.length : nl + 1;
+  const lineTail = rest.slice(0, cut);
+  rest = rest.slice(cut);
+  return (
+    head +
+    lineTail +
+    (lineTail.endsWith('\n') ? '' : '\n') +
+    '\n' +
+    describeBlock(description) +
+    '\n' +
+    (rest === '' || rest.startsWith('\n') ? '' : '\n') +
+    rest
+  );
+}
+
+// Swap in a new buffer without yanking the user around: assigning to .value drops
+// the caret to the end and resets the scroll, and an analysis can land while they
+// are typing. The edit is a single insertion, so shifting any position past it by
+// the length delta puts the caret back where it was.
+function replaceBufferKeepingCaret(next) {
+  const prev = editorEl.value;
+  let at = 0;
+  while (at < prev.length && at < next.length && prev[at] === next[at]) at++;
+  const delta = next.length - prev.length;
+  const shift = (p) => (p > at ? p + delta : p);
+  const start = editorEl.selectionStart;
+  const end = editorEl.selectionEnd;
+  const scroll = editorEl.scrollTop;
+  editorEl.value = next;
+  editorEl.setSelectionRange(shift(start), shift(end));
+  editorEl.scrollTop = scroll;
+  syncHighlightBox(); // the find mirror tracks the textarea's size + scroll
+}
+
+// Same edit against the live WYSIWYG DOM (where the pane, not the buffer, holds
+// the user's latest text). Returns false if the image is no longer in the pane.
+function applyAnalysisToWysiwyg(ref, alt, description) {
+  const img = Array.from(wysiwygEl.querySelectorAll('img')).find(
+    (n) => (n.dataset.mdSrc || n.getAttribute('src')) === ref
+  );
+  if (!img) return false;
+  img.alt = alt;
+  if (description) {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = IMAGE_SUMMARY;
+    details.appendChild(summary);
+    // insertAdjacentHTML, not textContent: the description arrives HTML-escaped
+    // from main, and this keeps the entities matching the raw-source form so the
+    // block round-trips through turndown unchanged.
+    details.insertAdjacentHTML('beforeend', '\n' + description + '\n');
+    const anchor = img.closest('p') || img;
+    anchor.after(details);
+  }
+  return true;
+}
+
+// Ask Claude about each imported image and fold the results into the open note as
+// they arrive. Bails out on anything that moved on in the meantime: a different
+// file open, or the reference no longer in the buffer.
+async function analyzeImported(imports, forFile) {
+  await Promise.all(
+    imports.map(async ({ ref, path: imagePath }) => {
+      analyzing++;
+      setStatus(analyzing > 1 ? `Analysing ${analyzing} images…` : 'Analysing image…');
+      let res;
+      try {
+        res = await api.analyzeImage(baseFolder, imagePath);
+      } finally {
+        analyzing--;
+      }
+      if (currentFile !== forFile) return; // note closed — nothing left to update
+      if (!res || !res.ok) {
+        if (res && !res.skipped) setStatus('Image analysis failed: ' + res.error, true);
+        return;
+      }
+
+      if (effectiveViewMode() === 'wysiwyg') {
+        if (!applyAnalysisToWysiwyg(ref, res.alt, res.description)) return;
+      } else {
+        const next = withImageAnalysis(editorEl.value, ref, res.alt, res.description);
+        if (next === null) return;
+        replaceBufferKeepingCaret(next);
+        if (effectiveViewMode() === 'preview') renderMarkdown();
+      }
+      markBufferEdited();
+      scheduleFindRefresh(); // the buffer grew under the find bar's matches
+    })
+  );
+}
+
 async function handleDroppedFiles(fileList, dropRange) {
   if (!currentFile) {
     setStatus('Open a file before adding images.', true);
@@ -2027,13 +2169,16 @@ async function handleDroppedFiles(fileList, dropRange) {
     (f) => /^image\//.test(f.type) || IMAGE_RE.test(f.name)
   );
   if (!images.length) return;
+  const forFile = currentFile; // the note these images belong to, pinned across the awaits
 
   // In the visual editor, insert <img> nodes at the drop caret (falling back to
-  // the end); other modes edit the Markdown source buffer.
-  const wys = viewMode === 'wysiwyg' && isMarkdown(currentFile);
+  // the end); other modes edit the Markdown source buffer. effectiveViewMode, so a
+  // remembered 'wysiwyg' can't route the insert into a pane that isn't live.
+  const wys = effectiveViewMode() === 'wysiwyg';
   let range = wys ? dropRange || endOfWysiwygRange() : null;
 
   let added = 0;
+  const imports = []; // { ref, path } per imported image, for Claude to describe
   for (const file of images) {
     let srcPath = '';
     try {
@@ -2051,13 +2196,14 @@ async function handleDroppedFiles(fileList, dropRange) {
     const alt = file.name.replace(/\.[^.]+$/, '');
     if (wys) {
       range = insertImageNode(range, res.ref, alt);
-    } else if (viewMode === 'raw' || !isMarkdown(currentFile)) {
+    } else if (effectiveViewMode() === 'raw') {
       insertAtCursor(`![${alt}](${res.ref})\n`);
     } else {
       // Preview has no text cursor — append the ref to the source buffer.
       const sep = !editorEl.value || editorEl.value.endsWith('\n') ? '' : '\n';
       editorEl.value += sep + `![${alt}](${res.ref})` + '\n';
     }
+    imports.push({ ref: res.ref, path: res.path });
     added++;
   }
 
@@ -2077,6 +2223,8 @@ async function handleDroppedFiles(fileList, dropRange) {
       renderMarkdown();
     }
     await refreshTree(); // surface the new images/ folder + files
+    // Descriptions land afterwards — the note is already usable without them.
+    analyzeImported(imports, forFile).catch(() => {});
   }
 }
 

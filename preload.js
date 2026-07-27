@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('api', {
   importImage: (baseFolder, currentFile, srcPath, originalName) =>
     ipcRenderer.invoke('import-image', baseFolder, currentFile, srcPath, originalName),
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  // Have Claude describe an imported image: returns { alt, description } for the
+  // renderer to fold into the note that references it.
+  analyzeImage: (baseFolder, imagePath) =>
+    ipcRenderer.invoke('analyze-image', baseFolder, imagePath),
   // Reminders: the list is stored as one JSON file in the vault root. alertWindow
   // brings the window forward (and flashes the taskbar) when one comes due.
   readReminders: (baseFolder) => ipcRenderer.invoke('read-reminders', baseFolder),

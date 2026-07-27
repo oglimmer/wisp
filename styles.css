@@ -892,6 +892,24 @@ button:hover {
   margin-bottom: 0;
 }
 
+/* Claude's description of an embedded image: present but out of the way until
+   the reader opens it. */
+.markdown-body details {
+  margin: -0.4em 0 1em;
+  color: var(--text-dim);
+  font-size: 0.9em;
+}
+
+.markdown-body details summary {
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.75;
+}
+
+.markdown-body details[open] summary {
+  margin-bottom: 0.4em;
+}
+
 .markdown-body hr {
   border: none;
   border-top: 1px solid var(--border);
