@@ -635,6 +635,110 @@ ipcMain.handle('smart-check', async (_e, baseFolder, currentFile, text) => {
   };
 });
 
+// ---- Smart lookup (Claude-powered "answer from my notes") ----
+
+// The other direction to smart insert: instead of filing text into the vault, read
+// the vault to answer a question. Same inlined-files trick, so the usual question
+// is answered in one turn.
+function buildLookupPrompt(files, question, currentRel) {
+  let filesSection;
+  if (!files.length) {
+    filesSection = '(the vault is empty)';
+  } else {
+    filesSection = files
+      .map((f) => {
+        if (f.content === null) {
+          return `### ${f.rel}\n(large file — read it if you need its contents)`;
+        }
+        return `### ${f.rel}\n\`\`\`\n${f.content}\n\`\`\``;
+      })
+      .join('\n\n');
+  }
+  const openHint = currentRel ? `\nThe user currently has this file open: ${currentRel}.\n` : '';
+  return [
+    'You are answering a question using only a plain-text / Markdown notes vault.',
+    'The vault root is your current working directory. Here are the existing files and their contents:',
+    '',
+    filesSection,
+    '',
+    'The question:',
+    '"""',
+    question,
+    '"""',
+    openHint,
+    `The current local date and time is ${describeNow()}.`,
+    'Answer it from the notes:',
+    '- Use only what the notes actually say. Never fill gaps with outside knowledge or guesses.',
+    '- If the notes do not answer the question, say so plainly and leave "sources" empty.',
+    '- If they answer it only partly, give what is there and say what is missing.',
+    '- Contents above are provided inline; only use Read for files marked as large.',
+    '- Keep "answer" to a few sentences of plain prose — no Markdown, no lists, no line breaks.',
+    '- List every file you drew on in "sources", most relevant first, with a short note on',
+    '  what that file contributed. Cite only files you actually used.',
+    '',
+    'Respond with ONLY a JSON object (no prose, no code fence) of exactly this shape:',
+    '{"answer":"<a few sentences>","sources":[{"file":"<relative path>","detail":"<what this file contributed>"}]}',
+  ].join('\n');
+}
+
+// Keep only sources that name a real file inside the vault — a made-up citation is
+// worse than none, and the renderer turns each one into a click that opens the file.
+function sanitizeSources(raw, baseFolder) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const file = typeof item.file === 'string' ? item.file.trim() : '';
+    if (!file) continue;
+    const target = path.resolve(baseFolder, file);
+    if (!isInside(baseFolder, target) || !fs.existsSync(target)) continue;
+    const rel = path.relative(baseFolder, target).split(path.sep).join('/');
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    out.push({
+      file: rel,
+      detail: typeof item.detail === 'string' ? item.detail.trim() : '',
+    });
+  }
+  return out;
+}
+
+// Ask Claude a question about the vault. Read-only: nothing is written.
+ipcMain.handle('smart-lookup', async (_e, baseFolder, currentFile, question) => {
+  if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
+  if (!question || !question.trim()) return { ok: false, error: 'Nothing to look up.' };
+
+  const files = await gatherFiles(baseFolder);
+  const currentRel =
+    currentFile && isInside(baseFolder, currentFile)
+      ? path.relative(baseFolder, currentFile)
+      : null;
+
+  const res = await runClaude(baseFolder, buildLookupPrompt(files, question, currentRel));
+  if (!res.ok) return res;
+
+  let envelope = null;
+  try {
+    envelope = JSON.parse(res.stdout);
+  } catch {}
+  const modelText =
+    envelope && typeof envelope.result === 'string' ? envelope.result : res.stdout;
+  const parsed = extractJson(modelText);
+  if (!parsed || typeof parsed.answer !== 'string' || !parsed.answer.trim()) {
+    return { ok: false, error: 'Could not understand Claude’s response.' };
+  }
+
+  return {
+    ok: true,
+    result: {
+      question,
+      answer: parsed.answer.trim(),
+      sources: sanitizeSources(parsed.sources, baseFolder),
+    },
+  };
+});
+
 // ---- Image analysis (Claude-powered alt text + description) ----
 
 function buildImagePrompt(rel) {

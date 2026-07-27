@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('smart-check', baseFolder, currentFile, text),
   smartApply: (baseFolder, relPath, content) =>
     ipcRenderer.invoke('smart-apply', baseFolder, relPath, content),
+  // Smart lookup: the other direction — answer a question from the vault.
+  smartLookup: (baseFolder, currentFile, question) =>
+    ipcRenderer.invoke('smart-lookup', baseFolder, currentFile, question),
   deletePath: (baseFolder, target) => ipcRenderer.invoke('delete-path', baseFolder, target),
   renamePath: (baseFolder, oldPath, newName) =>
     ipcRenderer.invoke('rename-path', baseFolder, oldPath, newName),

@@ -24,6 +24,7 @@ const vaultNameEl = document.getElementById('vault-name');
 const smartInputEl = document.getElementById('smart-input');
 const smartCheckBtn = document.getElementById('smart-check-btn');
 const smartAddBtn = document.getElementById('smart-add-btn');
+const smartLookupBtn = document.getElementById('smart-lookup-btn');
 const smartStatusEl = document.getElementById('smart-status');
 const smartPreviewEl = document.getElementById('smart-preview');
 const dividerPreviewEl = document.getElementById('divider-preview');
@@ -111,6 +112,9 @@ let smartPlanFor = null;
 // Whether the reminder Claude proposed alongside the plan will be created on Add
 // (the checkbox in the preview). Reset every time a fresh plan is rendered.
 let smartReminderOn = false;
+// Smart-lookup state: the question the answer shown in the preview was asked for,
+// so a changed question drops it the same way a stale plan is dropped.
+let smartLookupFor = null;
 
 // ---- Startup ----
 init();
@@ -146,6 +150,7 @@ async function openFolder(folder) {
   smartPlan = null;
   smartPlanFor = null;
   smartReminderOn = false;
+  smartLookupFor = null;
   hideSmartPreview();
   setSmartStatus('');
   await refreshTree();
@@ -718,6 +723,7 @@ function smartBusy(busy, message) {
   smartInputEl.disabled = busy;
   smartCheckBtn.disabled = busy;
   smartAddBtn.disabled = busy;
+  smartLookupBtn.disabled = busy;
   if (message) setSmartStatus(message);
 }
 
@@ -812,13 +818,59 @@ async function smartAdd() {
   await openFile(res.path, row);
 }
 
+// The other direction: read the vault instead of writing to it. Answers the text
+// in the box from the notes and shows the answer, with its sources, in the preview.
+async function smartLookup() {
+  const question = smartInputEl.value.trim();
+  if (!question) {
+    setSmartStatus('Type a question first.', true);
+    return;
+  }
+  // Make sure the open file's latest edits are on disk before Claude reads it.
+  await flushSave();
+
+  smartBusy(true, 'Looking up…');
+  let res;
+  try {
+    res = await api.smartLookup(baseFolder, currentFile, question);
+  } finally {
+    smartBusy(false);
+  }
+
+  if (!res.ok) {
+    // Only drop what this feature owns — a filing plan below stays valid.
+    if (smartLookupFor !== null) {
+      smartLookupFor = null;
+      hideSmartPreview();
+    }
+    setSmartStatus(res.error, true);
+    return;
+  }
+  // The preview pane shows one thing at a time; an answer replaces any filing plan,
+  // so drop the plan rather than leave Add pointing at something no longer shown.
+  smartPlan = null;
+  smartPlanFor = null;
+  smartReminderOn = false;
+  smartLookupFor = question;
+  renderLookup(res.result);
+  const n = res.result.sources.length;
+  setSmartStatus(n ? `Answered from ${n} file${n === 1 ? '' : 's'}.` : 'Answered.');
+}
+
 // A checked plan is only valid for the text it was computed from; once the note
-// changes, drop the stale preview so Add re-checks rather than mis-filing.
+// changes, drop the stale preview (plan or lookup answer) so Add re-checks rather
+// than mis-filing and a stale answer isn't read as an answer to the new question.
 function invalidateSmartPlan() {
-  if (smartPlanFor !== null && smartInputEl.value.trim() !== smartPlanFor) {
+  const text = smartInputEl.value.trim();
+  if (smartPlanFor !== null && text !== smartPlanFor) {
     smartPlan = null;
     smartPlanFor = null;
     smartReminderOn = false;
+    hideSmartPreview();
+    setSmartStatus('');
+  }
+  if (smartLookupFor !== null && text !== smartLookupFor) {
+    smartLookupFor = null;
     hideSmartPreview();
     setSmartStatus('');
   }
@@ -827,6 +879,7 @@ function invalidateSmartPlan() {
 // Build a preview: target file, a NEW/EXISTING badge, Claude's reason, and a diff.
 function renderPreview(plan) {
   smartPreviewEl.innerHTML = '';
+  smartLookupFor = null; // the plan owns the preview pane now
 
   const head = document.createElement('div');
   head.className = 'sp-head';
@@ -934,6 +987,58 @@ function renderReminderProposal(plan) {
   card.appendChild(body);
   card.appendChild(edit);
   return card;
+}
+
+// Render a lookup answer into the same preview pane: Claude's answer, then the
+// files it drew on. Each source opens the note it names, so an answer stays
+// checkable against what the vault actually says.
+function renderLookup(result) {
+  smartPreviewEl.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'sp-head';
+  const badge = document.createElement('span');
+  badge.className = 'sp-badge sp-lookup-badge';
+  badge.textContent = 'ANSWER';
+  const q = document.createElement('span');
+  q.className = 'sp-path';
+  q.textContent = result.question;
+  head.appendChild(badge);
+  head.appendChild(q);
+  smartPreviewEl.appendChild(head);
+
+  const answer = document.createElement('div');
+  answer.className = 'sp-answer';
+  answer.textContent = result.answer;
+  smartPreviewEl.appendChild(answer);
+
+  if (result.sources.length) {
+    const label = document.createElement('div');
+    label.className = 'sp-sources-label';
+    label.textContent = 'Sources';
+    smartPreviewEl.appendChild(label);
+  }
+
+  for (const src of result.sources) {
+    const row = document.createElement('div');
+    row.className = 'sp-source';
+
+    const link = document.createElement('button');
+    link.className = 'sp-source-file';
+    link.textContent = src.file;
+    link.title = 'Open ' + src.file;
+    link.addEventListener('click', () => openVaultNote(src.file));
+    row.appendChild(link);
+
+    if (src.detail) {
+      const detail = document.createElement('span');
+      detail.className = 'sp-source-detail';
+      detail.textContent = src.detail;
+      row.appendChild(detail);
+    }
+    smartPreviewEl.appendChild(row);
+  }
+  showSmartPreview();
 }
 
 // Line-level diff via a longest-common-subsequence table, then collapse long
@@ -1248,7 +1353,7 @@ function renderReminders() {
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const items = [{ label: 'Edit…', fn: () => editReminder(rem) }];
-      if (rem.file) items.push({ label: 'Open note', fn: () => openReminderNote(rem.file) });
+      if (rem.file) items.push({ label: 'Open note', fn: () => openVaultNote(rem.file) });
       items.push({ label: 'Complete', fn: () => completeReminder(rem.id) });
       items.push({ label: 'Delete', fn: () => removeReminder(rem.id) });
       showContextMenu(e, items);
@@ -1261,8 +1366,8 @@ function renderReminders() {
   reminderCountEl.classList.toggle('hidden', overdue === 0);
 }
 
-// Open the note a reminder points at (a vault-relative path).
-async function openReminderNote(rel) {
+// Open a note by its vault-relative path (reminders and lookup sources both use this).
+async function openVaultNote(rel) {
   if (!rel || !baseFolder) return;
   const sep = baseFolder.includes('\\') ? '\\' : '/';
   const full = baseFolder + sep + String(rel).split('/').join(sep);
@@ -1283,7 +1388,7 @@ async function editReminder(rem) {
   if (!res) return;
   if (res.action === 'save') await upsertReminder(res.reminder);
   else if (res.action === 'delete') await removeReminder(rem.id);
-  else if (res.action === 'open') await openReminderNote(rem.file);
+  else if (res.action === 'open') await openVaultNote(rem.file);
 }
 
 // ---- Reminder editor ----
@@ -1567,7 +1672,7 @@ function showReminderAlert(rem) {
   if (rem.file) {
     mkBtn('Open note', '', () => {
       close();
-      openReminderNote(rem.file);
+      openVaultNote(rem.file);
     });
   }
   const doneBtn = mkBtn(
@@ -1983,6 +2088,7 @@ document.getElementById('new-file-btn').addEventListener('click', newFile);
 document.getElementById('new-folder-btn').addEventListener('click', newFolder);
 smartCheckBtn.addEventListener('click', smartCheck);
 smartAddBtn.addEventListener('click', smartAdd);
+smartLookupBtn.addEventListener('click', smartLookup);
 smartInputEl.addEventListener('input', invalidateSmartPlan);
 newReminderBtn.addEventListener('click', () => newReminder(null));
 viewRawBtn.addEventListener('click', () => setViewMode('raw'));

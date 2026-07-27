@@ -127,3 +127,21 @@ The panel at the top of the editor pane lets the user jot a note and have Claude
 - **Every check also asks for a reminder.** The same single call returns an optional `reminder` alongside the filing plan (the prompt includes `describeNow()` so relative dates like "next Tuesday" resolve). *Checked* always, *created* only for a genuine time-bound commitment — a plain fact returns `null`. `sanitizeReminder()` in main drops anything malformed rather than surfacing a bogus alarm. The preview renders it as an opt-out card (`renderReminderProposal`) with an **Edit…** button into the normal reminder editor; **Add** writes the file and only then creates the reminder, linked to the file it filed into.
 - **Prompt inlines small files.** `gatherFiles` embeds the contents of files under the size/total budget directly in the prompt so Claude usually decides in **one turn without `Read` round-trips** (large files are listed by name and read on demand). This is the difference between ~7s and Claude crawling the vault.
 - **Flush before check/apply.** Both flows call `flushSave()` first so Claude reads the latest on-disk content and the post-apply `openFile()` can't clobber the AI's write with a stale editor buffer.
+
+### Smart lookup (the same box, read direction)
+
+**Lookup**, the button at the far right of the smart bar, runs the panel's text the *other* way: instead of
+filing it into the vault, `smart-lookup` (main) answers it **from** the vault and writes nothing. It reuses
+`gatherFiles`/`runClaude`, so the usual question is answered in one turn, and returns
+`{answer, sources:[{file, detail}]}`.
+
+- **Sources are verified, not trusted.** `sanitizeSources()` drops any citation that isn't a real file
+  inside the vault, so a hallucinated path can't reach the UI. The renderer turns each surviving one into a
+  button that opens that note (via `openVaultNote`, shared with the reminder list), which is what makes an
+  answer checkable against what the notes actually say.
+- **Answers are plain text.** The prompt asks for prose with no Markdown, and `renderLookup` sets
+  `textContent` — a model answer is never rendered as markup.
+- **The preview pane holds one thing at a time.** A lookup answer and a filing plan share `#smart-preview`,
+  so each clears the other: `renderPreview()` drops `smartLookupFor`, `smartLookup()` drops
+  `smartPlan`/`smartPlanFor` (otherwise **Add** would apply a plan that's no longer on screen), and
+  `invalidateSmartPlan()` clears whichever of the two the edited text has invalidated.
