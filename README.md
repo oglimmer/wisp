@@ -8,6 +8,7 @@ A minimal, Obsidian-like note editor built with [Electron](https://www.electronj
 - **Folder/file tree** in the sidebar — folders first, then files, alphabetical. Expand/collapse folders, click a file to open it.
 - **Raw-text editor** with a monospace font. No Markdown rendering — just the source.
 - **Save** with `Ctrl/Cmd+S`; a status indicator shows `Saved` / `Unsaved changes`, and you're warned before discarding unsaved edits.
+- **Find & replace** in the open file with the usual shortcuts: `Ctrl/Cmd+F` to search (seeded from the selection), `Ctrl/Cmd+G` or `F3` to step through matches (`⇧` to go back), `Esc` to close — leaving the caret on the match you stopped at. Every match is highlighted, in the raw, editor and preview views alike. Replace (`Cmd+⌥+F` / `Ctrl+H`) edits the Markdown source, so it opens the raw view.
 - **File management**: create files (supports nested paths like `folder/note.md`), create folders, rename, and delete (via right-click), plus refresh and change-folder buttons.
 - **Reminders**: a list in the lower half of the sidebar (drag the separator to resize), soonest first, with overdue entries highlighted. Add one with `＋`, or right-click a file in the tree. Reminders can repeat daily/weekly/monthly/yearly and can link to a note. When one falls due the app raises its window and shows a large popup with snooze / open-note / done. The list is stored as plain JSON in `.wisp-reminders.json` at the vault root.
 - Hidden by default: `.git`, `node_modules`, `.obsidian`, `.DS_Store`, `.wisp-reminders.json`.
@@ -51,6 +52,11 @@ On first launch, click **Open Folder…** and choose any directory of notes.
 |--------|-----|
 | Open a file | Click it in the tree |
 | Save | `Ctrl+S` / `Cmd+S` |
+| Find in the open file | `Ctrl+F` / `Cmd+F` |
+| Next / previous match | `Ctrl+G` / `Cmd+G` / `F3` (add `Shift` to reverse), or `Enter` in the find field |
+| Find & replace | `Ctrl+H` / `Cmd+⌥+F` — `Enter` replaces the current match, `Ctrl/Cmd+Enter` replaces all |
+| Match case | `Aa` in the find bar |
+| Close the find bar | `Esc` |
 | New file | `＋` in the sidebar header (name can include subfolders, e.g. `ideas/todo.md`) |
 | New folder | 🗀 in the sidebar header |
 | Rename / delete | Right-click an item in the tree |

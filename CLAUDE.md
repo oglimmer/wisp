@@ -59,6 +59,29 @@ The `<textarea>` (`editorEl`) holds the **canonical buffer** and is what gets sa
 
 The WYSIWYG **Editor** pane is a `contenteditable` div. `marked` renders the source into it (Markdown→HTML); **turndown** (`node_modules/turndown`, loaded as a UMD global `window.TurndownService`) does the reverse on save. The key invariant: **edits only fold back to the buffer through `syncWysiwygToEditor()`, and only when `dirty`** — so a file the user merely *viewed* in Editor mode is never rewritten by turndown's normalisation (round-tripping is inherently lossy on formatting, so this guard matters). `saveCurrent()`, the pre-switch step in `setViewMode()`, drag & drop, and `beforeunload` all fold back through it before touching disk. If turndown fails to load, the Editor button is hidden and the mode degrades to Raw (edits could otherwise not be saved). Image round-trip: `hydrateImages()` stashes the original vault-relative path in `data-md-src` before swapping in the data URL, and a turndown `img` rule re-emits that path instead of the inlined base64.
 
+### Find & replace
+
+The find bar (`#find-bar`, between the editor header and the panes) searches the **open file only** —
+`⌘F`/`Ctrl+F` to open, `⌘G`/`F3` (+`⇧`) to step, `⌘⌥F`/`Ctrl+H` for replace, `Esc` to close. The
+shortcuts hang off the same window-level `keydown` listener as `⌘S`, which bails out while a
+`.modal-overlay`/`.alert-overlay` is up so dialogs keep the keyboard.
+
+Highlighting takes two routes, because the panes are different beasts:
+
+- **Raw view: a mirror div** (`#find-highlights`) sits behind the textarea holding a copy of its text
+  with each match wrapped in a span — a textarea can't hold markup. The two must lay text out
+  identically, so their typography lives in **one shared CSS rule**, the textarea is transparent with
+  `z-index: 1` over the mirror, and `syncHighlightBox()` pins the mirror's width to
+  `editorEl.clientWidth` (excludes any scrollbar) and its `scrollTop` to the textarea's.
+- **WYSIWYG / preview: the CSS Custom Highlight API** (`CSS.highlights`, styled via `::highlight()`).
+  It paints ranges without touching the DOM — wrapping matches in `<mark>`s would let highlights
+  round-trip through turndown into the saved Markdown.
+
+Matches are `{start, end}` offsets in raw mode and live `Range`s in the other two, so anything reading
+`findMatches` has to know which mode it's in. `refreshFind()` re-scans and is called from `applyView()`
+(a re-render invalidates every Range) and, debounced, after edits. **Replace is raw-only** — it edits
+the Markdown source, and the other panes are projections of it, so `⌘⌥F` switches to Raw first.
+
 ### Images
 
 Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two things make this work despite the app's `file://` origin + CSP:

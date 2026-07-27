@@ -623,6 +623,122 @@ button:hover {
   filter: brightness(1.1);
 }
 
+/* ---- Find / replace bar ---- */
+.find-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.find-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  padding: 5px 8px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  outline: none;
+}
+
+.find-input:focus {
+  border-color: var(--accent);
+}
+
+/* A query with no matches turns the field red rather than shouting in the status. */
+.find-input.no-match {
+  border-color: #ff6b6b;
+}
+
+.find-count {
+  flex-shrink: 0;
+  min-width: 64px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.find-icon {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  min-width: 28px;
+  font-size: 12px;
+  line-height: 1.2;
+  background: transparent;
+}
+
+.find-icon:hover {
+  background: var(--bg-hover);
+}
+
+/* Match-case toggle, lit while it's on. */
+.find-icon.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.find-row button:not(.find-icon) {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+/* ---- Find highlights ---- */
+/* Mirror of the textarea's text, sitting exactly behind it: same box, same
+   metrics, invisible glyphs — only the match backgrounds show through. */
+.find-highlights {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+
+.find-hit {
+  background: rgba(74, 158, 255, 0.32);
+  border-radius: 2px;
+}
+
+.find-hit.current {
+  background: rgba(255, 176, 46, 0.55);
+}
+
+/* The WYSIWYG / preview panes are real DOM, so their matches are painted with the
+   CSS Custom Highlight API instead — no markup is injected into the document. */
+::highlight(wisp-find) {
+  background-color: rgba(74, 158, 255, 0.32);
+}
+
+::highlight(wisp-find-current) {
+  background-color: rgba(255, 176, 46, 0.55);
+}
+
+/* Holds the three panes plus the find highlight layer that must line up behind
+   the textarea, so it owns the background the (transparent) textarea sits on. */
+.editor-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
 .editor {
   flex: 1;
   min-height: 0;
@@ -630,17 +746,29 @@ button:hover {
   resize: none;
   border: none;
   outline: none;
-  background: var(--bg);
+  background: transparent;
   color: var(--text);
+  /* Stack above the (absolutely positioned) highlight mirror, so match colours sit
+     behind the text instead of washing over it. */
+  position: relative;
+  z-index: 1;
+}
+
+.editor:disabled {
+  color: var(--text-dim);
+}
+
+/* Typography shared by the textarea and its highlight mirror. Both must lay text
+   out identically — keep these in one rule so they can't drift apart. */
+.editor,
+.find-highlights {
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.6;
   padding: 16px 20px;
   tab-size: 4;
-}
-
-.editor:disabled {
-  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 /* ---- WYSIWYG editor ---- */

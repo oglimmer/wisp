@@ -83,23 +83,61 @@
           </div>
           <span id="status" class="status"></span>
         </div>
-        <textarea
-          id="editor"
-          class="editor"
-          spellcheck="false"
-          placeholder="Select a file from the tree to start editing…"
-          disabled
-        ></textarea>
-        <!-- WYSIWYG editor: edit formatted text directly; saved back as Markdown -->
-        <div
-          id="wysiwyg"
-          class="rendered markdown-body wysiwyg hidden"
-          contenteditable="true"
-          spellcheck="false"
-          data-placeholder="Select a file from the tree to start editing…"
-        ></div>
-        <!-- Rendered Markdown view; swapped in for the textarea in Preview mode -->
-        <div id="rendered" class="rendered markdown-body hidden"></div>
+
+        <!-- Find / replace bar (⌘F / ⌘⌥F, Ctrl+F / Ctrl+H) -->
+        <div id="find-bar" class="find-bar hidden">
+          <div class="find-row">
+            <input
+              id="find-input"
+              class="find-input"
+              type="text"
+              spellcheck="false"
+              placeholder="Find"
+            />
+            <span id="find-count" class="find-count"></span>
+            <button id="find-case-btn" class="find-icon" title="Match case">Aa</button>
+            <button id="find-prev-btn" class="find-icon" title="Previous match (⇧⌘G / ⇧F3)">↑</button>
+            <button id="find-next-btn" class="find-icon" title="Next match (⌘G / F3)">↓</button>
+            <button id="find-close-btn" class="find-icon" title="Close (Esc)">✕</button>
+          </div>
+          <!-- Replace only edits the raw source, so it's shown on demand -->
+          <div id="find-replace-row" class="find-row hidden">
+            <input
+              id="replace-input"
+              class="find-input"
+              type="text"
+              spellcheck="false"
+              placeholder="Replace"
+            />
+            <button id="replace-btn" title="Replace this match (↵)">Replace</button>
+            <button id="replace-all-btn" title="Replace every match (⌘↵)">All</button>
+          </div>
+        </div>
+
+        <!-- Positioning context for the find highlight layer, which has to sit
+             directly behind the textarea. -->
+        <div class="editor-stack">
+          <!-- Search highlights for the raw view: a textarea can't hold markup, so
+               matches are painted by an exactly-aligned mirror of its text. -->
+          <div id="find-highlights" class="find-highlights hidden" aria-hidden="true"></div>
+          <textarea
+            id="editor"
+            class="editor"
+            spellcheck="false"
+            placeholder="Select a file from the tree to start editing…"
+            disabled
+          ></textarea>
+          <!-- WYSIWYG editor: edit formatted text directly; saved back as Markdown -->
+          <div
+            id="wysiwyg"
+            class="rendered markdown-body wysiwyg hidden"
+            contenteditable="true"
+            spellcheck="false"
+            data-placeholder="Select a file from the tree to start editing…"
+          ></div>
+          <!-- Rendered Markdown view; swapped in for the textarea in Preview mode -->
+          <div id="rendered" class="rendered markdown-body hidden"></div>
+        </div>
       </main>
     </div>
 
