@@ -27,8 +27,14 @@ function saveConfig(cfg) {
 // is app state rather than a note — hidden from the tree (and from smart insert).
 const REMINDERS_FILE = '.wisp-reminders.json';
 
-// Directories we never want to show in the tree.
-const IGNORED = new Set(['.git', 'node_modules', '.obsidian', '.DS_Store', REMINDERS_FILE]);
+// Entries we never want to show in the tree. Anything dot-prefixed is treated as
+// hidden — that covers VCS metadata, OS cruft, other editors' per-vault config
+// folders and REMINDERS_FILE itself — plus this explicit list of the rest.
+const IGNORED = new Set(['node_modules']);
+
+function isIgnored(name) {
+  return name.startsWith('.') || IGNORED.has(name);
+}
 
 // Image extensions we can embed (preview) and import (drag & drop), mapped to
 // the MIME type used when inlining them as data URLs.
@@ -60,7 +66,7 @@ async function buildTree(dirPath) {
 
   const nodes = [];
   for (const entry of entries) {
-    if (IGNORED.has(entry.name)) continue;
+    if (isIgnored(entry.name)) continue;
     const full = path.join(dirPath, entry.name);
     if (entry.isDirectory()) {
       nodes.push({
@@ -412,7 +418,7 @@ async function gatherFiles(baseFolder) {
       return;
     }
     for (const entry of entries) {
-      if (IGNORED.has(entry.name)) continue;
+      if (isIgnored(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(full);

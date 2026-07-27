@@ -1,6 +1,6 @@
 # Wisp
 
-A minimal, Obsidian-like note editor built with [Electron](https://www.electronjs.org/). It opens a base folder ("vault"), shows a folder/file tree on the left, and edits files as **raw text** on the right. Every text file is assumed to be Markdown, but nothing is rendered — you always see and edit the plain source.
+A minimal, folder-backed Markdown note editor built with [Electron](https://www.electronjs.org/). It opens a base folder ("vault"), shows a folder/file tree on the left, and edits files as **raw text** on the right. Every text file is assumed to be Markdown, but nothing is rendered — you always see and edit the plain source.
 
 ## Features
 
@@ -11,7 +11,7 @@ A minimal, Obsidian-like note editor built with [Electron](https://www.electronj
 - **Find & replace** in the open file with the usual shortcuts: `Ctrl/Cmd+F` to search (seeded from the selection), `Ctrl/Cmd+G` or `F3` to step through matches (`⇧` to go back), `Esc` to close — leaving the caret on the match you stopped at. Every match is highlighted, in the raw, editor and preview views alike. Replace (`Cmd+⌥+F` / `Ctrl+H`) edits the Markdown source, so it opens the raw view.
 - **File management**: create files (supports nested paths like `folder/note.md`), create folders, rename, and delete (via right-click), plus refresh and change-folder buttons.
 - **Reminders**: a list in the lower half of the sidebar (drag the separator to resize), soonest first, with overdue entries highlighted. Add one with `＋`, or right-click a file in the tree. Reminders can repeat daily/weekly/monthly/yearly and can link to a note. When one falls due the app raises its window and shows a large popup with snooze / open-note / done. The list is stored as plain JSON in `.wisp-reminders.json` at the vault root.
-- Hidden by default: `.git`, `node_modules`, `.obsidian`, `.DS_Store`, `.wisp-reminders.json`.
+- Hidden by default: `node_modules` and every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`).
 - Secure by design: context isolation on, Node integration off, all file access goes through a minimal IPC bridge with path-traversal guards.
 
 ## Install (macOS, Apple Silicon)
