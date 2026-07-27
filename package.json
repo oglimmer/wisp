@@ -47,6 +47,7 @@
           ]
         }
       ],
+      "icon": "build/icon.png",
       "category": "public.app-category.productivity",
       "darkModeSupport": true,
       "hardenedRuntime": true,

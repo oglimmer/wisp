@@ -16,6 +16,13 @@ macOS arm64 is the **only** published target. electron-builder is configured in 
 `build` field; `build/entitlements.mac.plist` (+ `.inherit.`) carry the hardened-runtime entitlements
 Electron needs (JIT, unsigned executable memory, library validation off).
 
+**App icon.** `build/` is `buildResources`, so the icon lives there: `build/icon.png` (1024×1024, the
+source of truth, referenced explicitly as `mac.icon`) plus the pre-rendered set in `build/icons/`
+(`16x16.png` … `1024x1024.png`, electron-builder's naming convention for a multi-size set).
+electron-builder renders the `.icns` from `icon.png` at package time — on a macOS host only, which is
+where builds happen anyway. The artwork already carries the rounded-squircle mask and its transparent
+margin, so nothing masks or pads it; replacements should come pre-masked the same way.
+
 `.github/workflows/release.yml` runs on `v*` tags: it checks the tag matches `package.json`'s version,
 builds signed + notarized (certs and Apple credentials come from repo secrets), publishes a GitHub
 release, then rewrites `version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the
