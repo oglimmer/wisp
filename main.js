@@ -1,8 +1,68 @@
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, protocol, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
+
+// ---- The app:// scheme ----
+//
+// The UI is served from a custom scheme rather than loaded off disk with
+// loadFile(). Chromium refuses a `<script type="module">` from a file:// page —
+// module fetches go through CORS and a file:// origin is opaque — so the renderer
+// could not be split into ES modules at all while the window loaded file://.
+//
+// `standard` is what gives the scheme real origin semantics: relative URLs
+// resolve, and localStorage works (which is where the view mode and the divider
+// positions live). `secure` keeps it out of Chromium's mixed-content and
+// restricted-API buckets, the same as https.
+const APP_SCHEME = 'app';
+const APP_ORIGIN = `${APP_SCHEME}://wisp`;
+protocol.registerSchemesAsPrivileged([
+  { scheme: APP_SCHEME, privileges: { standard: true, secure: true } },
+]);
+
+// Served content types. A module script is subject to strict MIME checking —
+// Chromium refuses to execute one that doesn't arrive as JavaScript — so these
+// are stated rather than guessed.
+const CONTENT_TYPE = {
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+// Serve the app's own directory, and nothing else: the request path is resolved
+// against __dirname and refused if it escapes — the same guard the vault handlers
+// apply, for the same reason. Inside a packaged build __dirname is app.asar, which
+// fs reads through transparently.
+function registerAppProtocol() {
+  protocol.handle(APP_SCHEME, async (request) => {
+    let rel;
+    try {
+      rel = decodeURIComponent(new URL(request.url).pathname).replace(/^\/+/, '');
+    } catch {
+      return new Response('Bad request', { status: 400 });
+    }
+    const file = path.join(__dirname, rel || 'index.html');
+    if (!isInside(__dirname, file)) return new Response('Forbidden', { status: 403 });
+    try {
+      const body = await fsp.readFile(file);
+      const type = CONTENT_TYPE[path.extname(file).toLowerCase()] || 'application/octet-stream';
+      return new Response(body, { headers: { 'content-type': type } });
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+  });
+}
 
 // ---- Simple config persistence (remembers the last base folder) ----
 const configPath = () => path.join(app.getPath('userData'), 'config.json');
@@ -180,7 +240,7 @@ function createWindow() {
   else if (state.maximized) mainWindow.maximize();
   mainWindow.show();
 
-  mainWindow.loadFile('index.html');
+  mainWindow.loadURL(`${APP_ORIGIN}/index.html`);
 
   for (const event of ['resize', 'move', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
     mainWindow.on(event, scheduleWindowStateSave);
@@ -262,6 +322,7 @@ function vaultPath(baseFolder, target, label = 'Invalid path') {
 }
 
 app.whenReady().then(() => {
+  registerAppProtocol();
   buildMenu();
   createWindow();
 
