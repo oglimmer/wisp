@@ -1,0 +1,125 @@
+// The four draggable dividers. Row dividers restore late, on purpose.
+
+import { workspaceEl } from './dom.js';
+
+(function setupDivider() {
+  const divider = document.getElementById('divider');
+  const sidebar = document.getElementById('sidebar');
+  const MIN = 160;
+  const MAX = 600; // keep in sync with .sidebar min/max-width in styles.css
+
+  const clamp = (w) => Math.max(MIN, Math.min(MAX, w));
+
+  // Restore a persisted width from a previous session.
+  const saved = parseInt(localStorage.getItem('rawNotes.sidebarWidth'), 10);
+  if (!Number.isNaN(saved)) sidebar.style.width = clamp(saved) + 'px';
+
+  let dragging = false;
+
+  function onMove(e) {
+    if (!dragging) return;
+    const left = workspaceEl.getBoundingClientRect().left;
+    sidebar.style.width = clamp(e.clientX - left) + 'px';
+  }
+
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem('rawNotes.sidebarWidth', parseInt(sidebar.style.width, 10));
+  }
+
+  divider.addEventListener('mousedown', (e) => {
+    dragging = true;
+    divider.classList.add('dragging');
+    // Lock the cursor and stop text selection while dragging over the editor.
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+})();
+
+// ---- Resizable vertical stack (note box / preview / editor) ----
+// Saved panel heights can only be restored once the workspace is actually laid
+// out, so each divider registers its restore step here and `restoreRowDividers()`
+// runs them the first time a folder is opened.
+const rowDividerRestores = [];
+let rowDividersRestored = false;
+
+export function restoreRowDividers() {
+  if (rowDividersRestored) return;
+  rowDividersRestored = true;
+  for (const restore of rowDividerRestores) restore();
+}
+
+// Each row divider resizes the panel directly above it by setting its height;
+// the editor is flex:1 and absorbs whatever's left. RESERVE keeps the editor
+// from being squeezed away entirely.
+// `opts.below` marks a panel that sits *under* its divider (the reminder list),
+// so dragging up grows it instead of down.
+function makeRowDivider(divider, panel, storageKey, minPx, opts = {}) {
+  const paneEl = opts.container || document.querySelector('.editor-pane');
+  const RESERVE = opts.reserve ?? 140;
+  const dir = opts.below ? -1 : 1;
+  const clamp = (h) =>
+    Math.max(minPx, Math.min(h, paneEl.getBoundingClientRect().height - RESERVE));
+
+  // Deferred, not applied here: clamping needs the container's real height, and
+  // #workspace is display:none until a folder opens, where every measurement
+  // reads 0 — which would clamp each panel to its minimum and quietly throw the
+  // stored layout away on every launch.
+  rowDividerRestores.push(() => {
+    const saved = parseInt(localStorage.getItem(storageKey), 10);
+    if (!Number.isNaN(saved)) panel.style.height = clamp(saved) + 'px';
+  });
+
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+
+  divider.addEventListener('mousedown', (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startH = panel.getBoundingClientRect().height;
+    divider.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    panel.style.height = clamp(startH + dir * (e.clientY - startY)) + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(storageKey, parseInt(panel.style.height, 10));
+  });
+}
+
+makeRowDivider(
+  document.getElementById('divider-input'),
+  document.getElementById('smart-insert'),
+  'rawNotes.inputHeight',
+  70
+);
+makeRowDivider(
+  document.getElementById('divider-preview'),
+  document.getElementById('smart-preview'),
+  'rawNotes.previewHeight',
+  60
+);
+makeRowDivider(
+  document.getElementById('divider-reminders'),
+  document.getElementById('reminders'),
+  'rawNotes.remindersHeight',
+  92,
+  { container: document.getElementById('sidebar'), reserve: 120, below: true }
+);

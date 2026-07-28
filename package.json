@@ -28,7 +28,7 @@
     "files": [
       "main.js",
       "preload.js",
-      "renderer.js",
+      "renderer/**",
       "index.html",
       "styles.css"
     ],

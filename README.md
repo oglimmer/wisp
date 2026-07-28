@@ -87,7 +87,7 @@ On first launch, click **Open Folder…** and choose any directory of notes.
 | `main.js` | Main process — window creation, folder dialog, tree building, file read/write/create/rename/delete IPC handlers, and the git integration (the only place `git` is run) |
 | `preload.js` | Secure `contextBridge` API exposed to the renderer |
 | `index.html` | Welcome screen + sidebar/editor layout |
-| `renderer.js` | UI logic: tree rendering, open/save, context menu, keyboard shortcuts |
+| `renderer/` | UI logic as ES modules: tree rendering, open/save, context menu, keyboard shortcuts |
 | `styles.css` | Dark theme |
 | `package.json` | Metadata, dependencies, scripts, and the `electron-builder` config |
 | `build/entitlements.mac.*.plist` | Hardened-runtime entitlements for the signed build |

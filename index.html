@@ -168,8 +168,14 @@
       </main>
     </div>
 
+    <!--
+      marked and turndown are UMD builds and stay classic scripts, so they define
+      their globals synchronously. A module script is deferred, so renderer/ always
+      runs after both — `window.TurndownService` is there to be tested for by the
+      time the Editor button decides whether to show itself.
+    -->
     <script src="node_modules/marked/lib/marked.umd.js"></script>
     <script src="node_modules/turndown/lib/turndown.browser.umd.js"></script>
-    <script src="renderer.js"></script>
+    <script type="module" src="renderer/index.js"></script>
   </body>
 </html>

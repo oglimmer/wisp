@@ -52,18 +52,70 @@ The whole app is built around Electron's **three-context security model**, and u
 - **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as a handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
   OS file manager (`reveal-path`) and config. The renderer has **no direct fs access** — anything touching disk must be added as a handler here.
 - **`preload.js`** — the only bridge between the two worlds. Runs with `contextIsolation: true` / `nodeIntegration: false` and exposes a minimal, hand-listed API on `window.api` via `contextBridge`. A new main-process handler is invisible to the UI until a corresponding method is added here.
-- **`renderer.js` (renderer, browser context)** — all UI logic and state (`baseFolder`, `currentFile`, `dirty`, `expanded` set). Talks to disk **only** through `window.api.*`. It never `require`s Node modules.
+- **`renderer/` (renderer, browser context)** — all UI logic and state, split into ES modules with
+  `renderer/index.js` as the entry point (see **The renderer's modules**). Talks to disk **only**
+  through `window.api.*`, which it gets from `renderer/api.js`. It never `require`s Node modules.
 
-So adding any file operation is always a three-file change: handler in `main.js` → method in `preload.js` → call in `renderer.js`.
+So adding any file operation is always a three-file change: handler in `main.js` → method in `preload.js` → call in a `renderer/` module.
 
 Traffic runs the other way exactly once — the app menu (see **Keyboard shortcuts help**) — and it
 crosses the same bridge: `webContents.send` in main, an `ipcRenderer.on` subscription hand-listed in
 preload, a callback registered in the renderer. Preload passes the payload on but never the event
 object, which carries a handle on the sender.
 
+### The renderer's modules
+
+`renderer/` is plain ES modules — no bundler, no build step. `index.html` loads
+`renderer/index.js` with `type="module"` and the browser fetches the graph.
+
+**This is why the window is served from a custom `app://` scheme rather than `loadFile()`.**
+Chromium refuses a `<script type="module">` on a `file://` page: module fetches go through CORS
+and a `file://` origin is opaque. So `main.js` registers `app` as a **standard, secure** scheme
+(`standard` is what gives it real origin semantics — relative URLs resolve, and `localStorage`
+works) and `protocol.handle` serves the app's own directory, refusing anything that resolves
+outside it. Content types are stated rather than guessed, because a module script that doesn't
+arrive as JavaScript is refused by Chromium's strict MIME check. `marked` and `turndown` stay
+**classic** scripts so their globals exist synchronously; a module script is deferred, so the
+renderer always runs after them.
+
+*One-time cost of that move: `localStorage` is keyed by origin, so the view mode, diff mode and
+the four divider positions reset once on the upgrade from a `file://` build. There is no way to
+read the old origin's storage to migrate it.*
+
+The modules, roughly bottom-up — `api`, `state`, `dom`, `util`, `lcs` and `dialogs` depend on
+little or nothing; `index` depends on everything:
+
+| | |
+|---|---|
+| `api` / `state` / `dom` | the preload bridge; shared mutable state; every element ref |
+| `util` / `lcs` | `setStatus`/`relativePath`/`cssEscape`; the LCS core (lines *and* words) |
+| `dialogs` | `openModal`, `dialogOpen`, `promptModal` |
+| `markdown` | turndown + the GFM inverse rules |
+| `views` / `editor` / `tables` / `find` | the editor pane, its buffer, tables, find & replace |
+| `tree` / `app` / `layout` | the file tree + context menu; opening a vault; the dividers |
+| `git` / `git-commit` / `diff` | status and pull; commit and discard; the diff view |
+| `reminders` / `reminders-ui` | the model and repeat maths; the list, editor and alert |
+| `smart` / `images` / `shortcuts` | Claude-backed filing and lookup; image import; the help list |
+| `index` | wires the UI up, then calls `init()` |
+
+Two things about module state are load-bearing:
+
+- **An exported binding is read-only to importers.** `export let gitState` can be read live from
+  anywhere but assigned only inside `git.js`. That is why the six values *more than one module
+  writes* — `baseFolder`, `currentFile`, `dirty`, `viewMode`, `diffMode`, `diffOnlyFile` — live on
+  the mutable object in `state.js` instead: `state.currentFile = x` works from anywhere. Everything
+  else stays in the module that owns it. When another module needs to clear owned state, it calls
+  an exported reset (`resetGitState`, `resetSmartPanel`, `resetAlerts`) rather than assigning
+  across the boundary — which would not even compile.
+- **The graph has cycles and that is fine**, because nothing calls across one during module
+  *evaluation*: cross-module calls all happen inside functions, and function declarations are
+  hoisted before any module body runs. What would break is top-level code reaching into a cyclic
+  dependency — so `init()` is called at the **end of `index.js`**, not where it used to sit at the
+  top of the startup section. Under the old classic script hoisting made that work; under modules
+  it would run before the other modules had wired themselves up.
+
 ### Conventions that matter
 
-- **`renderer.js` is wrapped in an IIFE on purpose.** A top-level `const api` (or any top-level `const`/`let`) in a classic renderer script collides with the globals `contextBridge` injects and throws `SyntaxError: Identifier 'api' has already been declared`, crashing the renderer silently. Keep new renderer code inside the IIFE.
 - **Divider positions restore late, on purpose.** All four drag handles persist to `localStorage` (`rawNotes.sidebarWidth` / `inputHeight` / `previewHeight` / `remindersHeight`). The sidebar width clamps against constants so it restores immediately, but each *row* divider clamps its saved height against its container's measured height — and `#workspace` is `display:none` until a folder opens, where every measurement reads 0. So `makeRowDivider()` registers a restore step instead of applying one, and `restoreRowDividers()` runs them from `openFolder()` once the workspace is on screen. Restoring any earlier clamps every panel to its minimum and throws the stored layout away.
 - **Handlers are registered through `handle()`, not `ipcMain.handle` directly.** It wraps the call in
   the try/catch that turns a thrown error into the `{ ok: false, error }` every handler already
@@ -141,7 +193,7 @@ shortcut pressed while another text field (find, the smart-insert note) has focu
 ### Keyboard shortcuts help
 
 `Help ▸ Keyboard Shortcuts` (`⌘/` / `Ctrl+/`) opens a modal listing every shortcut, grouped. The list
-(`SHORTCUT_GROUPS` in `renderer.js`) lives beside the handlers it documents rather than in the menu
+(`SHORTCUT_GROUPS` in `renderer/shortcuts.js`) lives beside the handlers it documents rather than in the menu
 that opens it — a shortcut and its help are one change, not two. `chord()` writes each combination the
 way the host OS does: glyphs run together on macOS (`⌘⇧T`), spelled out with pluses elsewhere
 (`Ctrl+Shift+T`). **Add a shortcut, add its row.**
@@ -329,7 +381,7 @@ The sidebar is split: the tree on top, a **reminder list** underneath, with a dr
 
 The panel at the top of the editor pane lets the user jot a note and have Claude file it into the right place. It shells out to the **`claude` CLI** from the main process (`spawn('claude', ['-p', prompt, '--output-format', 'json', '--allowedTools', 'Read,Glob,Grep'])`, cwd = vault root). Two handlers back it: `smart-check` runs Claude and returns a *plan* (`targetFile`, `isNew`, `reason`, `newContent`, `oldContent`) without writing anything; `smart-apply` writes an approved plan (path-traversal-guarded, creates parent dirs).
 
-- **Check previews, Add applies.** `renderer.js` caches the plan in `smartPlan`/`smartPlanFor`; editing the note invalidates it so **Add** re-checks automatically rather than filing stale content. The preview shows the target file, a NEW/EXISTING badge, Claude's reason, and a collapsed line-diff (`lineDiff`/`condenseDiff`).
+- **Check previews, Add applies.** `renderer/smart.js` caches the plan in `smartPlan`/`smartPlanFor`; editing the note invalidates it so **Add** re-checks automatically rather than filing stale content. The preview shows the target file, a NEW/EXISTING badge, Claude's reason, and a collapsed line-diff (`lineDiff`/`condenseDiff`).
 - **Every check also asks for a reminder.** The same single call returns an optional `reminder` alongside the filing plan (the prompt includes `describeNow()` so relative dates like "next Tuesday" resolve). *Checked* always, *created* only for a genuine time-bound commitment — a plain fact returns `null`. `sanitizeReminder()` in main drops anything malformed rather than surfacing a bogus alarm. The preview renders it as an opt-out card (`renderReminderProposal`) with an **Edit…** button into the normal reminder editor; **Add** writes the file and only then creates the reminder, linked to the file it filed into.
 - **Prompt inlines small files.** `gatherFiles` embeds the contents of files under the size/total budget directly in the prompt so Claude usually decides in **one turn without `Read` round-trips** (large files are listed by name and read on demand). This is the difference between ~7s and Claude crawling the vault.
 - **Flush before check/apply.** Both flows call `flushSave()` first so Claude reads the latest on-disk content and the post-apply `openFile()` can't clobber the AI's write with a stale editor buffer.
