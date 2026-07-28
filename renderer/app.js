@@ -4,6 +4,7 @@ import { api } from './api.js';
 import { currentFileEl, editorEl, vaultNameEl, welcomeEl, workspaceEl } from './dom.js';
 import { resetGitState } from './git.js';
 import { restoreRowDividers } from './layout.js';
+import { loadPositions } from './positions.js';
 import { loadReminders } from './reminders.js';
 import { resetSmartPanel } from './smart.js';
 import { state } from './state.js';
@@ -27,6 +28,8 @@ function showWelcome() {
 async function openFolder(folder) {
   state.baseFolder = folder;
   state.currentFile = null;
+  // Before anything can open a file: caret/scroll positions are per vault.
+  loadPositions(folder);
   state.diffOnlyFile = null;
   state.dirty = false;
   welcomeEl.classList.add('hidden');

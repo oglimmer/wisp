@@ -8,6 +8,7 @@ import { flushSave } from './editor.js';
 import { refreshFind } from './find.js';
 import { gitState } from './git.js';
 import { getTurndown } from './markdown.js';
+import { restorePosition } from './positions.js';
 import { STORED_VIEW_MODES, VIEW_MODES, state } from './state.js';
 
 export function isMarkdown(filePath) {
@@ -174,6 +175,11 @@ export function applyView() {
   viewDiffBtn.classList.toggle('active', showDiff);
   diffVisualBtn.classList.toggle('active', state.diffMode === 'visual');
   diffRawBtn.classList.toggle('active', state.diffMode === 'raw');
+
+  // The pane that just became visible was re-rendered (or lost its scroll while
+  // hidden), so put the reader back where they were in it — before refreshFind,
+  // which scrolls to a match when the find bar is open and that should win.
+  restorePosition();
 
   // A re-render throws away the nodes any search highlight pointed at, and a mode
   // switch changes which pane (and which text) is being searched.

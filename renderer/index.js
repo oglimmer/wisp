@@ -9,6 +9,7 @@ import { cancelPendingSave, flushSave } from './editor.js';
 import { closeFind, findOpen, findStep, openFind } from './find.js';
 import { gitPull, refreshGit } from './git.js';
 import { gitCommitPush } from './git-commit.js';
+import { flushPositions } from './positions.js';
 import { newReminder } from './reminders-ui.js';
 import { invalidateSmartPlan, smartAdd, smartCheck, smartLookup } from './smart.js';
 import { state } from './state.js';
@@ -110,6 +111,8 @@ window.addEventListener('keydown', (e) => {
 // going away before an async write finishes.
 window.addEventListener('beforeunload', () => {
   cancelPendingSave();
+  // Positions persist debounced; write out the last few seconds of reading too.
+  flushPositions();
   if (state.currentFile && state.dirty) {
     syncWysiwygToEditor();
     const res = api.writeFileSync(state.baseFolder, state.currentFile, editorEl.value);

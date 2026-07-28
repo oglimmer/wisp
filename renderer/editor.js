@@ -5,6 +5,7 @@ import { api } from './api.js';
 import { currentFileEl, editorEl, wysiwygEl } from './dom.js';
 import { scheduleFindRefresh } from './find.js';
 import { scheduleGitRefresh } from './git.js';
+import { restorePosition } from './positions.js';
 import { AUTOSAVE_MS, state } from './state.js';
 import { relativePath, setStatus } from './util.js';
 import { applyView, isImage, isMarkdown, showImageView, syncWysiwygToEditor } from './views.js';
@@ -43,6 +44,9 @@ export async function openFile(filePath, rowEl) {
     /* nothing to focus — the viewer takes no input */
   } else if (state.viewMode === 'raw' || !isMarkdown(filePath)) editorEl.focus();
   else if (state.viewMode === 'wysiwyg') wysiwygEl.focus();
+  // Last, because focusing a pane scrolls its caret into view: the file reopens
+  // where it was left, not wherever the browser decided to put the cursor.
+  restorePosition();
 
   document.querySelectorAll('.node-row.active').forEach((el) => el.classList.remove('active'));
   if (rowEl) rowEl.classList.add('active');
