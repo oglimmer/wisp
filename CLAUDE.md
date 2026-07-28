@@ -49,7 +49,7 @@ Wisp is a single-window Electron app: a folder/file tree on the left, an editor 
 
 The whole app is built around Electron's **three-context security model**, and understanding the boundary between the contexts is the key to working here:
 
-- **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as an `ipcMain.handle` handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
+- **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as a handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
   OS file manager (`reveal-path`) and config. The renderer has **no direct fs access** — anything touching disk must be added as a handler here.
 - **`preload.js`** — the only bridge between the two worlds. Runs with `contextIsolation: true` / `nodeIntegration: false` and exposes a minimal, hand-listed API on `window.api` via `contextBridge`. A new main-process handler is invisible to the UI until a corresponding method is added here.
 - **`renderer.js` (renderer, browser context)** — all UI logic and state (`baseFolder`, `currentFile`, `dirty`, `expanded` set). Talks to disk **only** through `window.api.*`. It never `require`s Node modules.
@@ -65,7 +65,18 @@ object, which carries a handle on the sender.
 
 - **`renderer.js` is wrapped in an IIFE on purpose.** A top-level `const api` (or any top-level `const`/`let`) in a classic renderer script collides with the globals `contextBridge` injects and throws `SyntaxError: Identifier 'api' has already been declared`, crashing the renderer silently. Keep new renderer code inside the IIFE.
 - **Divider positions restore late, on purpose.** All four drag handles persist to `localStorage` (`rawNotes.sidebarWidth` / `inputHeight` / `previewHeight` / `remindersHeight`). The sidebar width clamps against constants so it restores immediately, but each *row* divider clamps its saved height against its container's measured height — and `#workspace` is `display:none` until a folder opens, where every measurement reads 0. So `makeRowDivider()` registers a restore step instead of applying one, and `restoreRowDividers()` runs them from `openFolder()` once the workspace is on screen. Restoring any earlier clamps every panel to its minimum and throws the stored layout away.
-- **Path-traversal guard.** Mutating handlers in `main.js` validate targets with `isInside(baseFolder, target)` before touching disk. Any new write/delete/rename handler must do the same.
+- **Handlers are registered through `handle()`, not `ipcMain.handle` directly.** It wraps the call in
+  the try/catch that turns a thrown error into the `{ ok: false, error }` every handler already
+  answers with, so the renderer has one way to read a result and no handler can reject. The few that
+  return a bare value rather than an `{ ok }` envelope (`get-last-folder`, `choose-folder`,
+  `read-tree`, `open-external`, `alert-window`) stay on `ipcMain.handle`, and the synchronous
+  `write-file-sync` is an `ipcMain.on` because it answers via `e.returnValue`.
+- **Path-traversal guard.** Any handler taking a target from the renderer resolves it through
+  `vaultPath(baseFolder, target)`, which refuses anything outside the vault. It **throws** rather than
+  returning a value — `handle()` turns that into the usual `{ ok: false }` — so the guard can't be
+  written and then accidentally ignored on the success path. It takes relative and absolute targets
+  alike. `isInside()` underneath is still used directly where the question is a test rather than a
+  guard (which files a discard covers, whether a path is worth showing relative).
 - **The tree is rebuilt, not mutated.** After any change, the renderer calls `refreshTree()` which re-reads the whole tree from `main.js` and re-renders from scratch. Expanded-folder state is preserved separately in the `expanded` Set (keyed by absolute path), not in the DOM.
 - **Persistence.** The last-opened base folder and the window's last geometry (`window`: bounds + `maximized`/`fullScreen`) are stored in `config.json` under Electron's `userData` dir (not in the vault). Geometry is saved debounced on move/resize and flushed on `close`; on restore the size is always reused but the *position* only if the frame still overlaps a live display, so unplugging a monitor can't strand the window off-screen. The window is created with `show: false` and maximized/fullscreened before `show()` so it doesn't visibly jump. Note contents are plain files in the user's chosen folder — there is no database or index.
 - **Ignored entries.** `isIgnored()` in `main.js` hides every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`) plus the explicit `IGNORED` set (`node_modules`) during tree building — and, because `gatherFiles` calls the same helper, keeps them out of the smart-insert prompt too.
@@ -138,8 +149,26 @@ way the host OS does: glyphs run together on macOS (`⌘⇧T`), spelled out with
 **`buildMenu()` in `main.js` exists for that one item, but it has to rebuild the standard menu roles
 around it.** Setting any application menu replaces Electron's default one, and on macOS ⌘C/⌘V/⌘Q are
 menu accelerators rather than browser behaviour — a template without an Edit menu silently takes them
-away. The dialog is a plain `.modal-overlay`, so the window-level shortcuts stand down while it's up,
-and it refuses to open over another dialog: two overlays would both answer the same Escape.
+away. The dialog is a plain `.modal-overlay` like every other (see **Dialogs**), so the window-level
+shortcuts stand down while it's up, and `dialogOpen()` keeps it from opening over another one.
+
+### Dialogs
+
+Every dialog is the same object — a full-screen overlay holding one box — built by **`openModal()`**,
+which returns `{ box, close, promise }`: fill `box`, call `close(value)` to settle. It owns the parts
+that are easy to get subtly wrong and were previously repeated six times: the keydown listener is
+registered on the **capture** phase (so the window-level shortcuts, which stand down whenever
+`dialogOpen()` is true, never see it) and is removed by the same `close` that removes the overlay,
+**exactly once** however the dialog was dismissed. Escape is the built-in fallback; `onKey(e, close)`
+is consulted first and returns true once it has handled the event. `onClose(value)` runs before the
+promise settles — that's where `commitModal` stashes its draft message and the reminder alert repaints
+the list. Backdrop-click cancels unless `dismissOnBackdrop: false`, which only the reminder alert sets:
+a reminder must not disappear to a stray click.
+
+**A dialog at a time**, because two overlays would both answer the same Escape. `shortcutsModal()`
+refuses to open over one. `drainAlerts()` instead *defers*: a reminder coming due while a dialog is up
+leaves the queue untouched, so the 15s ticker shows it once the dialog closes rather than stacking a
+second overlay on it or dropping the alert (`alerted` would never let it re-fire).
 
 ### Find & replace
 

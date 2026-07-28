@@ -236,6 +236,31 @@ function isInside(base, target) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+// Every handler below answers `{ ok: true, … }` or `{ ok: false, error }` rather
+// than rejecting — the renderer has one way to read a result, and a thrown error
+// and a refused operation are the same thing to it. So the try/catch lives here
+// once instead of being repeated (and eventually forgotten) in each handler.
+// `_e` is never passed on: it carries a handle on the sender.
+function handle(channel, fn) {
+  ipcMain.handle(channel, async (_e, ...args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+}
+
+// Resolve a target the renderer supplied and refuse anything outside the vault.
+// Throws rather than returning a value, so the guard cannot be written and then
+// accidentally ignored — `handle()` turns it into the usual `{ ok: false }`.
+function vaultPath(baseFolder, target, label = 'Invalid path') {
+  if (typeof baseFolder !== 'string' || typeof target !== 'string') throw new Error(label);
+  const abs = path.resolve(baseFolder, target);
+  if (!isInside(baseFolder, abs)) throw new Error(label);
+  return abs;
+}
+
 app.whenReady().then(() => {
   buildMenu();
   createWindow();
@@ -264,12 +289,10 @@ ipcMain.handle('open-external', (_e, url) => {
 // Reveal a tree entry in the OS file manager (Finder on macOS), selecting it in
 // its parent folder. Path-guarded like every other handler that takes a target
 // from the renderer, so it can only ever point at something inside the vault.
-ipcMain.handle('reveal-path', (_e, baseFolder, target) => {
-  if (typeof baseFolder !== 'string' || typeof target !== 'string')
-    return { ok: false, error: 'Invalid path.' };
-  if (!isInside(baseFolder, target)) return { ok: false, error: 'Outside the vault.' };
-  if (!fs.existsSync(target)) return { ok: false, error: 'Not found on disk.' };
-  shell.showItemInFolder(target);
+handle('reveal-path', async (baseFolder, target) => {
+  const abs = vaultPath(baseFolder, target, 'Outside the vault.');
+  if (!fs.existsSync(abs)) return { ok: false, error: 'Not found on disk.' };
+  shell.showItemInFolder(abs);
   return { ok: true };
 });
 
@@ -306,30 +329,25 @@ ipcMain.handle('read-tree', async (_e, baseFolder) => {
 });
 
 // Read a file as raw UTF-8 text.
-ipcMain.handle('read-file', async (_e, filePath) => {
-  try {
-    const content = await fsp.readFile(filePath, 'utf8');
-    return { ok: true, content };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+handle('read-file', async (baseFolder, filePath) => {
+  const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
+  return { ok: true, content: await fsp.readFile(target, 'utf8') };
 });
 
 // Write raw text back to a file.
-ipcMain.handle('write-file', async (_e, filePath, content) => {
-  try {
-    await fsp.writeFile(filePath, content, 'utf8');
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+handle('write-file', async (baseFolder, filePath, content) => {
+  const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
+  await fsp.writeFile(target, content, 'utf8');
+  return { ok: true };
 });
 
 // Synchronous write for the renderer's beforeunload flush. Blocks the renderer
 // briefly, but guarantees the last edit is on disk before the window closes.
-ipcMain.on('write-file-sync', (e, filePath, content) => {
+// Sent rather than invoked, so it can't go through `handle()`.
+ipcMain.on('write-file-sync', (e, baseFolder, filePath, content) => {
   try {
-    fs.writeFileSync(filePath, content, 'utf8');
+    const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
+    fs.writeFileSync(target, content, 'utf8');
     e.returnValue = { ok: true };
   } catch (err) {
     e.returnValue = { ok: false, error: String(err) };
@@ -337,56 +355,38 @@ ipcMain.on('write-file-sync', (e, filePath, content) => {
 });
 
 // Create a new file. name may include subfolders (created as needed).
-ipcMain.handle('create-file', async (_e, baseFolder, relPath) => {
-  try {
-    const target = path.resolve(baseFolder, relPath);
-    if (!isInside(baseFolder, target)) return { ok: false, error: 'Invalid path' };
-    if (fs.existsSync(target)) return { ok: false, error: 'File already exists' };
-    await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.writeFile(target, '', 'utf8');
-    return { ok: true, path: target };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+handle('create-file', async (baseFolder, relPath) => {
+  const target = vaultPath(baseFolder, relPath);
+  if (fs.existsSync(target)) return { ok: false, error: 'File already exists' };
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  await fsp.writeFile(target, '', 'utf8');
+  return { ok: true, path: target };
 });
 
 // Create a new folder.
-ipcMain.handle('create-folder', async (_e, baseFolder, relPath) => {
-  try {
-    const target = path.resolve(baseFolder, relPath);
-    if (!isInside(baseFolder, target)) return { ok: false, error: 'Invalid path' };
-    if (fs.existsSync(target)) return { ok: false, error: 'Folder already exists' };
-    await fsp.mkdir(target, { recursive: true });
-    return { ok: true, path: target };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+handle('create-folder', async (baseFolder, relPath) => {
+  const target = vaultPath(baseFolder, relPath);
+  if (fs.existsSync(target)) return { ok: false, error: 'Folder already exists' };
+  await fsp.mkdir(target, { recursive: true });
+  return { ok: true, path: target };
 });
 
-// Delete a file or folder (must live inside the base folder).
-ipcMain.handle('delete-path', async (_e, baseFolder, target) => {
-  try {
-    if (!isInside(baseFolder, target) || path.resolve(target) === path.resolve(baseFolder)) {
-      return { ok: false, error: 'Invalid path' };
-    }
-    await fsp.rm(target, { recursive: true, force: true });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+// Delete a file or folder (must live inside the base folder). The vault root
+// itself is inside the vault, so it needs ruling out separately.
+handle('delete-path', async (baseFolder, target) => {
+  const abs = vaultPath(baseFolder, target);
+  if (abs === path.resolve(baseFolder)) return { ok: false, error: 'Invalid path' };
+  await fsp.rm(abs, { recursive: true, force: true });
+  return { ok: true };
 });
 
 // Rename / move a file or folder within the base folder.
-ipcMain.handle('rename-path', async (_e, baseFolder, oldPath, newName) => {
-  try {
-    const target = path.join(path.dirname(oldPath), newName);
-    if (!isInside(baseFolder, target)) return { ok: false, error: 'Invalid path' };
-    if (fs.existsSync(target)) return { ok: false, error: 'Target already exists' };
-    await fsp.rename(oldPath, target);
-    return { ok: true, path: target };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+handle('rename-path', async (baseFolder, oldPath, newName) => {
+  const source = vaultPath(baseFolder, oldPath);
+  const target = vaultPath(baseFolder, path.join(path.dirname(source), newName));
+  if (fs.existsSync(target)) return { ok: false, error: 'Target already exists' };
+  await fsp.rename(source, target);
+  return { ok: true, path: target };
 });
 
 // ---- Reminders ----
@@ -394,29 +394,21 @@ ipcMain.handle('rename-path', async (_e, baseFolder, oldPath, newName) => {
 // The whole list is read and written as one JSON document — same philosophy as the
 // tree (rebuild, don't mutate). It's small, and keeping it a single plain file means
 // the vault stays self-describing with no index to fall out of sync.
-ipcMain.handle('read-reminders', async (_e, baseFolder) => {
-  try {
-    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: true, reminders: [] };
-    const file = path.join(baseFolder, REMINDERS_FILE);
-    if (!fs.existsSync(file)) return { ok: true, reminders: [] };
-    const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
-    const list = Array.isArray(parsed) ? parsed : parsed && parsed.reminders;
-    return { ok: true, reminders: Array.isArray(list) ? list : [] };
-  } catch (err) {
-    return { ok: false, error: String(err), reminders: [] };
-  }
+handle('read-reminders', async (baseFolder) => {
+  if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: true, reminders: [] };
+  const file = path.join(baseFolder, REMINDERS_FILE);
+  if (!fs.existsSync(file)) return { ok: true, reminders: [] };
+  const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+  const list = Array.isArray(parsed) ? parsed : parsed && parsed.reminders;
+  return { ok: true, reminders: Array.isArray(list) ? list : [] };
 });
 
-ipcMain.handle('write-reminders', async (_e, baseFolder, reminders) => {
-  try {
-    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
-    const file = path.join(baseFolder, REMINDERS_FILE);
-    const body = JSON.stringify({ reminders: Array.isArray(reminders) ? reminders : [] }, null, 2);
-    await fsp.writeFile(file, body, 'utf8');
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+handle('write-reminders', async (baseFolder, reminders) => {
+  if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
+  const file = path.join(baseFolder, REMINDERS_FILE);
+  const body = JSON.stringify({ reminders: Array.isArray(reminders) ? reminders : [] }, null, 2);
+  await fsp.writeFile(file, body, 'utf8');
+  return { ok: true };
 });
 
 // A reminder has come due: make sure the window is actually in front of the user,
@@ -601,51 +593,47 @@ function parseStatus(raw) {
 
 // Everything the UI needs to decorate the tree and label the git bar. Answers for a
 // non-repository too, so the renderer can treat "not a repo" as an ordinary state.
-ipcMain.handle('git-info', async (_e, baseFolder) => {
-  try {
-    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: true, repo: false };
-    const root = await gitRoot(baseFolder);
-    if (!root) return { ok: true, repo: false };
+handle('git-info', async (baseFolder) => {
+  if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: true, repo: false };
+  const root = await gitRoot(baseFolder);
+  if (!root) return { ok: true, repo: false };
 
-    // Scoped to the vault: if it's a subfolder of a bigger repo, the tree only
-    // knows about its own files and Wisp only ever commits its own files.
-    const res = await runGit(root, [
-      'status', '--porcelain=v1', '-z', '-b', '--untracked-files=all', '--', baseFolder,
-    ]);
-    if (!res.ok) return { ok: false, repo: true, error: res.stderr.trim() || 'git status failed.' };
+  // Scoped to the vault: if it's a subfolder of a bigger repo, the tree only
+  // knows about its own files and Wisp only ever commits its own files.
+  const res = await runGit(root, [
+    'status', '--porcelain=v1', '-z', '-b', '--untracked-files=all', '--', baseFolder,
+  ]);
+  if (!res.ok) return { ok: false, repo: true, error: res.stderr.trim() || 'git status failed.' };
 
-    const parsed = parseStatus(res.stdout);
-    const files = parsed.files.map((f) => {
-      const abs = path.resolve(root, f.repoRel);
-      return {
-        ...f,
-        path: abs,
-        rel: isInside(baseFolder, abs) ? toRepoRel(baseFolder, abs) : f.repoRel,
-      };
-    });
-
+  const parsed = parseStatus(res.stdout);
+  const files = parsed.files.map((f) => {
+    const abs = path.resolve(root, f.repoRel);
     return {
-      ok: true,
-      repo: true,
-      root,
-      isRoot: path.resolve(root) === path.resolve(baseFolder),
-      branch: parsed.branch,
-      upstream: parsed.upstream,
-      ahead: parsed.ahead,
-      behind: parsed.behind,
-      detached: parsed.detached,
-      noCommits: parsed.noCommits,
-      files,
+      ...f,
+      path: abs,
+      rel: isInside(baseFolder, abs) ? toRepoRel(baseFolder, abs) : f.repoRel,
     };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+  });
+
+  return {
+    ok: true,
+    repo: true,
+    root,
+    isRoot: path.resolve(root) === path.resolve(baseFolder),
+    branch: parsed.branch,
+    upstream: parsed.upstream,
+    ahead: parsed.ahead,
+    behind: parsed.behind,
+    detached: parsed.detached,
+    noCommits: parsed.noCommits,
+    files,
+  };
 });
 
 // Fetch + merge. --ff-only would be safer but leaves a diverged vault stuck with no
 // way forward from the UI, so an ordinary merge is used and a conflict is reported
 // as-is — the tree then shows the conflicted files and the user resolves them.
-ipcMain.handle('git-pull', async (_e, baseFolder) => {
+handle('git-pull', async (baseFolder) => {
   const root = await gitRoot(baseFolder);
   if (!root) return { ok: false, error: 'Not a git repository.' };
 
@@ -686,7 +674,7 @@ ipcMain.handle('git-pull', async (_e, baseFolder) => {
 // Stage everything under the vault, commit, and optionally push. Returns as soon as
 // a step fails, naming the step, so the UI can say what actually happened — a commit
 // that lands but fails to push must not read as "nothing happened".
-ipcMain.handle('git-commit', async (_e, baseFolder, message, push) => {
+handle('git-commit', async (baseFolder, message, push) => {
   const root = await gitRoot(baseFolder);
   if (!root) return { ok: false, error: 'Not a git repository.' };
   if (typeof message !== 'string' || !message.trim()) {
@@ -754,120 +742,103 @@ async function gitPush(root) {
 // go back to, so "discarding" one would mean deleting work git has never seen — an
 // unrecoverable delete wearing the name of an undo. The renderer says as much, and
 // the ordinary Delete menu item is still there for anyone who does want that.
-ipcMain.handle('git-revert', async (_e, baseFolder, targets) => {
-  try {
-    const root = await gitRoot(baseFolder);
-    if (!root) return { ok: false, error: 'Not a git repository.' };
+handle('git-revert', async (baseFolder, targets) => {
+  const root = await gitRoot(baseFolder);
+  if (!root) return { ok: false, error: 'Not a git repository.' };
 
-    const list = Array.isArray(targets) ? targets : [targets];
-    const paths = [];
-    for (const target of list) {
-      if (typeof target !== 'string' || !isInside(baseFolder, target)) {
-        return { ok: false, error: 'Outside the vault.' };
-      }
-      paths.push(path.resolve(target));
+  const list = Array.isArray(targets) ? targets : [targets];
+  const paths = list.map((target) => vaultPath(baseFolder, target, 'Outside the vault.'));
+  if (!paths.length) return { ok: false, error: 'Nothing to discard.' };
+
+  // Re-read status here rather than trusting what the renderer last saw: this
+  // destroys work, so it must act on what the repository says right now.
+  //
+  // Scoped to the whole vault and filtered afterwards, NOT with the target paths
+  // as a pathspec: git only detects a rename when both halves are in scope, so
+  // asking about just the new path would report a bare add and quietly leave the
+  // old path deleted.
+  const res = await runGit(root, [
+    'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', baseFolder,
+  ]);
+  if (!res.ok) return { ok: false, error: res.stderr.trim() || 'git status failed.' };
+
+  // A target may be a file or a folder; a deleted file isn't on disk at all, in
+  // which case there is nothing under it and an exact match is the only sense.
+  const wanted = paths.map((p) => ({
+    path: p,
+    isDir: fs.existsSync(p) && fs.statSync(p).isDirectory(),
+  }));
+  const inScope = (abs) =>
+    wanted.some((w) => (w.isDir ? isInside(w.path, abs) : path.resolve(abs) === w.path));
+
+  const restore = new Set(); // has a HEAD version to come back to
+  const unstage = new Set(); // staged but new — un-add it, leave the file alone
+  let skipped = 0;
+  for (const entry of parseStatus(res.stdout).files) {
+    if (!inScope(path.resolve(root, entry.repoRel))) continue;
+    if (entry.kind === 'untracked') {
+      skipped++;
+      continue;
     }
-    if (!paths.length) return { ok: false, error: 'Nothing to discard.' };
-
-    // Re-read status here rather than trusting what the renderer last saw: this
-    // destroys work, so it must act on what the repository says right now.
-    //
-    // Scoped to the whole vault and filtered afterwards, NOT with the target paths
-    // as a pathspec: git only detects a rename when both halves are in scope, so
-    // asking about just the new path would report a bare add and quietly leave the
-    // old path deleted.
-    const res = await runGit(root, [
-      'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', baseFolder,
-    ]);
-    if (!res.ok) return { ok: false, error: res.stderr.trim() || 'git status failed.' };
-
-    // A target may be a file or a folder; a deleted file isn't on disk at all, in
-    // which case there is nothing under it and an exact match is the only sense.
-    const wanted = paths.map((p) => ({
-      path: p,
-      isDir: fs.existsSync(p) && fs.statSync(p).isDirectory(),
-    }));
-    const inScope = (abs) =>
-      wanted.some((w) => (w.isDir ? isInside(w.path, abs) : path.resolve(abs) === w.path));
-
-    const restore = new Set(); // has a HEAD version to come back to
-    const unstage = new Set(); // staged but new — un-add it, leave the file alone
-    let skipped = 0;
-    for (const entry of parseStatus(res.stdout).files) {
-      if (!inScope(path.resolve(root, entry.repoRel))) continue;
-      if (entry.kind === 'untracked') {
-        skipped++;
-        continue;
-      }
-      const inHead = await runGit(root, ['cat-file', '-e', `HEAD:${entry.repoRel}`]);
-      (inHead.ok ? restore : unstage).add(entry.repoRel);
-      // A rename's old path is the one HEAD knows; restoring it puts the file back.
-      if (entry.from && (await runGit(root, ['cat-file', '-e', `HEAD:${entry.from}`])).ok) {
-        restore.add(entry.from);
-      }
+    const inHead = await runGit(root, ['cat-file', '-e', `HEAD:${entry.repoRel}`]);
+    (inHead.ok ? restore : unstage).add(entry.repoRel);
+    // A rename's old path is the one HEAD knows; restoring it puts the file back.
+    if (entry.from && (await runGit(root, ['cat-file', '-e', `HEAD:${entry.from}`])).ok) {
+      restore.add(entry.from);
     }
-
-    if (!restore.size && !unstage.size) return { ok: true, reverted: 0, skipped };
-
-    if (unstage.size) {
-      const r = await runGit(root, ['restore', '--staged', '--', ...unstage]);
-      if (!r.ok) return { ok: false, error: r.stderr.trim() || 'git restore --staged failed.' };
-    }
-    if (restore.size) {
-      const r = await runGit(root, [
-        'restore', '--source=HEAD', '--staged', '--worktree', '--', ...restore,
-      ]);
-      if (!r.ok) return { ok: false, error: r.stderr.trim() || 'git restore failed.' };
-    }
-    return { ok: true, reverted: restore.size + unstage.size, skipped };
-  } catch (err) {
-    return { ok: false, error: String(err) };
   }
+
+  if (!restore.size && !unstage.size) return { ok: true, reverted: 0, skipped };
+
+  if (unstage.size) {
+    const r = await runGit(root, ['restore', '--staged', '--', ...unstage]);
+    if (!r.ok) return { ok: false, error: r.stderr.trim() || 'git restore --staged failed.' };
+  }
+  if (restore.size) {
+    const r = await runGit(root, [
+      'restore', '--source=HEAD', '--staged', '--worktree', '--', ...restore,
+    ]);
+    if (!r.ok) return { ok: false, error: r.stderr.trim() || 'git restore failed.' };
+  }
+  return { ok: true, reverted: restore.size + unstage.size, skipped };
 });
 
 // A file's change against HEAD, in both forms the UI offers: the two texts (for the
 // side-by-side visual diff) and git's own unified patch (for the raw view).
-ipcMain.handle('git-diff', async (_e, baseFolder, target) => {
+handle('git-diff', async (baseFolder, target) => {
+  const root = await gitRoot(baseFolder);
+  if (!root) return { ok: false, error: 'Not a git repository.' };
+  const abs = vaultPath(baseFolder, target, 'Outside the vault.');
+  const repoRel = toRepoRel(root, abs);
+
+  // Missing from HEAD means the file is new (untracked or staged-as-added).
+  const show = await runGit(root, ['show', `HEAD:${repoRel}`]);
+  const headBuf = show.ok ? show.buffer : null;
+
+  let workBuf = null;
   try {
-    const root = await gitRoot(baseFolder);
-    if (!root) return { ok: false, error: 'Not a git repository.' };
-    if (typeof target !== 'string' || !isInside(baseFolder, target)) {
-      return { ok: false, error: 'Outside the vault.' };
-    }
-    const abs = path.resolve(target);
-    const repoRel = toRepoRel(root, abs);
+    workBuf = await fsp.readFile(abs);
+  } catch {} // absent on disk = deleted
 
-    // Missing from HEAD means the file is new (untracked or staged-as-added).
-    const show = await runGit(root, ['show', `HEAD:${repoRel}`]);
-    const headBuf = show.ok ? show.buffer : null;
+  const binary = isBinaryBuffer(headBuf) || isBinaryBuffer(workBuf);
 
-    let workBuf = null;
-    try {
-      workBuf = await fsp.readFile(abs);
-    } catch {} // absent on disk = deleted
-
-    const binary = isBinaryBuffer(headBuf) || isBinaryBuffer(workBuf);
-
-    let raw = (await runGit(root, ['diff', 'HEAD', '--', repoRel])).stdout;
-    // An untracked file is invisible to `git diff`, so patch it against nothing.
-    if (!raw.trim() && headBuf === null && workBuf !== null) {
-      raw = (await runGit(root, ['diff', '--no-index', '--', '/dev/null', abs])).stdout;
-    }
-
-    return {
-      ok: true,
-      path: abs,
-      rel: toRepoRel(baseFolder, abs),
-      binary,
-      head: binary || headBuf === null ? null : headBuf.toString('utf8'),
-      work: binary || workBuf === null ? null : workBuf.toString('utf8'),
-      isNew: headBuf === null,
-      isDeleted: workBuf === null,
-      raw: raw.trim() ? raw : '',
-    };
-  } catch (err) {
-    return { ok: false, error: String(err) };
+  let raw = (await runGit(root, ['diff', 'HEAD', '--', repoRel])).stdout;
+  // An untracked file is invisible to `git diff`, so patch it against nothing.
+  if (!raw.trim() && headBuf === null && workBuf !== null) {
+    raw = (await runGit(root, ['diff', '--no-index', '--', '/dev/null', abs])).stdout;
   }
+
+  return {
+    ok: true,
+    path: abs,
+    rel: toRepoRel(baseFolder, abs),
+    binary,
+    head: binary || headBuf === null ? null : headBuf.toString('utf8'),
+    work: binary || workBuf === null ? null : workBuf.toString('utf8'),
+    isNew: headBuf === null,
+    isDeleted: workBuf === null,
+    raw: raw.trim() ? raw : '',
+  };
 });
 
 // A NUL byte in the first block is git's own heuristic for "binary" — good enough
@@ -885,81 +856,68 @@ function isBinaryBuffer(buf) {
 // a base64 data URL. The renderer swaps these in after rendering because the
 // app's file:// origin + CSP won't load vault-relative image paths directly.
 // Only local paths that stay inside the vault are served.
-ipcMain.handle('read-image', async (_e, baseFolder, currentFile, src) => {
+handle('read-image', async (baseFolder, currentFile, src) => {
+  if (!baseFolder || !src) return { ok: false };
+  let ref = String(src).trim();
+  if (/^(https?:|data:|file:)/i.test(ref)) return { ok: false }; // not a local ref
   try {
-    if (!baseFolder || !src) return { ok: false };
-    let ref = String(src).trim();
-    if (/^(https?:|data:|file:)/i.test(ref)) return { ok: false }; // not a local ref
-    try {
-      ref = decodeURIComponent(ref);
-    } catch {}
-    const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
-    const target = path.resolve(fromDir, ref);
-    if (!isInside(baseFolder, target)) return { ok: false };
-    const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
-    if (!mime) return { ok: false };
-    const buf = await fsp.readFile(target);
-    return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
-  } catch {
-    return { ok: false };
-  }
+    ref = decodeURIComponent(ref);
+  } catch {}
+  const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
+  const target = path.resolve(fromDir, ref);
+  if (!isInside(baseFolder, target)) return { ok: false };
+  const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
+  if (!mime) return { ok: false };
+  const buf = await fsp.readFile(target);
+  return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
 });
 
 // Open an image file picked in the tree. Same idea as `read-image`, but the target
 // is an absolute vault path rather than a Markdown reference resolved against the
 // open note — the renderer shows the picture instead of the editor showing bytes.
-ipcMain.handle('read-image-file', async (_e, baseFolder, filePath) => {
-  try {
-    if (!baseFolder || !filePath) return { ok: false, error: 'No file.' };
-    const target = path.resolve(filePath);
-    if (!isInside(baseFolder, target)) return { ok: false, error: 'Outside the vault.' };
-    const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
-    if (!mime) return { ok: false, error: 'Unsupported image type.' };
-    const buf = await fsp.readFile(target);
-    return {
-      ok: true,
-      dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
-      size: buf.length,
-    };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
+handle('read-image-file', async (baseFolder, filePath) => {
+  if (!baseFolder || !filePath) return { ok: false, error: 'No file.' };
+  const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
+  const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
+  if (!mime) return { ok: false, error: 'Unsupported image type.' };
+  const buf = await fsp.readFile(target);
+  return {
+    ok: true,
+    dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+    size: buf.length,
+  };
 });
 
 // Copy a dropped image file into the vault's `images/` folder (deduping the name)
 // and return a Markdown reference relative to the open file so it works both in
 // the raw source and the rendered preview, and stays portable if the vault moves.
-ipcMain.handle('import-image', async (_e, baseFolder, currentFile, srcPath, originalName) => {
-  try {
-    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
-    if (!srcPath || !fs.existsSync(srcPath)) return { ok: false, error: 'Source file not found.' };
-    const ext = path.extname(originalName || srcPath).toLowerCase();
-    if (!IMAGE_MIME[ext]) return { ok: false, error: 'Unsupported image type.' };
+handle('import-image', async (baseFolder, currentFile, srcPath, originalName) => {
+  if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
+  if (!srcPath || !fs.existsSync(srcPath)) return { ok: false, error: 'Source file not found.' };
+  const ext = path.extname(originalName || srcPath).toLowerCase();
+  if (!IMAGE_MIME[ext]) return { ok: false, error: 'Unsupported image type.' };
 
-    const imagesDir = path.join(baseFolder, 'images');
-    await fsp.mkdir(imagesDir, { recursive: true });
+  const imagesDir = path.join(baseFolder, 'images');
+  await fsp.mkdir(imagesDir, { recursive: true });
 
-    // URL-safe base name (avoids escaping headaches in Markdown refs / data-url resolution).
-    let base =
-      path
-        .basename(originalName || srcPath, path.extname(originalName || srcPath))
-        .replace(/[^a-zA-Z0-9-_]+/g, '-')
-        .replace(/^-+|-+$/g, '') || 'image';
-    let name = base + ext;
-    let n = 1;
-    while (fs.existsSync(path.join(imagesDir, name))) {
-      name = `${base}-${n}${ext}`;
-      n++;
-    }
-    const dest = path.join(imagesDir, name);
-    await fsp.copyFile(srcPath, dest);
-
-    const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
-    const ref = path.relative(fromDir, dest).split(path.sep).join('/');
-    return { ok: true, path: dest, ref };
-  } catch (err) {
-    return { ok: false, error: String(err) };
+  // URL-safe base name (avoids escaping headaches in Markdown refs / data-url resolution).
+  let base =
+    path
+      .basename(originalName || srcPath, path.extname(originalName || srcPath))
+      .replace(/[^a-zA-Z0-9-_]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'image';
+  let name = base + ext;
+  let n = 1;
+  while (fs.existsSync(path.join(imagesDir, name))) {
+    name = `${base}-${n}${ext}`;
+    n++;
   }
+  const dest = path.join(imagesDir, name);
+  await fsp.copyFile(srcPath, dest);
+
+  const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
+  const ref = path.relative(fromDir, dest).split(path.sep).join('/');
+  return { ok: true, path: dest, ref };
 });
 
 // ---- Smart insert (Claude-powered "file this note") ----
@@ -1175,7 +1133,7 @@ function extractJson(text) {
 
 // Ask Claude where a note should go. Returns a plan (target + proposed new content
 // + the current content, so the renderer can preview the change) but writes nothing.
-ipcMain.handle('smart-check', async (_e, baseFolder, currentFile, text) => {
+handle('smart-check', async (baseFolder, currentFile, text) => {
   if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
   if (!text || !text.trim()) return { ok: false, error: 'Nothing to add.' };
 
@@ -1294,7 +1252,7 @@ function sanitizeSources(raw, baseFolder) {
 }
 
 // Ask Claude a question about the vault. Read-only: nothing is written.
-ipcMain.handle('smart-lookup', async (_e, baseFolder, currentFile, question) => {
+handle('smart-lookup', async (baseFolder, currentFile, question) => {
   if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
   if (!question || !question.trim()) return { ok: false, error: 'Nothing to look up.' };
 
@@ -1375,43 +1333,33 @@ function sanitizeAnalysis(raw) {
 // Describe a freshly-imported image with Claude. Returns { alt, description } for
 // the renderer to fold into the note; writes nothing itself. `skipped` marks an
 // image type Claude can't look at, which is not an error worth reporting.
-ipcMain.handle('analyze-image', async (_e, baseFolder, imagePath) => {
-  try {
-    if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
-    const target = path.resolve(imagePath || '');
-    if (!isInside(baseFolder, target)) return { ok: false, error: 'Image is outside the vault.' };
-    if (!fs.existsSync(target)) return { ok: false, error: 'Image not found.' };
-    if (!ANALYZABLE_IMAGE.has(path.extname(target).toLowerCase())) {
-      return { ok: false, skipped: true, error: 'Claude can’t read this image type.' };
-    }
-
-    const rel = path.relative(baseFolder, target).split(path.sep).join('/');
-    const res = await runClaude(baseFolder, buildImagePrompt(rel));
-    if (!res.ok) return res;
-
-    let envelope = null;
-    try {
-      envelope = JSON.parse(res.stdout);
-    } catch {}
-    const modelText =
-      envelope && typeof envelope.result === 'string' ? envelope.result : res.stdout;
-    const analysis = sanitizeAnalysis(extractJson(modelText));
-    if (!analysis) return { ok: false, error: 'Could not understand Claude’s response.' };
-    return { ok: true, ...analysis };
-  } catch (err) {
-    return { ok: false, error: String(err) };
+handle('analyze-image', async (baseFolder, imagePath) => {
+  if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
+  const target = vaultPath(baseFolder, imagePath || '', 'Image is outside the vault.');
+  if (!fs.existsSync(target)) return { ok: false, error: 'Image not found.' };
+  if (!ANALYZABLE_IMAGE.has(path.extname(target).toLowerCase())) {
+    return { ok: false, skipped: true, error: 'Claude can’t read this image type.' };
   }
+
+  const rel = path.relative(baseFolder, target).split(path.sep).join('/');
+  const res = await runClaude(baseFolder, buildImagePrompt(rel));
+  if (!res.ok) return res;
+
+  let envelope = null;
+  try {
+    envelope = JSON.parse(res.stdout);
+  } catch {}
+  const modelText =
+    envelope && typeof envelope.result === 'string' ? envelope.result : res.stdout;
+  const analysis = sanitizeAnalysis(extractJson(modelText));
+  if (!analysis) return { ok: false, error: 'Could not understand Claude’s response.' };
+  return { ok: true, ...analysis };
 });
 
 // Apply a previously-checked plan: write the new content (creating parent dirs).
-ipcMain.handle('smart-apply', async (_e, baseFolder, relPath, content) => {
-  try {
-    const target = path.resolve(baseFolder, relPath);
-    if (!isInside(baseFolder, target)) return { ok: false, error: 'Invalid path' };
-    await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.writeFile(target, content, 'utf8');
-    return { ok: true, path: target };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+handle('smart-apply', async (baseFolder, relPath, content) => {
+  const target = vaultPath(baseFolder, relPath);
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  await fsp.writeFile(target, content, 'utf8');
+  return { ok: true, path: target };
 });

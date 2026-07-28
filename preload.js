@@ -5,10 +5,14 @@ contextBridge.exposeInMainWorld('api', {
   getLastFolder: () => ipcRenderer.invoke('get-last-folder'),
   chooseFolder: () => ipcRenderer.invoke('choose-folder'),
   readTree: (baseFolder) => ipcRenderer.invoke('read-tree', baseFolder),
-  readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
-  writeFile: (filePath, content) => ipcRenderer.invoke('write-file', filePath, content),
+  // baseFolder is passed so main can refuse a path outside the vault — the same
+  // guard every other handler that takes a target from the renderer applies.
+  readFile: (baseFolder, filePath) => ipcRenderer.invoke('read-file', baseFolder, filePath),
+  writeFile: (baseFolder, filePath, content) =>
+    ipcRenderer.invoke('write-file', baseFolder, filePath, content),
   // Synchronous write, used only on window close to guarantee the last edit lands.
-  writeFileSync: (filePath, content) => ipcRenderer.sendSync('write-file-sync', filePath, content),
+  writeFileSync: (baseFolder, filePath, content) =>
+    ipcRenderer.sendSync('write-file-sync', baseFolder, filePath, content),
   createFile: (baseFolder, relPath) => ipcRenderer.invoke('create-file', baseFolder, relPath),
   createFolder: (baseFolder, relPath) => ipcRenderer.invoke('create-folder', baseFolder, relPath),
   // Smart insert: ask Claude where a note belongs, then apply the result.

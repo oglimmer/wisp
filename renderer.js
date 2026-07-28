@@ -650,7 +650,9 @@ async function openFile(filePath, rowEl) {
 
   // An image is fetched as a data URL and shown; only text files reach the editor.
   const image = isImage(filePath);
-  const res = image ? await api.readImageFile(baseFolder, filePath) : await api.readFile(filePath);
+  const res = image
+    ? await api.readImageFile(baseFolder, filePath)
+    : await api.readFile(baseFolder, filePath);
   if (!res.ok) {
     setStatus('Error: ' + res.error, true);
     return;
@@ -687,7 +689,7 @@ async function saveCurrent() {
   syncWysiwygToEditor();
   // Capture the file being saved: it may change if this runs after a switch.
   const target = currentFile;
-  const res = await api.writeFile(target, editorEl.value);
+  const res = await api.writeFile(baseFolder, target, editorEl.value);
   if (res.ok) {
     if (currentFile === target) dirty = false;
     setStatus('Saved');
@@ -1214,6 +1216,70 @@ function relativePath(filePath) {
   return rel || filePath;
 }
 
+// ---- Dialogs ----
+// Every dialog in the app is the same thing: a full-screen overlay holding one
+// box, closed by Escape, by its own buttons, and — unless it's a reminder alert,
+// which must not go away to a stray click — by the backdrop. Only the contents
+// differ, so the scaffolding lives here once. That includes the part that is easy
+// to get subtly wrong: the keydown listener is registered on the *capture* phase
+// (so the window-level shortcuts, which stand down while an overlay is up, never
+// see it) and is removed by the same `close` that removes the overlay, exactly
+// once however the dialog was dismissed.
+//
+// Returns `{ box, close, promise }`: fill `box`, call `close(value)` to settle.
+// `onKey(e, close)` is consulted first and returns true once it has handled the
+// event; Escape is the fallback. `onClose(value)` runs before the promise settles.
+function openModal({
+  overlayClass = 'modal-overlay',
+  boxClass = 'modal-box',
+  cancelValue = null,
+  dismissOnBackdrop = true,
+  onKey,
+  onClose,
+} = {}) {
+  const overlay = document.createElement('div');
+  overlay.className = overlayClass;
+  const box = document.createElement('div');
+  box.className = boxClass;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  let settle;
+  const promise = new Promise((resolve) => {
+    settle = resolve;
+  });
+
+  let done = false;
+  function close(value = cancelValue) {
+    if (done) return;
+    done = true;
+    overlay.remove();
+    document.removeEventListener('keydown', onKeyDown, true);
+    if (onClose) onClose(value);
+    settle(value);
+  }
+  function onKeyDown(e) {
+    if (onKey && onKey(e, close)) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  }
+  document.addEventListener('keydown', onKeyDown, true);
+  if (dismissOnBackdrop) {
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) close();
+    });
+  }
+  return { overlay, box, close, promise };
+}
+
+// A dialog at a time: two overlays would both answer the same Escape, and the
+// window-level shortcuts stand down while either is up.
+function dialogOpen() {
+  return !!document.querySelector('.modal-overlay, .alert-overlay');
+}
+
 // ---- Keyboard shortcuts help ----
 // Opened from Help ▸ Keyboard Shortcuts (⌘/ / Ctrl+/). The list lives here, next
 // to the handlers it describes, rather than in the menu that opens it.
@@ -1260,15 +1326,18 @@ const SHORTCUT_GROUPS = [
 ];
 
 function shortcutsModal() {
-  // A dialog at a time: the window-level shortcuts stand down while any overlay is
-  // up, and two dialogs would both answer the same Escape.
-  if (document.querySelector('.modal-overlay, .alert-overlay')) return;
+  if (dialogOpen()) return;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-
-  const box = document.createElement('div');
-  box.className = 'modal-box sc-box';
+  // Enter closes too — there is nothing else to confirm.
+  const { box, close } = openModal({
+    boxClass: 'modal-box sc-box',
+    onKey: (e, close) => {
+      if (e.key !== 'Enter') return false;
+      e.preventDefault();
+      close();
+      return true;
+    },
+  });
 
   const title = document.createElement('div');
   title.className = 'modal-title';
@@ -1306,24 +1375,7 @@ function shortcutsModal() {
   actions.appendChild(closeBtn);
   box.appendChild(actions);
 
-  overlay.appendChild(box);
-  document.body.appendChild(overlay);
-
-  function close() {
-    overlay.remove();
-    document.removeEventListener('keydown', onKey, true);
-  }
-  function onKey(e) {
-    if (e.key === 'Escape' || e.key === 'Enter') {
-      e.preventDefault();
-      close();
-    }
-  }
-  closeBtn.addEventListener('click', close);
-  overlay.addEventListener('mousedown', (e) => {
-    if (e.target === overlay) close();
-  });
-  document.addEventListener('keydown', onKey, true);
+  closeBtn.addEventListener('click', () => close());
   closeBtn.focus();
 }
 
@@ -1333,74 +1385,48 @@ api.onShowShortcuts(shortcutsModal);
 // (it silently returns null), so anything that needs typed input uses this.
 // Resolves to the trimmed string, or null if cancelled / left empty.
 function promptModal(title, defaultValue = '') {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-
-    const box = document.createElement('div');
-    box.className = 'modal-box';
-
-    const label = document.createElement('div');
-    label.className = 'modal-title';
-    label.textContent = title;
-
-    const input = document.createElement('input');
-    input.className = 'modal-input';
-    input.type = 'text';
-    input.value = defaultValue;
-
-    const actions = document.createElement('div');
-    actions.className = 'modal-actions';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    const okBtn = document.createElement('button');
-    okBtn.textContent = 'OK';
-    okBtn.className = 'modal-primary';
-    actions.appendChild(cancelBtn);
-    actions.appendChild(okBtn);
-
-    box.appendChild(label);
-    box.appendChild(input);
-    box.appendChild(actions);
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    let done = false;
-    function close(value) {
-      if (done) return;
-      done = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey, true);
-      resolve(value);
-    }
-    function submit() {
-      const v = input.value.trim();
-      close(v || null);
-    }
-    function onKey(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close(null);
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        submit();
-      }
-    }
-
-    okBtn.addEventListener('click', submit);
-    cancelBtn.addEventListener('click', () => close(null));
-    // Click on the dimmed backdrop (but not the box) cancels.
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) close(null);
-    });
-    document.addEventListener('keydown', onKey, true);
-
-    // Focus and preselect the base name (before the extension) for fast editing.
-    input.focus();
-    const dot = defaultValue.lastIndexOf('.');
-    if (dot > 0) input.setSelectionRange(0, dot);
-    else input.select();
+  const { box, close, promise } = openModal({
+    onKey: (e, close) => {
+      if (e.key !== 'Enter') return false;
+      e.preventDefault();
+      close(input.value.trim() || null);
+      return true;
+    },
   });
+
+  const label = document.createElement('div');
+  label.className = 'modal-title';
+  label.textContent = title;
+
+  const input = document.createElement('input');
+  input.className = 'modal-input';
+  input.type = 'text';
+  input.value = defaultValue;
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  const okBtn = document.createElement('button');
+  okBtn.textContent = 'OK';
+  okBtn.className = 'modal-primary';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(okBtn);
+
+  box.appendChild(label);
+  box.appendChild(input);
+  box.appendChild(actions);
+
+  okBtn.addEventListener('click', () => close(input.value.trim() || null));
+  cancelBtn.addEventListener('click', () => close(null));
+
+  // Focus and preselect the base name (before the extension) for fast editing.
+  input.focus();
+  const dot = defaultValue.lastIndexOf('.');
+  if (dot > 0) input.setSelectionRange(0, dot);
+  else input.select();
+
+  return promise;
 }
 
 // ---- Toolbar actions ----
@@ -2280,126 +2306,109 @@ const DEFAULT_COMMIT_MESSAGE = 'Update';
 // The commit dialog: the message, the exact list of files that will be included
 // (each opening its diff on click), and whether to push afterwards.
 function commitModal(files, hasUpstream) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    const box = document.createElement('div');
-    box.className = 'modal-box gc-box';
-
-    const heading = document.createElement('div');
-    heading.className = 'modal-title';
-    heading.textContent = `Commit ${files.length} change${files.length === 1 ? '' : 's'}`;
-    box.appendChild(heading);
-
-    const msgLabel = document.createElement('label');
-    msgLabel.className = 'rm-label';
-    msgLabel.textContent = 'Message';
-    box.appendChild(msgLabel);
-
-    const msgInput = document.createElement('textarea');
-    msgInput.className = 'modal-input gc-message';
-    msgInput.rows = 3;
-    msgInput.placeholder = 'What changed?';
-    msgInput.value = commitDraft || DEFAULT_COMMIT_MESSAGE;
-    box.appendChild(msgInput);
-
-    const listLabel = document.createElement('label');
-    listLabel.className = 'rm-label gc-list-label';
-    listLabel.textContent = 'Files — click one to review its diff';
-    box.appendChild(listLabel);
-
-    const list = document.createElement('div');
-    list.className = 'gc-list';
-    for (const file of files) {
-      const row = document.createElement('button');
-      row.className = 'gc-file';
-      row.dataset.git = file.kind;
-      const letter = document.createElement('span');
-      letter.className = 'git-badge';
-      letter.textContent = GIT_LETTER[file.kind] || 'M';
-      const name = document.createElement('span');
-      name.className = 'gc-file-path';
-      name.textContent = file.rel;
-      row.title = gitEntryTitle(file);
-      row.appendChild(letter);
-      row.appendChild(name);
-      // The diff lives in the editor pane, so reviewing one means leaving this
-      // dialog. The message typed so far is kept and restored when it reopens.
-      row.addEventListener('click', () => close({ action: 'diff', path: file.path }));
-      list.appendChild(row);
-    }
-    box.appendChild(list);
-
-    const pushWrap = document.createElement('label');
-    pushWrap.className = 'gc-push';
-    const pushCheck = document.createElement('input');
-    pushCheck.type = 'checkbox';
-    pushCheck.checked = hasUpstream;
-    const pushText = document.createElement('span');
-    pushText.textContent = hasUpstream
-      ? 'Push after committing'
-      : 'Push after committing (publishes this branch)';
-    pushWrap.appendChild(pushCheck);
-    pushWrap.appendChild(pushText);
-    box.appendChild(pushWrap);
-
-    const actions = document.createElement('div');
-    actions.className = 'modal-actions';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    const okBtn = document.createElement('button');
-    okBtn.className = 'modal-primary';
-    actions.appendChild(cancelBtn);
-    actions.appendChild(okBtn);
-    box.appendChild(actions);
-
-    const syncOk = () => (okBtn.textContent = pushCheck.checked ? 'Commit & Push' : 'Commit');
-    syncOk();
-    pushCheck.addEventListener('change', syncOk);
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    let done = false;
-    function close(value) {
-      if (done) return;
-      done = true;
-      // Keep whatever was typed unless this was a real commit or an explicit cancel.
+  const { box, close, promise } = openModal({
+    boxClass: 'modal-box gc-box',
+    // Plain Enter is a newline: a commit message has more than one line.
+    onKey: (e) => {
+      if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return false;
+      e.preventDefault();
+      submit();
+      return true;
+    },
+    // Keep whatever was typed unless this was a real commit or an explicit cancel.
+    onClose: (value) => {
       commitDraft = value && value.action === 'diff' ? msgInput.value : '';
-      overlay.remove();
-      document.removeEventListener('keydown', onKey, true);
-      resolve(value);
-    }
-    function submit() {
-      const message = msgInput.value.trim();
-      if (!message) {
-        msgInput.classList.add('invalid');
-        msgInput.focus();
-        return;
-      }
-      close({ message, push: pushCheck.checked });
-    }
-    function onKey(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close(null);
-      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        // Plain Enter is a newline: a commit message has more than one line.
-        e.preventDefault();
-        submit();
-      }
-    }
-
-    msgInput.addEventListener('input', () => msgInput.classList.remove('invalid'));
-    okBtn.addEventListener('click', submit);
-    cancelBtn.addEventListener('click', () => close(null));
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) close(null);
-    });
-    document.addEventListener('keydown', onKey, true);
-    msgInput.focus();
-    msgInput.select();
+    },
   });
+
+  const heading = document.createElement('div');
+  heading.className = 'modal-title';
+  heading.textContent = `Commit ${files.length} change${files.length === 1 ? '' : 's'}`;
+  box.appendChild(heading);
+
+  const msgLabel = document.createElement('label');
+  msgLabel.className = 'rm-label';
+  msgLabel.textContent = 'Message';
+  box.appendChild(msgLabel);
+
+  const msgInput = document.createElement('textarea');
+  msgInput.className = 'modal-input gc-message';
+  msgInput.rows = 3;
+  msgInput.placeholder = 'What changed?';
+  msgInput.value = commitDraft || DEFAULT_COMMIT_MESSAGE;
+  box.appendChild(msgInput);
+
+  const listLabel = document.createElement('label');
+  listLabel.className = 'rm-label gc-list-label';
+  listLabel.textContent = 'Files — click one to review its diff';
+  box.appendChild(listLabel);
+
+  const list = document.createElement('div');
+  list.className = 'gc-list';
+  for (const file of files) {
+    const row = document.createElement('button');
+    row.className = 'gc-file';
+    row.dataset.git = file.kind;
+    const letter = document.createElement('span');
+    letter.className = 'git-badge';
+    letter.textContent = GIT_LETTER[file.kind] || 'M';
+    const name = document.createElement('span');
+    name.className = 'gc-file-path';
+    name.textContent = file.rel;
+    row.title = gitEntryTitle(file);
+    row.appendChild(letter);
+    row.appendChild(name);
+    // The diff lives in the editor pane, so reviewing one means leaving this
+    // dialog. The message typed so far is kept and restored when it reopens.
+    row.addEventListener('click', () => close({ action: 'diff', path: file.path }));
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+
+  const pushWrap = document.createElement('label');
+  pushWrap.className = 'gc-push';
+  const pushCheck = document.createElement('input');
+  pushCheck.type = 'checkbox';
+  pushCheck.checked = hasUpstream;
+  const pushText = document.createElement('span');
+  pushText.textContent = hasUpstream
+    ? 'Push after committing'
+    : 'Push after committing (publishes this branch)';
+  pushWrap.appendChild(pushCheck);
+  pushWrap.appendChild(pushText);
+  box.appendChild(pushWrap);
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  const okBtn = document.createElement('button');
+  okBtn.className = 'modal-primary';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(okBtn);
+  box.appendChild(actions);
+
+  const syncOk = () => (okBtn.textContent = pushCheck.checked ? 'Commit & Push' : 'Commit');
+  syncOk();
+  pushCheck.addEventListener('change', syncOk);
+
+  function submit() {
+    const message = msgInput.value.trim();
+    if (!message) {
+      msgInput.classList.add('invalid');
+      msgInput.focus();
+      return;
+    }
+    close({ message, push: pushCheck.checked });
+  }
+
+  msgInput.addEventListener('input', () => msgInput.classList.remove('invalid'));
+  okBtn.addEventListener('click', submit);
+  cancelBtn.addEventListener('click', () => close(null));
+  msgInput.focus();
+  msgInput.select();
+
+  return promise;
 }
 
 // ---- Discard changes ----
@@ -2484,92 +2493,74 @@ async function discardChanges(target, scope, label) {
 // A yes/no dialog that shows exactly what is about to happen. Used for discarding,
 // which is the one action here that destroys work with no undo.
 function confirmModal({ title, message, files, notes, confirmLabel }) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    const box = document.createElement('div');
-    box.className = 'modal-box gc-box';
-
-    const heading = document.createElement('div');
-    heading.className = 'modal-title';
-    heading.textContent = title;
-    box.appendChild(heading);
-
-    if (message) {
-      const p = document.createElement('div');
-      p.className = 'cf-message';
-      p.textContent = message;
-      box.appendChild(p);
-    }
-
-    if (files && files.length) {
-      const list = document.createElement('div');
-      list.className = 'gc-list';
-      for (const file of files) {
-        const row = document.createElement('div');
-        row.className = 'gc-file cf-static';
-        row.dataset.git = file.kind;
-        const letter = document.createElement('span');
-        letter.className = 'git-badge';
-        letter.textContent = GIT_LETTER[file.kind] || 'M';
-        const name = document.createElement('span');
-        name.className = 'gc-file-path';
-        name.textContent = file.rel;
-        row.title = gitEntryTitle(file);
-        row.appendChild(letter);
-        row.appendChild(name);
-        list.appendChild(row);
-      }
-      box.appendChild(list);
-    }
-
-    for (const note of notes || []) {
-      const el = document.createElement('div');
-      el.className = 'cf-note';
-      el.textContent = note;
-      box.appendChild(el);
-    }
-
-    const actions = document.createElement('div');
-    actions.className = 'modal-actions';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    const okBtn = document.createElement('button');
-    okBtn.className = 'modal-danger';
-    okBtn.textContent = confirmLabel || 'OK';
-    actions.appendChild(cancelBtn);
-    actions.appendChild(okBtn);
-    box.appendChild(actions);
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    let done = false;
-    function close(value) {
-      if (done) return;
-      done = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey, true);
-      resolve(value);
-    }
-    function onKey(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close(false);
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        close(true);
-      }
-    }
-    okBtn.addEventListener('click', () => close(true));
-    cancelBtn.addEventListener('click', () => close(false));
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) close(false);
-    });
-    document.addEventListener('keydown', onKey, true);
-    // Cancel takes focus, not the destructive button.
-    cancelBtn.focus();
+  const { box, close, promise } = openModal({
+    boxClass: 'modal-box gc-box',
+    cancelValue: false,
+    onKey: (e, close) => {
+      if (e.key !== 'Enter') return false;
+      e.preventDefault();
+      close(true);
+      return true;
+    },
   });
+
+  const heading = document.createElement('div');
+  heading.className = 'modal-title';
+  heading.textContent = title;
+  box.appendChild(heading);
+
+  if (message) {
+    const p = document.createElement('div');
+    p.className = 'cf-message';
+    p.textContent = message;
+    box.appendChild(p);
+  }
+
+  if (files && files.length) {
+    const list = document.createElement('div');
+    list.className = 'gc-list';
+    for (const file of files) {
+      const row = document.createElement('div');
+      row.className = 'gc-file cf-static';
+      row.dataset.git = file.kind;
+      const letter = document.createElement('span');
+      letter.className = 'git-badge';
+      letter.textContent = GIT_LETTER[file.kind] || 'M';
+      const name = document.createElement('span');
+      name.className = 'gc-file-path';
+      name.textContent = file.rel;
+      row.title = gitEntryTitle(file);
+      row.appendChild(letter);
+      row.appendChild(name);
+      list.appendChild(row);
+    }
+    box.appendChild(list);
+  }
+
+  for (const note of notes || []) {
+    const el = document.createElement('div');
+    el.className = 'cf-note';
+    el.textContent = note;
+    box.appendChild(el);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  const okBtn = document.createElement('button');
+  okBtn.className = 'modal-danger';
+  okBtn.textContent = confirmLabel || 'OK';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(okBtn);
+  box.appendChild(actions);
+
+  okBtn.addEventListener('click', () => close(true));
+  cancelBtn.addEventListener('click', () => close(false));
+  // Cancel takes focus, not the destructive button.
+  cancelBtn.focus();
+
+  return promise;
 }
 
 // ---- Diff view ----
@@ -3172,181 +3163,163 @@ async function editReminder(rem) {
 // Same promise-based pattern as promptModal (Electron has no window.prompt), but
 // with the fields a reminder needs. Resolves to { action, reminder } or null.
 function reminderModal(existing, defaultFile = '') {
-  return new Promise((resolve) => {
-    const base = existing || {
-      id: newReminderId(),
-      title: '',
-      due: defaultDue(),
-      repeat: 'none',
-      note: '',
-      file: defaultFile,
-    };
-    const parts = toLocalParts(base.due);
-
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    const box = document.createElement('div');
-    box.className = 'modal-box rm-box';
-
-    const heading = document.createElement('div');
-    heading.className = 'modal-title';
-    heading.textContent = existing ? 'Edit reminder' : 'New reminder';
-    box.appendChild(heading);
-
-    // label + control, stacked
-    const field = (labelText, control, className) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'rm-field' + (className ? ' ' + className : '');
-      const label = document.createElement('label');
-      label.className = 'rm-label';
-      label.textContent = labelText;
-      wrap.appendChild(label);
-      wrap.appendChild(control);
-      box.appendChild(wrap);
-      return wrap;
-    };
-
-    const titleInput = document.createElement('input');
-    titleInput.className = 'modal-input';
-    titleInput.type = 'text';
-    titleInput.value = base.title;
-    titleInput.placeholder = 'What should you be reminded of?';
-    field('Reminder', titleInput);
-
-    // Date / time / repeat share one row.
-    const whenRow = document.createElement('div');
-    whenRow.className = 'rm-row';
-    const dateInput = document.createElement('input');
-    dateInput.className = 'modal-input';
-    dateInput.type = 'date';
-    dateInput.value = parts.date;
-    const timeInput = document.createElement('input');
-    timeInput.className = 'modal-input';
-    timeInput.type = 'time';
-    timeInput.value = parts.time;
-    const repeatSelect = document.createElement('select');
-    repeatSelect.className = 'modal-input';
-    for (const [value, label] of Object.entries(REPEAT_LABELS)) {
-      const opt = document.createElement('option');
-      opt.value = value;
-      opt.textContent = label;
-      repeatSelect.appendChild(opt);
-    }
-    repeatSelect.value = REPEAT_LABELS[base.repeat] ? base.repeat : 'none';
-
-    const cell = (labelText, control) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'rm-field';
-      const label = document.createElement('label');
-      label.className = 'rm-label';
-      label.textContent = labelText;
-      wrap.appendChild(label);
-      wrap.appendChild(control);
-      whenRow.appendChild(wrap);
-    };
-    cell('Date', dateInput);
-    cell('Time', timeInput);
-    cell('Repeat', repeatSelect);
-    box.appendChild(whenRow);
-
-    const noteInput = document.createElement('textarea');
-    noteInput.className = 'modal-input rm-note';
-    noteInput.rows = 3;
-    noteInput.value = base.note;
-    noteInput.placeholder = 'Optional details shown in the popup';
-    field('Details', noteInput);
-
-    const fileInput = document.createElement('input');
-    fileInput.className = 'modal-input';
-    fileInput.type = 'text';
-    fileInput.value = base.file;
-    fileInput.placeholder = 'Optional — e.g. work/projects.md';
-    field('Linked note', fileInput);
-
-    const actions = document.createElement('div');
-    actions.className = 'modal-actions rm-actions';
-    if (existing) {
-      const delBtn = document.createElement('button');
-      delBtn.textContent = 'Delete';
-      delBtn.className = 'rm-danger';
-      delBtn.addEventListener('click', () => close({ action: 'delete' }));
-      actions.appendChild(delBtn);
-    }
-    if (existing && base.file) {
-      const openBtn = document.createElement('button');
-      openBtn.textContent = 'Open note';
-      openBtn.addEventListener('click', () => close({ action: 'open' }));
-      actions.appendChild(openBtn);
-    }
-    const spacer = document.createElement('div');
-    spacer.className = 'rm-spacer';
-    actions.appendChild(spacer);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    const okBtn = document.createElement('button');
-    okBtn.textContent = 'Save';
-    okBtn.className = 'modal-primary';
-    actions.appendChild(cancelBtn);
-    actions.appendChild(okBtn);
-    box.appendChild(actions);
-
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
-    let done = false;
-    function close(value) {
-      if (done) return;
-      done = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey, true);
-      resolve(value);
-    }
-    function submit() {
-      const title = titleInput.value.trim();
-      if (!title) {
-        titleInput.classList.add('invalid');
-        titleInput.focus();
-        return;
-      }
-      const due = fromLocalParts(dateInput.value, timeInput.value);
-      if (!due) {
-        dateInput.classList.add('invalid');
-        dateInput.focus();
-        return;
-      }
-      close({
-        action: 'save',
-        reminder: {
-          id: base.id,
-          title,
-          due,
-          repeat: repeatSelect.value,
-          note: noteInput.value.trim(),
-          file: fileInput.value.trim(),
-        },
-      });
-    }
-    function onKey(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close(null);
-      } else if (e.key === 'Enter' && e.target !== noteInput) {
-        e.preventDefault();
-        submit();
-      }
-    }
-
-    box.addEventListener('input', (e) => e.target.classList.remove('invalid'));
-    okBtn.addEventListener('click', submit);
-    cancelBtn.addEventListener('click', () => close(null));
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) close(null);
-    });
-    document.addEventListener('keydown', onKey, true);
-
-    titleInput.focus();
-    titleInput.select();
+  const { box, close, promise } = openModal({
+    boxClass: 'modal-box rm-box',
+    // Enter saves — except in the details box, where it's a newline.
+    onKey: (e) => {
+      if (e.key !== 'Enter' || e.target === noteInput) return false;
+      e.preventDefault();
+      submit();
+      return true;
+    },
   });
+
+  const base = existing || {
+    id: newReminderId(),
+    title: '',
+    due: defaultDue(),
+    repeat: 'none',
+    note: '',
+    file: defaultFile,
+  };
+  const parts = toLocalParts(base.due);
+
+  const heading = document.createElement('div');
+  heading.className = 'modal-title';
+  heading.textContent = existing ? 'Edit reminder' : 'New reminder';
+  box.appendChild(heading);
+
+  // label + control, stacked
+  const field = (labelText, control, className) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'rm-field' + (className ? ' ' + className : '');
+    const label = document.createElement('label');
+    label.className = 'rm-label';
+    label.textContent = labelText;
+    wrap.appendChild(label);
+    wrap.appendChild(control);
+    box.appendChild(wrap);
+    return wrap;
+  };
+
+  const titleInput = document.createElement('input');
+  titleInput.className = 'modal-input';
+  titleInput.type = 'text';
+  titleInput.value = base.title;
+  titleInput.placeholder = 'What should you be reminded of?';
+  field('Reminder', titleInput);
+
+  // Date / time / repeat share one row.
+  const whenRow = document.createElement('div');
+  whenRow.className = 'rm-row';
+  const dateInput = document.createElement('input');
+  dateInput.className = 'modal-input';
+  dateInput.type = 'date';
+  dateInput.value = parts.date;
+  const timeInput = document.createElement('input');
+  timeInput.className = 'modal-input';
+  timeInput.type = 'time';
+  timeInput.value = parts.time;
+  const repeatSelect = document.createElement('select');
+  repeatSelect.className = 'modal-input';
+  for (const [value, label] of Object.entries(REPEAT_LABELS)) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    repeatSelect.appendChild(opt);
+  }
+  repeatSelect.value = REPEAT_LABELS[base.repeat] ? base.repeat : 'none';
+
+  const cell = (labelText, control) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'rm-field';
+    const label = document.createElement('label');
+    label.className = 'rm-label';
+    label.textContent = labelText;
+    wrap.appendChild(label);
+    wrap.appendChild(control);
+    whenRow.appendChild(wrap);
+  };
+  cell('Date', dateInput);
+  cell('Time', timeInput);
+  cell('Repeat', repeatSelect);
+  box.appendChild(whenRow);
+
+  const noteInput = document.createElement('textarea');
+  noteInput.className = 'modal-input rm-note';
+  noteInput.rows = 3;
+  noteInput.value = base.note;
+  noteInput.placeholder = 'Optional details shown in the popup';
+  field('Details', noteInput);
+
+  const fileInput = document.createElement('input');
+  fileInput.className = 'modal-input';
+  fileInput.type = 'text';
+  fileInput.value = base.file;
+  fileInput.placeholder = 'Optional — e.g. work/projects.md';
+  field('Linked note', fileInput);
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions rm-actions';
+  if (existing) {
+    const delBtn = document.createElement('button');
+    delBtn.textContent = 'Delete';
+    delBtn.className = 'rm-danger';
+    delBtn.addEventListener('click', () => close({ action: 'delete' }));
+    actions.appendChild(delBtn);
+  }
+  if (existing && base.file) {
+    const openBtn = document.createElement('button');
+    openBtn.textContent = 'Open note';
+    openBtn.addEventListener('click', () => close({ action: 'open' }));
+    actions.appendChild(openBtn);
+  }
+  const spacer = document.createElement('div');
+  spacer.className = 'rm-spacer';
+  actions.appendChild(spacer);
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  const okBtn = document.createElement('button');
+  okBtn.textContent = 'Save';
+  okBtn.className = 'modal-primary';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(okBtn);
+  box.appendChild(actions);
+
+  function submit() {
+    const title = titleInput.value.trim();
+    if (!title) {
+      titleInput.classList.add('invalid');
+      titleInput.focus();
+      return;
+    }
+    const due = fromLocalParts(dateInput.value, timeInput.value);
+    if (!due) {
+      dateInput.classList.add('invalid');
+      dateInput.focus();
+      return;
+    }
+    close({
+      action: 'save',
+      reminder: {
+        id: base.id,
+        title,
+        due,
+        repeat: repeatSelect.value,
+        note: noteInput.value.trim(),
+        file: fileInput.value.trim(),
+      },
+    });
+  }
+
+  box.addEventListener('input', (e) => e.target.classList.remove('invalid'));
+  okBtn.addEventListener('click', submit);
+  cancelBtn.addEventListener('click', () => close(null));
+
+  titleInput.focus();
+  titleInput.select();
+
+  return promise;
 }
 
 // ---- Due watching + the alert popup ----
@@ -3379,8 +3352,10 @@ function checkDueReminders() {
 }
 
 // Show queued alerts one at a time — several reminders can come due together.
+// A dialog already up keeps the queue intact rather than stacking a second
+// overlay on it: the ticker retries, so the alert is deferred, never dropped.
 function drainAlerts() {
-  if (alertShowing) return;
+  if (alertShowing || dialogOpen()) return;
   while (alertQueue.length) {
     const rem = reminders.find((r) => r.id === alertQueue.shift());
     if (rem) {
@@ -3394,11 +3369,18 @@ function showReminderAlert(rem) {
   alertShowing = true;
   api.alertWindow(); // bring the window forward / flash the taskbar
 
-  const overlay = document.createElement('div');
-  overlay.className = 'alert-overlay';
-
-  const box = document.createElement('div');
-  box.className = 'alert-box';
+  // No backdrop dismissal: a reminder must not disappear to a stray click.
+  // Escape does dismiss it — the entry stays in the list, overdue.
+  const { box, close } = openModal({
+    overlayClass: 'alert-overlay',
+    boxClass: 'alert-box',
+    dismissOnBackdrop: false,
+    onClose: () => {
+      alertShowing = false;
+      renderReminders(); // the entry is overdue now — repaint it as such
+      drainAlerts();
+    },
+  });
 
   const bell = document.createElement('div');
   bell.className = 'alert-bell';
@@ -3462,27 +3444,6 @@ function showReminderAlert(rem) {
   );
 
   box.appendChild(actions);
-  overlay.appendChild(box);
-  document.body.appendChild(overlay);
-
-  let closed = false;
-  function close() {
-    if (closed) return;
-    closed = true;
-    overlay.remove();
-    document.removeEventListener('keydown', onKey, true);
-    alertShowing = false;
-    renderReminders(); // the entry is overdue now — repaint it as such
-    drainAlerts();
-  }
-  // Escape just dismisses the popup; the reminder stays in the list, overdue.
-  function onKey(e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      close();
-    }
-  }
-  document.addEventListener('keydown', onKey, true);
   doneBtn.focus();
 }
 
@@ -4299,7 +4260,7 @@ window.addEventListener('keydown', (e) => {
 
   // A modal or reminder popup owns the keyboard while it's up (they handle their
   // own Escape / Enter on the capture phase).
-  if (document.querySelector('.modal-overlay, .alert-overlay')) return;
+  if (dialogOpen()) return;
 
   const tableOp = tableOpFor(e);
   if (tableOp) {
@@ -4340,7 +4301,7 @@ window.addEventListener('beforeunload', () => {
   cancelPendingSave();
   if (currentFile && dirty) {
     syncWysiwygToEditor();
-    const res = api.writeFileSync(currentFile, editorEl.value);
+    const res = api.writeFileSync(baseFolder, currentFile, editorEl.value);
     if (res && res.ok) dirty = false;
   }
 });
