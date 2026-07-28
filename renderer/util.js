@@ -15,6 +15,9 @@ export function relativePath(filePath) {
   return rel || filePath;
 }
 
-function cssEscape(str) {
-  return str.replace(/["\\]/g, '\\$&');
+// Escape a path for use inside a double-quoted CSS attribute selector
+// (e.g. `[data-path="${cssEscape(path)}"]`). Paths routinely contain characters
+// that would otherwise break querySelector.
+export function cssEscape(str) {
+  return String(str).replace(/["\\]/g, '\\$&');
 }

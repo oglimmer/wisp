@@ -4,11 +4,11 @@ import { api } from './api.js';
 import { currentFileEl, diffViewEl, editorEl, treeEl } from './dom.js';
 import { cancelPendingSave, flushSave, openFile } from './editor.js';
 import { refreshFind } from './find.js';
-import { DIFF_MAX_CELLS, WORD_DIFF_MAX_CELLS, gitFileStatus, gitState } from './git.js';
+import { DIFF_MAX_CELLS, GIT_LETTER, WORD_DIFF_MAX_CELLS, gitFileStatus, gitState } from './git.js';
 import { lcsOps } from './lcs.js';
 import { state } from './state.js';
 import { showContextMenu } from './tree.js';
-import { relativePath, setStatus } from './util.js';
+import { cssEscape, relativePath, setStatus } from './util.js';
 import { applyView, setViewMode } from './views.js';
 
 // The diff is the fourth view of the open file, shown in the editor pane alongside

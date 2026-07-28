@@ -177,7 +177,7 @@ async function handleDroppedFiles(fileList, dropRange) {
     return;
   }
   const images = Array.from(fileList).filter(
-    (f) => /^image\//.test(f.type) || IMAGE_RE.test(f.name)
+    (f) => /^image\//.test(f.type) || isImage(f.name)
   );
   if (!images.length) return;
   const forFile = state.currentFile; // the note these images belong to, pinned across the awaits

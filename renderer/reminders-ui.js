@@ -27,7 +27,7 @@ export function resetAlerts() {
 }
 import { state } from './state.js';
 import { expandAncestors, refreshTree, showContextMenu } from './tree.js';
-import { relativePath } from './util.js';
+import { cssEscape, relativePath } from './util.js';
 
 export function renderReminders() {
   reminderListEl.innerHTML = '';

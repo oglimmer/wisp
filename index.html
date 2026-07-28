@@ -176,6 +176,8 @@
     -->
     <script src="node_modules/marked/lib/marked.umd.js"></script>
     <script src="node_modules/turndown/lib/turndown.browser.umd.js"></script>
+    <!-- Sanitizes marked HTML before it hits innerHTML (preview + WYSIWYG). -->
+    <script src="node_modules/dompurify/dist/purify.min.js"></script>
     <script type="module" src="renderer/index.js"></script>
   </body>
 </html>

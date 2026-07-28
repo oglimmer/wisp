@@ -7,7 +7,7 @@ import { gitBarEl, gitBranchEl, gitDiffBtn, gitDirtyEl, gitPullBtn, gitPushBtn, 
 import { flushSave, openFile } from './editor.js';
 import { state } from './state.js';
 import { refreshTree } from './tree.js';
-import { setStatus } from './util.js';
+import { cssEscape, setStatus } from './util.js';
 import { effectiveViewMode } from './views.js';
 
 // The vault is *often* a git repository, but never has to be: `gitState` is null
@@ -231,13 +231,19 @@ export async function gitPull() {
 // would otherwise be the only thing left of the result the user asked for.
 export async function afterGitChange(message, isError) {
   const open = state.currentFile;
-  await refreshTree();
-  if (open) {
-    const row = treeEl.querySelector(`[data-path="${cssEscape(open)}"]`);
-    if (row) await openFile(open, row);
+  try {
+    await refreshTree();
+    if (open) {
+      // Always reload from disk so the buffer matches the restored file. The row
+      // is only used to mark the active tree item — openFile works without it.
+      const row = treeEl.querySelector(`[data-path="${cssEscape(open)}"]`);
+      await openFile(open, row || null);
+    }
+    await refreshGit();
+  } finally {
+    // Always clear a leftover "Discarding…" / "Pulling…" status, even if reload fails.
+    if (message !== undefined) setStatus(message, isError);
   }
-  await refreshGit();
-  if (message !== undefined) setStatus(message, isError);
 }
 
 // git prints the interesting part of a pull last ("3 files changed, …"); its first

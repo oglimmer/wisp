@@ -76,8 +76,9 @@ cmd_run() {
 # --- test -------------------------------------------------------------------
 
 # There is no unit-test suite in this repo. What this does instead is every
-# cheap check that can fail a release: does the JS parse, is the packaging
-# metadata self-consistent, is the workflow valid YAML.
+# cheap check that can fail a release: does the JS parse, are free identifiers
+# bound (the module-split footgun), is the packaging metadata self-consistent,
+# is the workflow valid YAML.
 cmd_test() {
   need node
   local failed=0
@@ -86,13 +87,23 @@ cmd_test() {
 
   say "syntax-checking the app sources"
   local f
-  for f in main.js preload.js renderer.js; do
+  for f in main.js preload.js renderer/*.js; do
     if node --check "$f" >/dev/null; then
       ok "$f parses"
     else
       failed=1
     fi
   done
+
+  say "checking renderer modules for unbound names"
+  # Catches missing imports/exports left by the renderer.js → renderer/ split —
+  # the kind of bug that only throws on the code path that hits it.
+  ensure_deps
+  if node scripts/check-unbound.js; then
+    ok "no unbound references in renderer/"
+  else
+    failed=1
+  fi
 
   say "checking JSON is well-formed"
   for f in package.json package-lock.json; do
@@ -319,10 +330,11 @@ COMMANDS
                        Extra arguments are passed through to electron.
 
   test                 Every check that can fail a release, since there is no
-                       unit-test suite: syntax-check main/preload/renderer, JSON
-                       validity, the electron-builder `files` allowlist, the
-                       node_modules paths index.html loads, cask/package version
-                       agreement, yamllint on the workflows, shellcheck on self.
+                       unit-test suite: syntax-check main/preload/renderer/*,
+                       unbound-name scan of renderer modules, JSON validity,
+                       the electron-builder `files` allowlist, the node_modules
+                       paths index.html loads, cask/package version agreement,
+                       yamllint on the workflows, shellcheck on self.
 
   build [--unsigned]   Package a macOS arm64 .dmg + .zip into dist/. macOS host
                        only. Signing and notarization come from the environment

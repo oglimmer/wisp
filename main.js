@@ -290,10 +290,99 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-// Guard against path-traversal: ensure `target` stays inside `base`.
+// Caps so a huge file cannot balloon main/renderer memory (images become base64
+// data URLs in the UI, so the in-memory cost is larger than the on-disk size).
+const MAX_TEXT_BYTES = 8 * 1024 * 1024; // notes opened / written as text
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024; // preview / import / analyze
+
+function formatBytesLimit(n) {
+  if (n >= 1024 * 1024) return `${Math.round(n / (1024 * 1024))} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+// Guard against path-traversal: ensure `target` stays inside `base` (lexical —
+// does not follow symlinks; see vaultPath for the symlink-aware check).
 function isInside(base, target) {
-  const rel = path.relative(base, target);
+  const rel = path.relative(path.resolve(base), path.resolve(target));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+// Walk up from absPath until realpath succeeds. Returns the real path of the
+// nearest existing ancestor and the missing basename segments below it (empty
+// when absPath itself exists). Used so create/write into a not-yet-existing
+// path still refuses a parent that symlinks out of the vault.
+function realpathExisting(absPath) {
+  let cursor = path.resolve(absPath);
+  const missing = [];
+  for (;;) {
+    try {
+      return { real: fs.realpathSync(cursor), missing };
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') throw err;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw err;
+      missing.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+// Symlink-aware containment. Lexical path must sit under baseFolder, and the
+// realpath-resolved location must too.
+//
+// `follow` (default true) is for content access (read/write): the final resolved
+// path must stay inside the vault, so a vault entry that is a symlink pointing
+// outside cannot be used to read or overwrite files elsewhere.
+//
+// `follow: false` is for entry operations (delete, rename source): those act on
+// the directory entry itself (removing a symlink does not touch its target), so
+// only the parent directory must resolve inside the vault.
+function assertInsideVault(baseFolder, absPath, label = 'Invalid path', { follow = true } = {}) {
+  const base = path.resolve(baseFolder);
+  const abs = path.resolve(absPath);
+  if (!isInside(base, abs)) throw new Error(label);
+
+  let realBase;
+  try {
+    realBase = fs.realpathSync(base);
+  } catch {
+    throw new Error(label);
+  }
+
+  try {
+    if (follow) {
+      const { real, missing } = realpathExisting(abs);
+      // basenames only in `missing` (from path.basename), so join cannot reintroduce `..`.
+      const resolved = missing.length ? path.resolve(path.join(real, ...missing)) : real;
+      if (!isInside(realBase, resolved)) throw new Error(label);
+    } else {
+      const parent = path.dirname(abs);
+      const { real, missing } = realpathExisting(parent);
+      const resolvedParent = missing.length ? path.resolve(path.join(real, ...missing)) : real;
+      if (!isInside(realBase, resolvedParent)) throw new Error(label);
+    }
+  } catch (err) {
+    if (err && err.message === label) throw err;
+    throw new Error(label);
+  }
+  return abs;
+}
+
+// Refuse files that are not regular files or that exceed a byte budget *before*
+// reading them into memory.
+function assertReadableFile(filePath, maxBytes, what = 'File') {
+  let st;
+  try {
+    st = fs.statSync(filePath);
+  } catch {
+    throw new Error(`${what} not found.`);
+  }
+  if (!st.isFile()) throw new Error(`${what} is not a regular file.`);
+  if (st.size > maxBytes) {
+    throw new Error(`${what} is too large (max ${formatBytesLimit(maxBytes)}).`);
+  }
+  return st;
 }
 
 // Every handler below answers `{ ok: true, … }` or `{ ok: false, error }` rather
@@ -314,11 +403,21 @@ function handle(channel, fn) {
 // Resolve a target the renderer supplied and refuse anything outside the vault.
 // Throws rather than returning a value, so the guard cannot be written and then
 // accidentally ignored — `handle()` turns it into the usual `{ ok: false }`.
-function vaultPath(baseFolder, target, label = 'Invalid path') {
+// See assertInsideVault for the `follow` option (content vs entry ops).
+function vaultPath(baseFolder, target, label = 'Invalid path', opts) {
   if (typeof baseFolder !== 'string' || typeof target !== 'string') throw new Error(label);
+  if (target.includes('\0')) throw new Error(label);
   const abs = path.resolve(baseFolder, target);
-  if (!isInside(baseFolder, abs)) throw new Error(label);
-  return abs;
+  return assertInsideVault(baseFolder, abs, label, opts);
+}
+
+// UTF-8 text payload for write handlers: type-check and size-cap before disk I/O.
+function assertTextContent(content, maxBytes = MAX_TEXT_BYTES) {
+  if (typeof content !== 'string') throw new Error('Invalid content.');
+  if (Buffer.byteLength(content, 'utf8') > maxBytes) {
+    throw new Error(`Content is too large (max ${formatBytesLimit(maxBytes)}).`);
+  }
+  return content;
 }
 
 app.whenReady().then(() => {
@@ -351,7 +450,8 @@ ipcMain.handle('open-external', (_e, url) => {
 // its parent folder. Path-guarded like every other handler that takes a target
 // from the renderer, so it can only ever point at something inside the vault.
 handle('reveal-path', async (baseFolder, target) => {
-  const abs = vaultPath(baseFolder, target, 'Outside the vault.');
+  // follow: false — reveal the vault entry (including a symlink), not its target.
+  const abs = vaultPath(baseFolder, target, 'Outside the vault.', { follow: false });
   if (!fs.existsSync(abs)) return { ok: false, error: 'Not found on disk.' };
   shell.showItemInFolder(abs);
   return { ok: true };
@@ -392,12 +492,14 @@ ipcMain.handle('read-tree', async (_e, baseFolder) => {
 // Read a file as raw UTF-8 text.
 handle('read-file', async (baseFolder, filePath) => {
   const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
+  assertReadableFile(target, MAX_TEXT_BYTES, 'File');
   return { ok: true, content: await fsp.readFile(target, 'utf8') };
 });
 
 // Write raw text back to a file.
 handle('write-file', async (baseFolder, filePath, content) => {
   const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
+  assertTextContent(content);
   await fsp.writeFile(target, content, 'utf8');
   return { ok: true };
 });
@@ -408,6 +510,7 @@ handle('write-file', async (baseFolder, filePath, content) => {
 ipcMain.on('write-file-sync', (e, baseFolder, filePath, content) => {
   try {
     const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
+    assertTextContent(content);
     fs.writeFileSync(target, content, 'utf8');
     e.returnValue = { ok: true };
   } catch (err) {
@@ -434,17 +537,29 @@ handle('create-folder', async (baseFolder, relPath) => {
 
 // Delete a file or folder (must live inside the base folder). The vault root
 // itself is inside the vault, so it needs ruling out separately.
+// follow: false so a symlink that points outside can still be removed (rm acts
+// on the entry; it does not delete the outside target).
 handle('delete-path', async (baseFolder, target) => {
-  const abs = vaultPath(baseFolder, target);
+  const abs = vaultPath(baseFolder, target, 'Invalid path', { follow: false });
   if (abs === path.resolve(baseFolder)) return { ok: false, error: 'Invalid path' };
   await fsp.rm(abs, { recursive: true, force: true });
   return { ok: true };
 });
 
 // Rename / move a file or folder within the base folder.
+// follow: false on both ends: rename moves the directory entry (including a
+// symlink) without writing through it.
 handle('rename-path', async (baseFolder, oldPath, newName) => {
-  const source = vaultPath(baseFolder, oldPath);
-  const target = vaultPath(baseFolder, path.join(path.dirname(source), newName));
+  if (typeof newName !== 'string' || !newName || newName.includes('\0')) {
+    return { ok: false, error: 'Invalid name' };
+  }
+  const source = vaultPath(baseFolder, oldPath, 'Invalid path', { follow: false });
+  const target = vaultPath(
+    baseFolder,
+    path.join(path.dirname(source), newName),
+    'Invalid path',
+    { follow: false }
+  );
   if (fs.existsSync(target)) return { ok: false, error: 'Target already exists' };
   await fsp.rename(source, target);
   return { ok: true, path: target };
@@ -881,7 +996,11 @@ handle('git-diff', async (baseFolder, target) => {
     workBuf = await fsp.readFile(abs);
   } catch {} // absent on disk = deleted
 
-  const binary = isBinaryBuffer(headBuf) || isBinaryBuffer(workBuf);
+  // Oversized text is treated like binary: the visual diff must not load multi-MB
+  // buffers into the LCS path. The raw unified patch still comes from git.
+  const tooLarge =
+    (headBuf && headBuf.length > MAX_TEXT_BYTES) || (workBuf && workBuf.length > MAX_TEXT_BYTES);
+  const binary = isBinaryBuffer(headBuf) || isBinaryBuffer(workBuf) || tooLarge;
 
   let raw = (await runGit(root, ['diff', 'HEAD', '--', repoRel])).stdout;
   // An untracked file is invisible to `git diff`, so patch it against nothing.
@@ -915,18 +1034,24 @@ function isBinaryBuffer(buf) {
 
 // Resolve a Markdown image reference (relative to the open file) and return it as
 // a base64 data URL. The renderer swaps these in after rendering because the
-// app's file:// origin + CSP won't load vault-relative image paths directly.
-// Only local paths that stay inside the vault are served.
+// app's app:// origin + CSP won't load vault-relative image paths directly.
+// Only local paths that stay inside the vault (after symlink resolution) are served.
 handle('read-image', async (baseFolder, currentFile, src) => {
   if (!baseFolder || !src) return { ok: false };
   let ref = String(src).trim();
   if (/^(https?:|data:|file:)/i.test(ref)) return { ok: false }; // not a local ref
+  if (ref.includes('\0')) return { ok: false };
   try {
     ref = decodeURIComponent(ref);
   } catch {}
   const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
   const target = path.resolve(fromDir, ref);
-  if (!isInside(baseFolder, target)) return { ok: false };
+  try {
+    assertInsideVault(baseFolder, target, 'Outside the vault.');
+    assertReadableFile(target, MAX_IMAGE_BYTES, 'Image');
+  } catch {
+    return { ok: false };
+  }
   const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
   if (!mime) return { ok: false };
   const buf = await fsp.readFile(target);
@@ -941,24 +1066,42 @@ handle('read-image-file', async (baseFolder, filePath) => {
   const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
   const mime = IMAGE_MIME[path.extname(target).toLowerCase()];
   if (!mime) return { ok: false, error: 'Unsupported image type.' };
+  const st = assertReadableFile(target, MAX_IMAGE_BYTES, 'Image');
   const buf = await fsp.readFile(target);
   return {
     ok: true,
     dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
-    size: buf.length,
+    size: st.size,
   };
 });
 
 // Copy a dropped image file into the vault's `images/` folder (deduping the name)
 // and return a Markdown reference relative to the open file so it works both in
 // the raw source and the rendered preview, and stays portable if the vault moves.
+//
+// The source is intentionally outside the vault (OS drag-and-drop). We still:
+// refuse non-files / oversized inputs, and write the destination through vaultPath
+// so a compromised renderer cannot use this channel to write outside the vault.
 handle('import-image', async (baseFolder, currentFile, srcPath, originalName) => {
   if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
-  if (!srcPath || !fs.existsSync(srcPath)) return { ok: false, error: 'Source file not found.' };
+  if (typeof srcPath !== 'string' || !srcPath || srcPath.includes('\0')) {
+    return { ok: false, error: 'Source file not found.' };
+  }
+  // Resolve the source for the size/type check (follows symlinks — importing a
+  // link to a huge file should still hit the cap on the real target).
+  let srcReal;
+  try {
+    srcReal = fs.realpathSync(srcPath);
+    assertReadableFile(srcReal, MAX_IMAGE_BYTES, 'Image');
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : 'Source file not found.' };
+  }
   const ext = path.extname(originalName || srcPath).toLowerCase();
   if (!IMAGE_MIME[ext]) return { ok: false, error: 'Unsupported image type.' };
 
   const imagesDir = path.join(baseFolder, 'images');
+  // Ensure images/ itself stays inside the vault even if baseFolder is odd.
+  assertInsideVault(baseFolder, imagesDir, 'Outside the vault.');
   await fsp.mkdir(imagesDir, { recursive: true });
 
   // URL-safe base name (avoids escaping headaches in Markdown refs / data-url resolution).
@@ -973,8 +1116,8 @@ handle('import-image', async (baseFolder, currentFile, srcPath, originalName) =>
     name = `${base}-${n}${ext}`;
     n++;
   }
-  const dest = path.join(imagesDir, name);
-  await fsp.copyFile(srcPath, dest);
+  const dest = vaultPath(baseFolder, path.join('images', name), 'Outside the vault.');
+  await fsp.copyFile(srcReal, dest);
 
   const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
   const ref = path.relative(fromDir, dest).split(path.sep).join('/');
@@ -1218,16 +1361,24 @@ handle('smart-check', async (baseFolder, currentFile, text) => {
     return { ok: false, error: 'Could not understand Claude’s response.' };
   }
 
-  const target = path.resolve(baseFolder, plan.targetFile);
-  if (!isInside(baseFolder, target)) {
+  let target;
+  try {
+    target = vaultPath(baseFolder, plan.targetFile, 'Claude chose a path outside the vault.');
+  } catch {
     return { ok: false, error: 'Claude chose a path outside the vault.' };
+  }
+  if (typeof plan.newContent === 'string' && Buffer.byteLength(plan.newContent, 'utf8') > MAX_TEXT_BYTES) {
+    return { ok: false, error: `Proposed content is too large (max ${formatBytesLimit(MAX_TEXT_BYTES)}).` };
   }
   const exists = fs.existsSync(target);
   let oldContent = '';
   if (exists) {
     try {
+      assertReadableFile(target, MAX_TEXT_BYTES, 'File');
       oldContent = await fsp.readFile(target, 'utf8');
-    } catch {}
+    } catch (err) {
+      return { ok: false, error: err && err.message ? err.message : 'Could not read target file.' };
+    }
   }
 
   return {
@@ -1299,8 +1450,13 @@ function sanitizeSources(raw, baseFolder) {
     if (!item || typeof item !== 'object') continue;
     const file = typeof item.file === 'string' ? item.file.trim() : '';
     if (!file) continue;
-    const target = path.resolve(baseFolder, file);
-    if (!isInside(baseFolder, target) || !fs.existsSync(target)) continue;
+    let target;
+    try {
+      target = vaultPath(baseFolder, file, 'Outside the vault.');
+    } catch {
+      continue;
+    }
+    if (!fs.existsSync(target)) continue;
     const rel = path.relative(baseFolder, target).split(path.sep).join('/');
     if (seen.has(rel)) continue;
     seen.add(rel);
@@ -1397,9 +1553,13 @@ function sanitizeAnalysis(raw) {
 handle('analyze-image', async (baseFolder, imagePath) => {
   if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
   const target = vaultPath(baseFolder, imagePath || '', 'Image is outside the vault.');
-  if (!fs.existsSync(target)) return { ok: false, error: 'Image not found.' };
   if (!ANALYZABLE_IMAGE.has(path.extname(target).toLowerCase())) {
     return { ok: false, skipped: true, error: 'Claude can’t read this image type.' };
+  }
+  try {
+    assertReadableFile(target, MAX_IMAGE_BYTES, 'Image');
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : 'Image not found.' };
   }
 
   const rel = path.relative(baseFolder, target).split(path.sep).join('/');
@@ -1420,6 +1580,7 @@ handle('analyze-image', async (baseFolder, imagePath) => {
 // Apply a previously-checked plan: write the new content (creating parent dirs).
 handle('smart-apply', async (baseFolder, relPath, content) => {
   const target = vaultPath(baseFolder, relPath);
+  assertTextContent(content);
   await fsp.mkdir(path.dirname(target), { recursive: true });
   await fsp.writeFile(target, content, 'utf8');
   return { ok: true, path: target };

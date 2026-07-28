@@ -24,12 +24,27 @@ export function isImage(filePath) {
   return IMAGE_RE.test(filePath || '');
 }
 
+// marked leaves raw HTML in the source intact (`<script>`, event handlers,
+// javascript: links). Never assign its output to innerHTML without sanitizing.
+// If DOMPurify failed to load, fall closed to plain text rather than injecting.
+function safeMarkdownHtml(source) {
+  if (!window.marked) return null;
+  const raw = window.marked.parse(source || '');
+  if (!window.DOMPurify) return null;
+  return window.DOMPurify.sanitize(raw, {
+    // Standard HTML profile: keeps headings, lists, tables, images, links,
+    // <details>/<summary> (image description blocks), strips scripts/handlers.
+    USE_PROFILES: { html: true },
+  });
+}
+
 // Render the current editor buffer as Markdown into the preview pane.
 export function renderMarkdown() {
-  if (window.marked) {
-    renderedEl.innerHTML = window.marked.parse(editorEl.value || '');
+  const html = safeMarkdownHtml(editorEl.value);
+  if (html !== null) {
+    renderedEl.innerHTML = html;
   } else {
-    // marked failed to load — fall back to showing the source as-is.
+    // marked or DOMPurify failed to load — fall back to showing the source as-is.
     renderedEl.textContent = editorEl.value || '';
   }
   hydrateImages(renderedEl);
@@ -37,8 +52,9 @@ export function renderMarkdown() {
 
 // Render the current editor buffer as editable formatted HTML in the WYSIWYG pane.
 function renderWysiwyg() {
-  if (window.marked) {
-    wysiwygEl.innerHTML = window.marked.parse(editorEl.value || '');
+  const html = safeMarkdownHtml(editorEl.value);
+  if (html !== null) {
+    wysiwygEl.innerHTML = html;
   } else {
     wysiwygEl.textContent = editorEl.value || '';
   }

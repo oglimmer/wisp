@@ -4,7 +4,17 @@ import { api } from './api.js';
 import { openModal } from './dialogs.js';
 import { showDiffFor } from './diff.js';
 import { cancelPendingSave, flushSave } from './editor.js';
-import { GIT_LETTER, afterGitChange, gitBusy, gitEntryTitle, gitErrorLine, gitState, refreshGit, setGitBusy } from './git.js';
+import {
+  GIT_LETTER,
+  afterGitChange,
+  gitBusy,
+  gitEntryTitle,
+  gitErrorLine,
+  gitFileStatus,
+  gitState,
+  refreshGit,
+  setGitBusy,
+} from './git.js';
 import { state } from './state.js';
 import { setStatus } from './util.js';
 

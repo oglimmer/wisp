@@ -8,6 +8,7 @@ import { REPEAT_LABELS, formatDue, newReminderId, upsertReminder } from './remin
 import { openVaultNote, reminderModal } from './reminders-ui.js';
 import { state } from './state.js';
 import { expandAncestors, refreshTree } from './tree.js';
+import { cssEscape } from './util.js';
 
 // was computed for. If the text changes, the plan is stale and Add re-checks.
 export let smartPlan = null;

@@ -9,7 +9,7 @@ import { applyGitDecorations, gitDirtyDirs, gitFileStatus, gitState, refreshGit 
 import { discardChanges } from './git-commit.js';
 import { newReminder } from './reminders-ui.js';
 import { state } from './state.js';
-import { relativePath, setStatus } from './util.js';
+import { cssEscape, relativePath, setStatus } from './util.js';
 import { applyView, isImage } from './views.js';
 
 export const expanded = new Set(); // dir paths currently expanded

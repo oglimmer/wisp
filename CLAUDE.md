@@ -8,7 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm start` — launch the app (`electron .`).
 - `npm run dist` — package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
 
-There is no linter or test suite configured.
+There is no unit-test suite. `./oglimmer.sh test` (also run before `release`)
+does the static checks: `node --check` on main/preload/renderer/*, an Acorn
+unbound-name scan of renderer modules (`scripts/check-unbound.js` — catches
+missing imports after the module split), packaging/HTML/cask consistency,
+yamllint, and shellcheck.
 
 ## Packaging & release
 
