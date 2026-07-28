@@ -71,6 +71,14 @@ The `<textarea>` (`editorEl`) holds the **canonical buffer** and is what gets sa
 
 The WYSIWYG **Editor** pane is a `contenteditable` div. `marked` renders the source into it (Markdown→HTML); **turndown** (`node_modules/turndown`, loaded as a UMD global `window.TurndownService`) does the reverse on save. The key invariant: **edits only fold back to the buffer through `syncWysiwygToEditor()`, and only when `dirty`** — so a file the user merely *viewed* in Editor mode is never rewritten by turndown's normalisation (round-tripping is inherently lossy on formatting, so this guard matters). `saveCurrent()`, the pre-switch step in `setViewMode()`, drag & drop, and `beforeunload` all fold back through it before touching disk. If turndown fails to load, the Editor button is hidden and the mode degrades to Raw (edits could otherwise not be saved). Image round-trip: `hydrateImages()` stashes the original vault-relative path in `data-md-src` before swapping in the data URL, and a turndown `img` rule re-emits that path instead of the inlined base64.
 
+**Tab types, it doesn't move focus.** Both editing panes take Tab over from the browser's focus
+navigation: in Raw it inserts a tab, or indents/outdents (⇧) every line a multi-line selection touches;
+in the Editor it nests/un-nests the list item the caret is in, and inserts a tab elsewhere. Every edit
+goes through `document.execCommand('insertText', …)` rather than assigning `editorEl.value` — that
+keeps the textarea's native undo stack and fires the `input` event the autosave clock hangs off.
+`indent`/`outdent` are formatting commands rather than input, so the WYSIWYG path calls
+`markBufferEdited()` itself.
+
 **marked speaks GFM, turndown only CommonMark** — so anything GFM adds needs an explicit inverse rule
 (`addGfmRules()`) or a WYSIWYG save silently destroys it: a table flattens into one paragraph per cell,
 `~~strikethrough~~` and `- [ ]` checkboxes come back as bare text. Tables are the fiddly one. Cells emit

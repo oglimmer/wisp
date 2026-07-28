@@ -752,6 +752,97 @@ wysiwygEl.addEventListener('keydown', (e) => {
   }
 });
 
+// ---- Tab in the editor ----
+// Tab is a character (or an indent), never focus navigation: the editor panes are
+// where the user types, so moving focus out of them is never what Tab means here.
+const INDENT_UNIT = '\t';
+
+// Widen [start,end) to whole lines so a block indent can't leave half a line behind.
+function lineSpan(value, start, end) {
+  const from = value.lastIndexOf('\n', start - 1) + 1;
+  let to = value.indexOf('\n', end);
+  if (to === -1) to = value.length;
+  return [from, to];
+}
+
+// Indent (or, with shift, outdent) every line the selection touches. Returns the
+// rewritten block plus how much the first line and the whole block moved, which is
+// what the caller needs to put the selection back where the user left it.
+function reindentBlock(block, outdent) {
+  let firstDelta = 0;
+  let totalDelta = 0;
+  const lines = block.split('\n').map((line, i) => {
+    let delta = 0;
+    let out = line;
+    if (outdent) {
+      const lead = /^(\t| {1,4})/.exec(line);
+      if (lead) {
+        out = line.slice(lead[0].length);
+        delta = -lead[0].length;
+      }
+    } else if (line !== '') {
+      // Skip blank lines — indenting them would only leave trailing whitespace.
+      out = INDENT_UNIT + line;
+      delta = INDENT_UNIT.length;
+    }
+    if (i === 0) firstDelta = delta;
+    totalDelta += delta;
+    return out;
+  });
+  return { text: lines.join('\n'), firstDelta, totalDelta };
+}
+
+editorEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+
+  const value = editorEl.value;
+  const start = editorEl.selectionStart ?? 0;
+  const end = editorEl.selectionEnd ?? start;
+
+  // A plain Tab with no multi-line selection just types a tab.
+  if (!e.shiftKey && !value.slice(start, end).includes('\n')) {
+    // execCommand keeps the textarea's native undo stack (and fires `input`, so
+    // the autosave clock starts) where assigning .value would throw both away.
+    document.execCommand('insertText', false, INDENT_UNIT);
+    return;
+  }
+
+  const [from, to] = lineSpan(value, start, end);
+  const { text, firstDelta, totalDelta } = reindentBlock(value.slice(from, to), e.shiftKey);
+  if (!totalDelta && !firstDelta) return; // nothing left to outdent
+
+  editorEl.setSelectionRange(from, to);
+  document.execCommand('insertText', false, text);
+  // A selection that began at the line start keeps covering the whole line.
+  const newStart = start === from ? from : Math.max(from, start + firstDelta);
+  editorEl.setSelectionRange(newStart, Math.max(newStart, end + totalDelta));
+});
+
+// The list item the caret sits in, if any — Tab nests list items in the WYSIWYG
+// editor, which is what Tab means in a rendered document.
+function caretListItem() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return null;
+  let node = sel.getRangeAt(0).startContainer;
+  if (node && node.nodeType === Node.TEXT_NODE) node = node.parentNode;
+  const li = node && node.closest ? node.closest('li') : null;
+  return li && wysiwygEl.contains(li) ? li : null;
+}
+
+wysiwygEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  if (caretListItem()) {
+    document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+    // indent/outdent are formatting commands; mark the buffer ourselves rather
+    // than relying on them to look like input.
+    if (currentFile && viewMode === 'wysiwyg') markBufferEdited();
+  } else if (!e.shiftKey) {
+    document.execCommand('insertText', false, INDENT_UNIT);
+  }
+});
+
 function setStatus(text, isError) {
   statusEl.textContent = text;
   statusEl.style.color = isError ? '#ff6b6b' : 'var(--text-dim)';
