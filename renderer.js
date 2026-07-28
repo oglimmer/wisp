@@ -168,6 +168,7 @@ async function openFolder(folder) {
   dirty = false;
   welcomeEl.classList.add('hidden');
   workspaceEl.classList.remove('hidden');
+  restoreRowDividers();
   vaultNameEl.textContent = folder.split(/[\\/]/).pop() || folder;
   vaultNameEl.title = folder;
   currentFileEl.textContent = 'No file open';
@@ -1613,6 +1614,10 @@ async function gitCommitPush() {
 // doesn't cost them what they had already written.
 let commitDraft = '';
 
+// What the message box starts with when there's no draft to restore. Pre-selected
+// on open, so it's one keystroke to replace and zero to accept.
+const DEFAULT_COMMIT_MESSAGE = 'Update';
+
 // The commit dialog: the message, the exact list of files that will be included
 // (each opening its diff on click), and whether to push afterwards.
 function commitModal(files, hasUpstream) {
@@ -1636,7 +1641,7 @@ function commitModal(files, hasUpstream) {
     msgInput.className = 'modal-input gc-message';
     msgInput.rows = 3;
     msgInput.placeholder = 'What changed?';
-    msgInput.value = commitDraft;
+    msgInput.value = commitDraft || DEFAULT_COMMIT_MESSAGE;
     box.appendChild(msgInput);
 
     const listLabel = document.createElement('label');
@@ -1734,6 +1739,7 @@ function commitModal(files, hasUpstream) {
     });
     document.addEventListener('keydown', onKey, true);
     msgInput.focus();
+    msgInput.select();
   });
 }
 
@@ -3544,6 +3550,18 @@ window.addEventListener('drop', (e) => e.preventDefault());
 })();
 
 // ---- Resizable vertical stack (note box / preview / editor) ----
+// Saved panel heights can only be restored once the workspace is actually laid
+// out, so each divider registers its restore step here and `restoreRowDividers()`
+// runs them the first time a folder is opened.
+const rowDividerRestores = [];
+let rowDividersRestored = false;
+
+function restoreRowDividers() {
+  if (rowDividersRestored) return;
+  rowDividersRestored = true;
+  for (const restore of rowDividerRestores) restore();
+}
+
 // Each row divider resizes the panel directly above it by setting its height;
 // the editor is flex:1 and absorbs whatever's left. RESERVE keeps the editor
 // from being squeezed away entirely.
@@ -3556,8 +3574,14 @@ function makeRowDivider(divider, panel, storageKey, minPx, opts = {}) {
   const clamp = (h) =>
     Math.max(minPx, Math.min(h, paneEl.getBoundingClientRect().height - RESERVE));
 
-  const saved = parseInt(localStorage.getItem(storageKey), 10);
-  if (!Number.isNaN(saved)) panel.style.height = clamp(saved) + 'px';
+  // Deferred, not applied here: clamping needs the container's real height, and
+  // #workspace is display:none until a folder opens, where every measurement
+  // reads 0 — which would clamp each panel to its minimum and quietly throw the
+  // stored layout away on every launch.
+  rowDividerRestores.push(() => {
+    const saved = parseInt(localStorage.getItem(storageKey), 10);
+    if (!Number.isNaN(saved)) panel.style.height = clamp(saved) + 'px';
+  });
 
   let dragging = false;
   let startY = 0;
@@ -3624,7 +3648,14 @@ window.addEventListener('keydown', (e) => {
   if (mod && key === 'f' && !e.shiftKey) {
     e.preventDefault();
     openFind(e.altKey);
-  } else if (mod && key === 'h' && !e.altKey && !e.shiftKey) {
+  } else if (
+    e.ctrlKey &&
+    !e.metaKey &&
+    api.platform !== 'darwin' &&
+    key === 'h' &&
+    !e.altKey &&
+    !e.shiftKey
+  ) {
     e.preventDefault();
     openFind(true);
   } else if ((mod && key === 'g') || e.key === 'F3') {

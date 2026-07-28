@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -90,12 +90,82 @@ async function buildTree(dirPath) {
 
 let mainWindow;
 
+const DEFAULT_WINDOW = { width: 1200, height: 800 };
+const MIN_WINDOW = { width: 640, height: 400 };
+
+// Restore the window where it was left. Size is always safe to reuse; the
+// *position* isn't — the display it was on may be gone (laptop undocked, monitor
+// unplugged), which would park the window off-screen where it can't be reached.
+// So x/y are only honoured when the saved frame still overlaps some display.
+function restoredWindowState() {
+  const saved = loadConfig().window;
+  if (!saved || typeof saved !== 'object') return { ...DEFAULT_WINDOW };
+
+  const num = (v, fallback) => (Number.isFinite(v) ? Math.round(v) : fallback);
+  const state = {
+    width: Math.max(MIN_WINDOW.width, num(saved.width, DEFAULT_WINDOW.width)),
+    height: Math.max(MIN_WINDOW.height, num(saved.height, DEFAULT_WINDOW.height)),
+  };
+
+  if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    const frame = { x: num(saved.x), y: num(saved.y), width: state.width, height: state.height };
+    const onScreen = screen.getAllDisplays().some((display) => {
+      const a = display.workArea;
+      return (
+        frame.x < a.x + a.width &&
+        frame.x + frame.width > a.x &&
+        frame.y < a.y + a.height &&
+        frame.y + frame.height > a.y
+      );
+    });
+    if (onScreen) {
+      state.x = frame.x;
+      state.y = frame.y;
+    }
+  }
+
+  if (saved.maximized) state.maximized = true;
+  if (saved.fullScreen) state.fullScreen = true;
+  return state;
+}
+
+// Written on a timer rather than per event: dragging or resizing a window emits
+// a stream of move/resize events, and one config rewrite each would hammer disk.
+let saveBoundsTimer = null;
+
+function persistWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  // getNormalBounds() is the un-maximized frame, so restoring from a maximized
+  // session still knows what size to return to.
+  const bounds = mainWindow.getNormalBounds();
+  const cfg = loadConfig();
+  cfg.window = {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    maximized: mainWindow.isMaximized(),
+    fullScreen: mainWindow.isFullScreen(),
+  };
+  saveConfig(cfg);
+}
+
+function scheduleWindowStateSave() {
+  clearTimeout(saveBoundsTimer);
+  saveBoundsTimer = setTimeout(persistWindowState, 400);
+}
+
 function createWindow() {
+  const state = restoredWindowState();
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 640,
-    minHeight: 400,
+    x: state.x,
+    y: state.y,
+    width: state.width,
+    height: state.height,
+    minWidth: MIN_WINDOW.width,
+    minHeight: MIN_WINDOW.height,
+    show: false,
     title: 'Wisp',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -104,7 +174,23 @@ function createWindow() {
     },
   });
 
+  // Maximize/fullscreen before the first paint, so the window never shows at its
+  // restored size and then visibly jumps.
+  if (state.fullScreen) mainWindow.setFullScreen(true);
+  else if (state.maximized) mainWindow.maximize();
+  mainWindow.show();
+
   mainWindow.loadFile('index.html');
+
+  for (const event of ['resize', 'move', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
+    mainWindow.on(event, scheduleWindowStateSave);
+  }
+  // The debounce may still be pending when the window goes away, and after
+  // 'closed' the bounds are unreadable — so flush here.
+  mainWindow.on('close', () => {
+    clearTimeout(saveBoundsTimer);
+    persistWindowState();
+  });
 
   // Stop the taskbar flash we start when a reminder comes due, once the user looks.
   mainWindow.on('focus', () => {
