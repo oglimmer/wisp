@@ -37,6 +37,11 @@ const viewToggleEl = document.getElementById('view-toggle');
 const viewRawBtn = document.getElementById('view-raw-btn');
 const viewWysBtn = document.getElementById('view-wys-btn');
 const viewMdBtn = document.getElementById('view-md-btn');
+const viewDiffBtn = document.getElementById('view-diff-btn');
+const diffModeToggleEl = document.getElementById('diff-mode-toggle');
+const diffVisualBtn = document.getElementById('diff-visual-btn');
+const diffRawBtn = document.getElementById('diff-raw-btn');
+const diffViewEl = document.getElementById('diff-view');
 const findBarEl = document.getElementById('find-bar');
 const findInputEl = document.getElementById('find-input');
 const findCountEl = document.getElementById('find-count');
@@ -49,6 +54,13 @@ const replaceInputEl = document.getElementById('replace-input');
 const replaceBtn = document.getElementById('replace-btn');
 const replaceAllBtn = document.getElementById('replace-all-btn');
 const findHighlightsEl = document.getElementById('find-highlights');
+const gitBarEl = document.getElementById('git-bar');
+const gitBranchEl = document.getElementById('git-branch');
+const gitSyncEl = document.getElementById('git-sync');
+const gitDirtyEl = document.getElementById('git-dirty');
+const gitDiffBtn = document.getElementById('git-diff-btn');
+const gitPullBtn = document.getElementById('git-pull-btn');
+const gitPushBtn = document.getElementById('git-push-btn');
 const reminderListEl = document.getElementById('reminder-list');
 const reminderCountEl = document.getElementById('reminder-count');
 const newReminderBtn = document.getElementById('new-reminder-btn');
@@ -56,10 +68,23 @@ const newReminderBtn = document.getElementById('new-reminder-btn');
 // Editor view for the open file: 'raw' shows the source textarea, 'wysiwyg' shows
 // a directly-editable formatted view, 'preview' shows read-only rendered Markdown.
 // Only applies to Markdown files; the choice persists.
-const VIEW_MODES = ['raw', 'wysiwyg', 'preview'];
-let viewMode = VIEW_MODES.includes(localStorage.getItem('rawNotes.viewMode'))
+// 'diff' is the fourth: this file's changes against git, read-only. Unlike the
+// other three it is *not* persisted — it's a mode you step into to review
+// something, not one you want to reopen the app into.
+const VIEW_MODES = ['raw', 'wysiwyg', 'preview', 'diff'];
+const STORED_VIEW_MODES = ['raw', 'wysiwyg', 'preview'];
+let viewMode = STORED_VIEW_MODES.includes(localStorage.getItem('rawNotes.viewMode'))
   ? localStorage.getItem('rawNotes.viewMode')
   : 'raw';
+
+// How the Diff view draws: 'visual' side-by-side, or git's unified patch. Declared
+// here with viewMode (rather than down in the diff section) because applyView reads
+// both, and applyView runs during startup — before that section's `let`s execute.
+let diffMode = localStorage.getItem('rawNotes.diffMode') === 'raw' ? 'raw' : 'visual';
+// A deleted file has nothing left on disk to open, so it is shown as a diff on its
+// own: `currentFile` points at it, the buffer stays empty and disabled, and the
+// other views stay hidden until something else is opened.
+let diffOnlyFile = null;
 
 // Heading of the collapsed block holding Claude's description of an image.
 const IMAGE_SUMMARY = 'Image description';
@@ -139,6 +164,7 @@ function showWelcome() {
 async function openFolder(folder) {
   baseFolder = folder;
   currentFile = null;
+  diffOnlyFile = null;
   dirty = false;
   welcomeEl.classList.add('hidden');
   workspaceEl.classList.remove('hidden');
@@ -156,6 +182,12 @@ async function openFolder(folder) {
   smartLookupFor = null;
   hideSmartPreview();
   setSmartStatus('');
+  // Drop the previous vault's git state before the tree renders, so its decorations
+  // can't briefly appear against the new folder's files.
+  gitState = null;
+  gitFileStatus.clear();
+  gitDirtyDirs.clear();
+  renderGitBar();
   await refreshTree();
   await loadReminders();
 }
@@ -187,6 +219,11 @@ async function refreshTree() {
     empty.textContent = 'Empty folder. Use ＋ to create a file.';
     treeEl.appendChild(empty);
   }
+  // Repaint from the status we already have so the rebuild doesn't flash undecorated,
+  // then re-read it in the background — the change that prompted this refresh is
+  // usually one git needs to hear about too.
+  applyGitDecorations();
+  refreshGit();
 }
 
 // Build a DOM node for a tree entry.
@@ -243,12 +280,35 @@ function renderNode(node, depth) {
 
   row.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    showContextMenu(e, [
+    const items = [];
+    // Only offered for a file git actually has something to say about.
+    const entry = node.type === 'file' ? gitFileStatus.get(node.path) : null;
+    if (entry) {
+      items.push({ label: 'Show diff', fn: () => showDiffFor(node.path) });
+      // Untracked means there is no committed version to go back to, so there is
+      // nothing to discard — Delete below is the honest option for those.
+      if (entry.kind !== 'untracked') {
+        items.push({
+          label: 'Discard changes…',
+          fn: () => discardChanges(node.path, 'file', node.name),
+        });
+      }
+    }
+    // A folder covers everything under it — including deleted files, which have no
+    // row of their own because they are no longer on disk.
+    if (node.type === 'dir' && gitDirtyDirs.has(node.path)) {
+      items.push({
+        label: 'Discard changes in folder…',
+        fn: () => discardChanges(node.path, 'dir', node.name + '/'),
+      });
+    }
+    items.push(
       { label: 'Add reminder…', fn: () => newReminder(node.type === 'file' ? node.path : null) },
       { label: revealLabel(), fn: () => revealNode(node) },
       { label: 'Rename', fn: () => renameNode(node) },
-      { label: 'Delete', fn: () => deleteNode(node) },
-    ]);
+      { label: 'Delete', fn: () => deleteNode(node) }
+    );
+    showContextMenu(e, items);
   });
 
   return wrapper;
@@ -332,12 +392,22 @@ function hydrateImages(container) {
 // non-Markdown files (and no file) always fall back to the raw textarea, and
 // WYSIWYG needs turndown to save edits back — without it, it degrades to raw.
 function effectiveViewMode() {
+  // A deleted file has nothing left on disk to show in any other pane.
+  if (diffOnlyFile) return 'diff';
   // An image file has no text to edit at all — it always shows in the viewer.
   if (currentFile && isImage(currentFile)) return 'image';
+  // Diff applies to any text file, not just Markdown — but only inside a repo.
+  if (viewMode === 'diff') return canDiffCurrent() ? 'diff' : 'raw';
   const md = !!currentFile && isMarkdown(currentFile);
   let mode = md ? viewMode : 'raw';
   if (mode === 'wysiwyg' && !window.TurndownService) mode = 'raw';
   return mode;
+}
+
+// Whether the Diff view has anything to say about the open file: a repository, a
+// file, and a file that isn't a picture (a binary diff is nothing to look at).
+function canDiffCurrent() {
+  return !!gitState && !!currentFile && !isImage(currentFile);
 }
 
 // The element holding the text the live pane shows — what search operates on.
@@ -346,6 +416,7 @@ function activePaneEl() {
   if (mode === 'wysiwyg') return wysiwygEl;
   if (mode === 'preview') return renderedEl;
   if (mode === 'image') return imageViewEl;
+  if (mode === 'diff') return diffViewEl;
   return editorEl;
 }
 
@@ -353,28 +424,45 @@ function activePaneEl() {
 // Markdown files; everything else is always edited raw.
 function applyView() {
   const mode = effectiveViewMode();
-  const md = mode !== 'image' && isMarkdown(currentFile) && !!currentFile;
-  viewToggleEl.classList.toggle('hidden', !md);
-
   const showRaw = mode === 'raw';
   const showWys = mode === 'wysiwyg';
   const showPreview = mode === 'preview';
   const showImage = mode === 'image';
+  const showDiff = mode === 'diff';
+
+  // The three editing views belong to Markdown files; Diff belongs to any text
+  // file in a repository. They share one toggle, so each button is shown on its
+  // own terms and the group hides only when nothing is left in it.
+  const md = !showImage && !!currentFile && isMarkdown(currentFile) && !diffOnlyFile;
+  const canDiff = canDiffCurrent() || !!diffOnlyFile;
+  viewRawBtn.classList.toggle('hidden', !md);
+  viewWysBtn.classList.toggle('hidden', !md);
+  viewMdBtn.classList.toggle('hidden', !md);
+  viewDiffBtn.classList.toggle('hidden', !canDiff);
+  viewToggleEl.classList.toggle('hidden', !md && !canDiff);
+  diffModeToggleEl.classList.toggle('hidden', !showDiff);
 
   if (showWys) renderWysiwyg();
   if (showPreview) renderMarkdown();
+  if (showDiff) renderDiffPane();
   // The picture itself is loaded by openFile; dropping it when the pane goes away
   // keeps a big data URL from sitting in memory behind the next file.
   if (!showImage) clearImageView();
+  // Likewise a diff can be large; don't leave one behind an editing pane.
+  if (!showDiff) diffViewEl.replaceChildren();
 
   editorEl.classList.toggle('hidden', !showRaw);
   wysiwygEl.classList.toggle('hidden', !showWys);
   renderedEl.classList.toggle('hidden', !showPreview);
   imageViewEl.classList.toggle('hidden', !showImage);
+  diffViewEl.classList.toggle('hidden', !showDiff);
 
   viewRawBtn.classList.toggle('active', showRaw);
   viewWysBtn.classList.toggle('active', showWys);
   viewMdBtn.classList.toggle('active', showPreview);
+  viewDiffBtn.classList.toggle('active', showDiff);
+  diffVisualBtn.classList.toggle('active', diffMode === 'visual');
+  diffRawBtn.classList.toggle('active', diffMode === 'raw');
 
   // A re-render throws away the nodes any search highlight pointed at, and a mode
   // switch changes which pane (and which text) is being searched.
@@ -387,12 +475,26 @@ function setViewMode(mode) {
   // Leaving WYSIWYG: fold its edits back into the buffer before we switch panes,
   // otherwise raw/preview would show the pre-edit source.
   if (viewMode === 'wysiwyg' && mode !== 'wysiwyg') syncWysiwygToEditor();
+  // Leaving the diff of a deleted file: there is no file to fall back to, so drop
+  // the diff-only state and the editor goes empty rather than showing a ghost.
+  if (mode !== 'diff' && diffOnlyFile) closeDiffOnly();
   viewMode = mode;
-  localStorage.setItem('rawNotes.viewMode', viewMode);
+  // Diff is deliberately not remembered across sessions (see VIEW_MODES).
+  if (STORED_VIEW_MODES.includes(viewMode)) localStorage.setItem('rawNotes.viewMode', viewMode);
+  // The diff reads what's on disk, so land any pending edit before it's drawn.
+  if (viewMode === 'diff') flushSave();
   applyView();
   if (!currentFile) return;
   if (viewMode === 'raw') editorEl.focus();
   else if (viewMode === 'wysiwyg') wysiwygEl.focus();
+}
+
+// Switch between the side-by-side and unified-patch renderings of the same diff.
+function setDiffMode(mode) {
+  if (diffMode === mode) return;
+  diffMode = mode;
+  localStorage.setItem('rawNotes.diffMode', mode);
+  applyView();
 }
 
 // ---- Image view ----
@@ -455,6 +557,7 @@ async function openFile(filePath, rowEl) {
     return;
   }
   currentFile = filePath;
+  diffOnlyFile = null; // a real file is open again
   dirty = false;
   if (image) {
     // Keep the buffer empty and disabled: there is no text behind an image, so
@@ -489,6 +592,8 @@ async function saveCurrent() {
   if (res.ok) {
     if (currentFile === target) dirty = false;
     setStatus('Saved');
+    // The tree isn't rebuilt on save, but the file's git status just changed.
+    scheduleGitRefresh();
   } else {
     setStatus('Error: ' + res.error, true);
   }
@@ -721,6 +826,21 @@ function removeContextMenu() {
 }
 
 document.addEventListener('click', removeContextMenu);
+
+// Right-click the empty part of the tree: acts on the vault as a whole. This is
+// also the only way to reach a deleted file that sat at the vault root — it has no
+// row of its own, and no parent folder to right-click either.
+treeEl.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('.node-row')) return; // a row handles its own menu
+  e.preventDefault();
+  if (!gitState || !gitState.files.length) return;
+  showContextMenu(e, [
+    {
+      label: 'Discard all changes…',
+      fn: () => discardChanges(baseFolder, 'dir', 'the whole vault'),
+    },
+  ]);
+});
 
 // What the host OS calls its file manager, so the menu entry reads natively.
 function revealLabel() {
@@ -1129,11 +1249,23 @@ function renderLookup(result) {
 // Line-level diff via a longest-common-subsequence table, then collapse long
 // runs of unchanged context so the preview stays focused on what changed.
 function lineDiff(a, b) {
-  const A = a.split('\n');
-  const B = b.split('\n');
+  return condenseDiff(lineOps(a, b));
+}
+
+// The diff itself, uncondensed: a flat list of ctx/del/add ops. Split out from
+// lineDiff because the git side-by-side view has to pair deletions with additions
+// before any context is collapsed away.
+function lineOps(a, b) {
+  return lcsOps(a.split('\n'), b.split('\n'));
+}
+
+// Longest-common-subsequence diff of two arrays of strings. Used on lines here and
+// on words in the git diff viewer, so it stays generic. The DP table is
+// (n+1)×(m+1) — callers with unbounded input must size-check first (see DIFF_MAX_CELLS).
+function lcsOps(A, B) {
   const n = A.length;
   const m = B.length;
-  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
       dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
@@ -1159,7 +1291,7 @@ function lineDiff(a, b) {
   while (i < n) ops.push({ type: 'del', text: A[i++] });
   while (j < m) ops.push({ type: 'add', text: B[j++] });
 
-  return condenseDiff(ops);
+  return ops;
 }
 
 // Keep 2 lines of context around each change; replace larger unchanged gaps with
@@ -1187,6 +1319,901 @@ function condenseDiff(ops) {
         k++;
       }
       out.push({ type: 'gap', text: `⋯ ${count} unchanged line${count === 1 ? '' : 's'}` });
+    }
+  }
+  return out;
+}
+
+// ---- Git ----
+// The vault is *often* a git repository, but never has to be: `gitState` is null
+// for a plain folder and every piece of git UI hides itself. Status is read whole
+// (like the tree and the reminder list) and re-applied to the rendered rows, so
+// there is no incremental bookkeeping to fall out of sync with the repository.
+
+// Single letter shown in the tree, and what the row's colour means.
+const GIT_LETTER = {
+  modified: 'M',
+  added: 'A',
+  untracked: '?',
+  deleted: 'D',
+  renamed: 'R',
+  conflict: '!',
+};
+const GIT_KIND_LABEL = {
+  modified: 'Modified',
+  added: 'Added',
+  untracked: 'Untracked',
+  deleted: 'Deleted',
+  renamed: 'Renamed',
+  conflict: 'Conflicted',
+};
+
+// The LCS table is O(n×m); past this many cells the visual diff is refused and the
+// viewer falls back to git's own patch, which costs nothing to display.
+const DIFF_MAX_CELLS = 1500000;
+const WORD_DIFF_MAX_CELLS = 40000;
+
+let gitState = null; // last git-info result; null when the folder isn't a repo
+const gitFileStatus = new Map(); // abs file path -> status entry
+const gitDirtyDirs = new Set(); // abs dir paths with a changed descendant
+let gitBusy = false; // a pull/commit is running; the bar's buttons are disabled
+let gitRefreshing = false;
+let gitRefreshQueued = false;
+let gitRefreshPromise = null;
+let gitRefreshTimer = null;
+
+// Re-read status and repaint. Coalesces: a refresh asked for while one is in flight
+// queues one more run rather than piling up (the tree refresh, the autosave and the
+// git buttons all ask for one). A caller that awaits it always waits for a cycle
+// that includes *its* request — the in-flight promise only settles once the queue
+// has drained — so `await refreshGit()` never leaves `gitState` stale.
+function refreshGit() {
+  if (!baseFolder) {
+    gitState = null;
+    renderGitBar();
+    return Promise.resolve();
+  }
+  if (gitRefreshing) {
+    gitRefreshQueued = true;
+    return gitRefreshPromise;
+  }
+  gitRefreshing = true;
+  gitRefreshPromise = (async () => {
+    try {
+      do {
+        gitRefreshQueued = false;
+        const folder = baseFolder;
+        const info = await api.gitInfo(folder);
+        if (folder !== baseFolder) return; // the vault changed under us
+        gitState = info && info.ok && info.repo ? info : null;
+        indexGitStatus();
+        renderGitBar();
+        applyGitDecorations();
+        // The diff pane shows what git thinks; if that just changed, redraw it.
+        if (effectiveViewMode() === 'diff') renderDiffPane();
+      } while (gitRefreshQueued);
+    } finally {
+      gitRefreshing = false;
+    }
+  })();
+  return gitRefreshPromise;
+}
+
+// Saving doesn't rebuild the tree, but it does change what git thinks — so nudge a
+// refresh shortly after, debounced so a burst of autosaves costs one `git status`.
+function scheduleGitRefresh() {
+  if (gitRefreshTimer) clearTimeout(gitRefreshTimer);
+  gitRefreshTimer = setTimeout(() => {
+    gitRefreshTimer = null;
+    refreshGit();
+  }, 600);
+}
+
+// Build the two lookups the tree decoration needs: per-file status, and the set of
+// folders holding something changed (so a collapsed folder still shows it has).
+function indexGitStatus() {
+  gitFileStatus.clear();
+  gitDirtyDirs.clear();
+  if (!gitState) return;
+  const sep = baseFolder.includes('\\') ? '\\' : '/';
+  for (const file of gitState.files) {
+    gitFileStatus.set(file.path, file);
+    let dir = file.path;
+    while (dir.length > baseFolder.length) {
+      const cut = dir.lastIndexOf(sep);
+      if (cut < 0) break;
+      dir = dir.slice(0, cut);
+      if (dir.length >= baseFolder.length) gitDirtyDirs.add(dir);
+    }
+  }
+}
+
+// What a status entry means in words, for the row's tooltip.
+function gitEntryTitle(entry) {
+  const label = GIT_KIND_LABEL[entry.kind] || 'Changed';
+  if (entry.kind === 'untracked') return 'Untracked — not in git yet';
+  if (entry.kind === 'conflict') return 'Conflicted — resolve before committing';
+  const staged = entry.index !== ' ' && entry.index !== '?';
+  const unstaged = entry.work !== ' ' && entry.work !== '?';
+  const where = staged && unstaged ? 'staged + unstaged' : staged ? 'staged' : 'not staged';
+  const from = entry.from ? ` from ${entry.from}` : '';
+  return `${label}${from} — ${where}`;
+}
+
+// Paint the current status onto the rendered tree. Kept separate from renderNode so
+// a status refresh doesn't have to rebuild (and collapse) the tree.
+function applyGitDecorations() {
+  for (const row of treeEl.querySelectorAll('.node-row[data-path]')) {
+    const existing = row.querySelector('.git-badge');
+    if (existing) existing.remove();
+    row.removeAttribute('data-git');
+
+    const entry = gitFileStatus.get(row.dataset.path);
+    if (entry) {
+      row.dataset.git = entry.kind;
+      row.appendChild(gitBadge(GIT_LETTER[entry.kind] || 'M', gitEntryTitle(entry)));
+    } else if (gitDirtyDirs.has(row.dataset.path)) {
+      // A folder itself is never "modified"; the dot says something inside it is.
+      row.dataset.git = 'dir';
+      row.appendChild(gitBadge('•', 'Contains changes'));
+    }
+  }
+}
+
+function gitBadge(text, title) {
+  const badge = document.createElement('span');
+  badge.className = 'git-badge';
+  badge.textContent = text;
+  badge.title = title;
+  return badge;
+}
+
+function renderGitBar() {
+  if (!gitState) {
+    gitBarEl.classList.add('hidden');
+    return;
+  }
+  gitBarEl.classList.remove('hidden');
+
+  gitBranchEl.textContent = gitState.detached ? 'detached HEAD' : gitState.branch || '(unknown)';
+  gitBranchEl.title = gitState.upstream
+    ? `Tracking ${gitState.upstream}`
+    : 'This branch has no upstream';
+
+  // Behind first, then ahead — the order you'd act on them in.
+  const sync = [];
+  if (gitState.behind) sync.push('↓' + gitState.behind);
+  if (gitState.ahead) sync.push('↑' + gitState.ahead);
+  gitSyncEl.textContent = sync.join(' ');
+  gitSyncEl.title = sync.length
+    ? `${gitState.behind} to pull, ${gitState.ahead} to push`
+    : '';
+
+  const n = gitState.files.length;
+  gitDirtyEl.textContent = n ? `${n} change${n === 1 ? '' : 's'}` : '';
+  gitDirtyEl.classList.toggle('clean', n === 0);
+
+  const conflicts = gitState.files.some((f) => f.kind === 'conflict');
+  gitBarEl.classList.toggle('conflicted', conflicts);
+
+  gitDiffBtn.disabled = gitBusy || n === 0;
+  gitPullBtn.disabled = gitBusy || !gitState.upstream;
+  gitPushBtn.disabled = gitBusy;
+  gitPullBtn.title = gitState.upstream ? `Pull from ${gitState.upstream}` : 'No upstream to pull from';
+}
+
+function setGitBusy(busy, message) {
+  gitBusy = busy;
+  gitBarEl.classList.toggle('busy', busy);
+  if (message !== undefined) setStatus(message);
+  renderGitBar();
+}
+
+// ---- Pull ----
+async function gitPull() {
+  if (!gitState || gitBusy) return;
+  // Land any pending edit first: a merge that touches the open file must not race
+  // an autosave, and the reload below would otherwise drop the unsaved change.
+  await flushSave();
+
+  setGitBusy(true, 'Pulling…');
+  const res = await api.gitPull(baseFolder);
+  setGitBusy(false);
+
+  if (res.ok) {
+    await afterGitChange(summarizePull(res.output));
+  } else if (res.conflict) {
+    // The merge started and stopped on a conflict: the files are now marked in the
+    // tree, so point at them rather than dumping git's output.
+    await afterGitChange('Pull stopped on a conflict — resolve the marked files.', true);
+  } else {
+    await afterGitChange('Pull failed: ' + gitErrorLine(res.error), true);
+  }
+}
+
+// A pull or a commit can rewrite files on disk, so rebuild the tree, re-read status
+// and re-open the current file — what's on screen has to match what's on disk. The
+// message is set *last* because re-opening the file reports its own 'Saved', which
+// would otherwise be the only thing left of the result the user asked for.
+async function afterGitChange(message, isError) {
+  const open = currentFile;
+  await refreshTree();
+  if (open) {
+    const row = treeEl.querySelector(`[data-path="${cssEscape(open)}"]`);
+    if (row) await openFile(open, row);
+  }
+  await refreshGit();
+  if (message !== undefined) setStatus(message, isError);
+}
+
+// git prints the interesting part of a pull last ("3 files changed, …"); its first
+// line is the near-useless "Updating abc1234..def5678".
+function summarizePull(output) {
+  const lines = String(output || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  return (
+    lines.find((l) => /files? changed/i.test(l)) ||
+    lines.find((l) => /Already up to date/i.test(l)) ||
+    lines[lines.length - 1] ||
+    'Pulled.'
+  );
+}
+
+// Conversely, git buries the actual failure under a pile of `hint:` lines.
+function gitErrorLine(text) {
+  const lines = String(text || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  return (
+    lines.find((l) => /^(fatal|error):/i.test(l)) ||
+    lines.find((l) => !/^hint:/i.test(l)) ||
+    lines[0] ||
+    'unknown error'
+  );
+}
+
+// ---- Commit (+ push) ----
+async function gitCommitPush() {
+  if (!gitState || gitBusy) return;
+  await flushSave();
+  await refreshGit();
+  if (!gitState) return;
+
+  if (!gitState.files.length) {
+    setStatus('Nothing to commit — the vault is clean.');
+    return;
+  }
+  if (gitState.files.some((f) => f.kind === 'conflict')) {
+    setStatus('Resolve the conflicted files before committing.', true);
+    return;
+  }
+
+  const result = await commitModal(gitState.files, !!gitState.upstream);
+  if (!result) return;
+  // The user asked to see a file's changes instead: the diff opens in the editor
+  // pane, and pressing ↑ again brings the dialog back with the draft intact.
+  if (result.action === 'diff') {
+    await showDiffFor(result.path);
+    return;
+  }
+
+  setGitBusy(true, result.push ? 'Committing and pushing…' : 'Committing…');
+  const res = await api.gitCommit(baseFolder, result.message, result.push);
+  setGitBusy(false);
+
+  if (!res.ok) {
+    // A commit that landed but failed to push is a very different situation from
+    // one that never happened — say which, so the user knows what to retry.
+    const prefix = res.committed ? 'Committed, but push failed: ' : 'Commit failed: ';
+    await afterGitChange(prefix + gitErrorLine(res.error), true);
+  } else {
+    await afterGitChange(res.pushed ? 'Committed and pushed.' : 'Committed.');
+  }
+}
+
+// A message typed but not committed — because the user clicked through to review a
+// diff, which closes the dialog. Restored the next time it opens so the review
+// doesn't cost them what they had already written.
+let commitDraft = '';
+
+// The commit dialog: the message, the exact list of files that will be included
+// (each opening its diff on click), and whether to push afterwards.
+function commitModal(files, hasUpstream) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const box = document.createElement('div');
+    box.className = 'modal-box gc-box';
+
+    const heading = document.createElement('div');
+    heading.className = 'modal-title';
+    heading.textContent = `Commit ${files.length} change${files.length === 1 ? '' : 's'}`;
+    box.appendChild(heading);
+
+    const msgLabel = document.createElement('label');
+    msgLabel.className = 'rm-label';
+    msgLabel.textContent = 'Message';
+    box.appendChild(msgLabel);
+
+    const msgInput = document.createElement('textarea');
+    msgInput.className = 'modal-input gc-message';
+    msgInput.rows = 3;
+    msgInput.placeholder = 'What changed?';
+    msgInput.value = commitDraft;
+    box.appendChild(msgInput);
+
+    const listLabel = document.createElement('label');
+    listLabel.className = 'rm-label gc-list-label';
+    listLabel.textContent = 'Files — click one to review its diff';
+    box.appendChild(listLabel);
+
+    const list = document.createElement('div');
+    list.className = 'gc-list';
+    for (const file of files) {
+      const row = document.createElement('button');
+      row.className = 'gc-file';
+      row.dataset.git = file.kind;
+      const letter = document.createElement('span');
+      letter.className = 'git-badge';
+      letter.textContent = GIT_LETTER[file.kind] || 'M';
+      const name = document.createElement('span');
+      name.className = 'gc-file-path';
+      name.textContent = file.rel;
+      row.title = gitEntryTitle(file);
+      row.appendChild(letter);
+      row.appendChild(name);
+      // The diff lives in the editor pane, so reviewing one means leaving this
+      // dialog. The message typed so far is kept and restored when it reopens.
+      row.addEventListener('click', () => close({ action: 'diff', path: file.path }));
+      list.appendChild(row);
+    }
+    box.appendChild(list);
+
+    const pushWrap = document.createElement('label');
+    pushWrap.className = 'gc-push';
+    const pushCheck = document.createElement('input');
+    pushCheck.type = 'checkbox';
+    pushCheck.checked = hasUpstream;
+    const pushText = document.createElement('span');
+    pushText.textContent = hasUpstream
+      ? 'Push after committing'
+      : 'Push after committing (publishes this branch)';
+    pushWrap.appendChild(pushCheck);
+    pushWrap.appendChild(pushText);
+    box.appendChild(pushWrap);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    const okBtn = document.createElement('button');
+    okBtn.className = 'modal-primary';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+    box.appendChild(actions);
+
+    const syncOk = () => (okBtn.textContent = pushCheck.checked ? 'Commit & Push' : 'Commit');
+    syncOk();
+    pushCheck.addEventListener('change', syncOk);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    let done = false;
+    function close(value) {
+      if (done) return;
+      done = true;
+      // Keep whatever was typed unless this was a real commit or an explicit cancel.
+      commitDraft = value && value.action === 'diff' ? msgInput.value : '';
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(value);
+    }
+    function submit() {
+      const message = msgInput.value.trim();
+      if (!message) {
+        msgInput.classList.add('invalid');
+        msgInput.focus();
+        return;
+      }
+      close({ message, push: pushCheck.checked });
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close(null);
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        // Plain Enter is a newline: a commit message has more than one line.
+        e.preventDefault();
+        submit();
+      }
+    }
+
+    msgInput.addEventListener('input', () => msgInput.classList.remove('invalid'));
+    okBtn.addEventListener('click', submit);
+    cancelBtn.addEventListener('click', () => close(null));
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) close(null);
+    });
+    document.addEventListener('keydown', onKey, true);
+    msgInput.focus();
+  });
+}
+
+// ---- Discard changes ----
+// The counterpart to the diff: put a file (or a folder, or the vault) back to what
+// git last committed. Irreversible for anything not committed, so it always names
+// exactly which files it will touch before doing it.
+
+// Everything a discard of `target` would affect. Untracked files are separated out
+// rather than filtered away, so the dialog can say what it is *not* going to do.
+function revertScope(target, scope) {
+  const sep = baseFolder.includes('\\') ? '\\' : '/';
+  const inScope = [...gitFileStatus.values()].filter((f) =>
+    scope === 'file' ? f.path === target : f.path.startsWith(target + sep)
+  );
+  return {
+    revertable: inScope.filter((f) => f.kind !== 'untracked'),
+    untracked: inScope.filter((f) => f.kind === 'untracked'),
+  };
+}
+
+async function discardChanges(target, scope, label) {
+  if (!gitState) return;
+  // Act on what git says now, not on what the tree was last painted with.
+  await refreshGit();
+  if (!gitState) return;
+
+  const { revertable, untracked } = revertScope(target, scope);
+  if (!revertable.length) {
+    setStatus(
+      untracked.length
+        ? 'Nothing to discard — those files are untracked, so git has no version to restore.'
+        : 'Nothing to discard — no tracked changes here.'
+    );
+    return;
+  }
+
+  const notes = [];
+  if (revertable.some((f) => f.kind === 'deleted')) notes.push('Deleted files will come back.');
+  if (revertable.some((f) => f.kind === 'added')) {
+    notes.push('Newly added files stay on disk; they are only un-staged.');
+  }
+  if (untracked.length) {
+    notes.push(
+      `${untracked.length} untracked file${untracked.length === 1 ? '' : 's'} will be left alone — ` +
+        'git has no version to restore, so discarding would just delete them.'
+    );
+  }
+
+  const confirmed = await confirmModal({
+    title: `Discard changes in ${label}?`,
+    message:
+      revertable.length === 1
+        ? '1 file will be put back to its last committed state. Any edit since then is lost.'
+        : `${revertable.length} files will be put back to their last committed state. Any edit since then is lost.`,
+    files: revertable,
+    notes,
+    confirmLabel: 'Discard changes',
+  });
+  if (!confirmed) return;
+
+  // Discarding means throwing the buffer away rather than writing it: drop any
+  // queued autosave (and the dirty flag) so nothing rewrites what we just restored.
+  if (currentFile && revertable.some((f) => f.path === currentFile)) {
+    cancelPendingSave();
+    dirty = false;
+  }
+
+  setGitBusy(true, 'Discarding…');
+  const res = await api.gitRevert(baseFolder, revertable.map((f) => f.path));
+  setGitBusy(false);
+
+  if (!res.ok) {
+    await afterGitChange('Discard failed: ' + gitErrorLine(res.error), true);
+    return;
+  }
+  const n = res.reverted;
+  await afterGitChange(
+    n ? `Discarded changes in ${n} file${n === 1 ? '' : 's'}.` : 'Nothing needed discarding.'
+  );
+}
+
+// A yes/no dialog that shows exactly what is about to happen. Used for discarding,
+// which is the one action here that destroys work with no undo.
+function confirmModal({ title, message, files, notes, confirmLabel }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const box = document.createElement('div');
+    box.className = 'modal-box gc-box';
+
+    const heading = document.createElement('div');
+    heading.className = 'modal-title';
+    heading.textContent = title;
+    box.appendChild(heading);
+
+    if (message) {
+      const p = document.createElement('div');
+      p.className = 'cf-message';
+      p.textContent = message;
+      box.appendChild(p);
+    }
+
+    if (files && files.length) {
+      const list = document.createElement('div');
+      list.className = 'gc-list';
+      for (const file of files) {
+        const row = document.createElement('div');
+        row.className = 'gc-file cf-static';
+        row.dataset.git = file.kind;
+        const letter = document.createElement('span');
+        letter.className = 'git-badge';
+        letter.textContent = GIT_LETTER[file.kind] || 'M';
+        const name = document.createElement('span');
+        name.className = 'gc-file-path';
+        name.textContent = file.rel;
+        row.title = gitEntryTitle(file);
+        row.appendChild(letter);
+        row.appendChild(name);
+        list.appendChild(row);
+      }
+      box.appendChild(list);
+    }
+
+    for (const note of notes || []) {
+      const el = document.createElement('div');
+      el.className = 'cf-note';
+      el.textContent = note;
+      box.appendChild(el);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    const okBtn = document.createElement('button');
+    okBtn.className = 'modal-danger';
+    okBtn.textContent = confirmLabel || 'OK';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+    box.appendChild(actions);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    let done = false;
+    function close(value) {
+      if (done) return;
+      done = true;
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(value);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close(false);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        close(true);
+      }
+    }
+    okBtn.addEventListener('click', () => close(true));
+    cancelBtn.addEventListener('click', () => close(false));
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target === overlay) close(false);
+    });
+    document.addEventListener('keydown', onKey, true);
+    // Cancel takes focus, not the destructive button.
+    cancelBtn.focus();
+  });
+}
+
+// ---- Diff view ----
+// The diff is the fourth view of the open file, shown in the editor pane alongside
+// Raw / Editor / Preview rather than in a window of its own — so reviewing a change
+// is the same gesture as reading the file, and the tree stays visible next to it.
+// Two renderings of the same change: side-by-side, and git's own unified patch.
+
+// Guards against a slow diff painting over a newer one.
+let diffToken = 0;
+
+// Show a file's changes, from the tree's context menu or the git bar's list.
+async function showDiffFor(target) {
+  if (!gitState || !target) return;
+  await flushSave();
+  const entry = gitFileStatus.get(target);
+
+  if (entry && entry.kind === 'deleted') {
+    // Nothing to open — drop any queued write first so an autosave can't recreate
+    // the file we're about to describe as gone.
+    cancelPendingSave();
+    diffOnlyFile = target;
+    currentFile = target;
+    dirty = false;
+    editorEl.value = '';
+    editorEl.disabled = true;
+    currentFileEl.textContent = relativePath(target);
+    setStatus('Deleted — showing its last committed contents');
+    document.querySelectorAll('.node-row.active').forEach((el) => el.classList.remove('active'));
+    viewMode = 'diff';
+    applyView();
+    return;
+  }
+
+  if (currentFile !== target || diffOnlyFile) {
+    closeDiffOnly();
+    const row = treeEl.querySelector(`[data-path="${cssEscape(target)}"]`);
+    await openFile(target, row);
+  }
+  setViewMode('diff');
+}
+
+// Leave the deleted-file diff. The editor goes back to having nothing open, which
+// is the truth — the file it was showing isn't there.
+function closeDiffOnly() {
+  if (!diffOnlyFile) return;
+  diffOnlyFile = null;
+  currentFile = null;
+  dirty = false;
+  editorEl.value = '';
+  editorEl.disabled = true;
+  currentFileEl.textContent = 'No file open';
+  setStatus('');
+}
+
+// Draw the open file's diff into the pane. Async, so it stamps a token and drops
+// its result if the file or the view moved on while git was working.
+async function renderDiffPane() {
+  const forFile = currentFile;
+  const token = ++diffToken;
+  if (!forFile || !gitState) {
+    diffViewEl.replaceChildren(diffMessage('Nothing to diff.'));
+    return;
+  }
+  diffViewEl.replaceChildren(diffMessage('Loading…'));
+
+  const res = await api.gitDiff(baseFolder, forFile);
+  if (token !== diffToken || currentFile !== forFile) return;
+
+  if (!res || !res.ok) {
+    diffViewEl.replaceChildren(diffMessage('Could not diff this file: ' + ((res && res.error) || 'unknown error')));
+    return;
+  }
+  diffViewEl.replaceChildren(diffMode === 'raw' ? renderRawDiff(res) : renderVisualDiff(res));
+  // The diff is a real pane, so ⌘F searches it like any other.
+  refreshFind();
+}
+
+// The git bar's list of everything that has changed. A plain popup menu, not a
+// dialog: picking an entry opens that file's diff in the editor pane.
+function showChangedFiles(anchorEl) {
+  if (!gitState) return;
+  if (!gitState.files.length) {
+    setStatus('No changes — the vault is clean.');
+    return;
+  }
+  const rect = anchorEl.getBoundingClientRect();
+  showContextMenu(
+    { clientX: rect.left, clientY: rect.bottom + 4 },
+    gitState.files.map((file) => ({
+      label: `${GIT_LETTER[file.kind] || 'M'}  ${file.rel}`,
+      fn: () => showDiffFor(file.path),
+    }))
+  );
+}
+
+function diffMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'diff-empty';
+  el.textContent = text;
+  return el;
+}
+
+// git's unified patch, coloured by line kind. Shown verbatim — this is the view for
+// when you want to see exactly what git sees.
+function renderRawDiff(res) {
+  if (!res.raw) {
+    return diffMessage(
+      res.binary ? 'Binary file — no textual diff.' : 'No textual change against HEAD.'
+    );
+  }
+  const pre = document.createElement('pre');
+  pre.className = 'diff-raw';
+  for (const line of res.raw.split('\n')) {
+    const el = document.createElement('div');
+    let kind = 'ctx';
+    if (line.startsWith('@@')) kind = 'hunk';
+    else if (/^(diff |index |--- |\+\+\+ |new file|deleted file|similarity|rename |old mode|new mode|Binary files)/.test(line))
+      kind = 'meta';
+    else if (line.startsWith('+')) kind = 'add';
+    else if (line.startsWith('-')) kind = 'del';
+    el.className = 'diff-raw-line diff-' + kind;
+    el.textContent = line;
+    pre.appendChild(el);
+  }
+  return pre;
+}
+
+// Side-by-side: HEAD on the left, the working tree on the right, with the words that
+// actually changed picked out inside a modified line.
+function renderVisualDiff(res) {
+  if (res.binary) return diffMessage('Binary file — no textual diff.');
+  const head = res.head === null ? '' : res.head;
+  const work = res.work === null ? '' : res.work;
+  if (head === work) return diffMessage('No change against HEAD.');
+
+  const headLines = splitLines(head);
+  const workLines = splitLines(work);
+  if ((headLines.length + 1) * (workLines.length + 1) > DIFF_MAX_CELLS) {
+    return diffMessage('This file is too large to diff side by side — use the Raw view.');
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'diff-visual';
+
+  const legend = document.createElement('div');
+  legend.className = 'diff-legend';
+  legend.textContent = res.isNew
+    ? 'New file — nothing in HEAD to compare against'
+    : res.isDeleted
+      ? 'Deleted — HEAD on the left, nothing on the right'
+      : 'HEAD (left) → working tree (right)';
+  wrap.appendChild(legend);
+
+  const grid = document.createElement('div');
+  grid.className = 'diff-grid';
+  for (const row of condenseRows(pairRows(lcsOps(headLines, workLines)))) {
+    grid.appendChild(diffRowEl(row));
+  }
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+// Text to displayed lines. A trailing newline *terminates* the last line rather
+// than starting an empty one, and empty text is no lines at all — without both,
+// every file picks up a phantom blank line at the end and a deleted file shows one
+// empty line opposite its former contents.
+function splitLines(text) {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+// Turn the flat op list into left/right line pairs. Within one changed block the
+// deletions and additions are zipped together so a rewritten line sits opposite the
+// line it replaced (which is what makes the word-level highlighting meaningful).
+function pairRows(ops) {
+  const rows = [];
+  let ln = 0;
+  let rn = 0;
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].type === 'ctx') {
+      rows.push({ type: 'ctx', left: ops[i].text, right: ops[i].text, ln: ++ln, rn: ++rn });
+      i++;
+      continue;
+    }
+    const block = [];
+    while (i < ops.length && ops[i].type !== 'ctx') block.push(ops[i++]);
+    const dels = block.filter((o) => o.type === 'del').map((o) => o.text);
+    const adds = block.filter((o) => o.type === 'add').map((o) => o.text);
+    for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
+      const left = k < dels.length ? dels[k] : null;
+      const right = k < adds.length ? adds[k] : null;
+      rows.push({
+        type: left !== null && right !== null ? 'mod' : left !== null ? 'del' : 'add',
+        left,
+        right,
+        ln: left !== null ? ++ln : null,
+        rn: right !== null ? ++rn : null,
+      });
+    }
+  }
+  return rows;
+}
+
+// Same idea as condenseDiff, on paired rows: keep a few lines of context around each
+// change and replace the rest with a "⋯ N unchanged lines" marker.
+function condenseRows(rows) {
+  const CONTEXT = 3;
+  const keep = new Array(rows.length).fill(false);
+  for (let k = 0; k < rows.length; k++) {
+    if (rows[k].type === 'ctx') continue;
+    for (let d = -CONTEXT; d <= CONTEXT; d++) {
+      if (k + d >= 0 && k + d < rows.length) keep[k + d] = true;
+    }
+  }
+  const out = [];
+  let k = 0;
+  while (k < rows.length) {
+    if (keep[k]) {
+      out.push(rows[k]);
+      k++;
+      continue;
+    }
+    let count = 0;
+    while (k < rows.length && !keep[k]) {
+      count++;
+      k++;
+    }
+    out.push({ type: 'gap', count });
+  }
+  return out;
+}
+
+function diffRowEl(row) {
+  const el = document.createElement('div');
+  el.className = 'diff-row diff-' + row.type;
+  if (row.type === 'gap') {
+    el.textContent = `⋯ ${row.count} unchanged line${row.count === 1 ? '' : 's'}`;
+    return el;
+  }
+
+  // Only a replaced line has two versions to compare word by word.
+  const words = row.type === 'mod' ? wordSegments(row.left, row.right) : null;
+  el.appendChild(numCell(row.ln));
+  el.appendChild(textCell(row.left, words ? words.left : null, 'left'));
+  el.appendChild(numCell(row.rn));
+  el.appendChild(textCell(row.right, words ? words.right : null, 'right'));
+  return el;
+}
+
+function numCell(n) {
+  const el = document.createElement('div');
+  el.className = 'diff-num';
+  el.textContent = n === null || n === undefined ? '' : String(n);
+  return el;
+}
+
+// A null line means "this side has nothing here" — rendered as an empty filler cell
+// so the two columns stay aligned rather than sliding past each other.
+function textCell(text, segments, side) {
+  const el = document.createElement('div');
+  el.className = 'diff-text diff-' + side;
+  if (text === null) {
+    el.classList.add('diff-blank');
+    return el;
+  }
+  if (!segments) {
+    el.textContent = text;
+    return el;
+  }
+  for (const seg of segments) {
+    if (seg.type === 'ctx') {
+      el.appendChild(document.createTextNode(seg.text));
+    } else {
+      const mark = document.createElement('span');
+      mark.className = 'diff-word';
+      mark.textContent = seg.text;
+      el.appendChild(mark);
+    }
+  }
+  return el;
+}
+
+// Word-level diff of one replaced line, as the two sides' segment lists. Returns
+// null when the lines are too long to be worth an O(n×m) table — the row then just
+// renders as whole-line add/remove, which is still correct, only less precise.
+function wordSegments(left, right) {
+  const A = left.match(/\s+|\S+/g) || [];
+  const B = right.match(/\s+|\S+/g) || [];
+  if ((A.length + 1) * (B.length + 1) > WORD_DIFF_MAX_CELLS) return null;
+
+  const out = { left: [], right: [] };
+  const push = (side, type, text) => {
+    const list = out[side];
+    const last = list[list.length - 1];
+    if (last && last.type === type) last.text += text; // merge runs, fewer spans
+    else list.push({ type, text });
+  };
+  for (const op of lcsOps(A, B)) {
+    if (op.type === 'ctx') {
+      push('left', 'ctx', op.text);
+      push('right', 'ctx', op.text);
+    } else if (op.type === 'del') {
+      push('left', 'del', op.text);
+    } else {
+      push('right', 'add', op.text);
     }
   }
   return out;
@@ -2179,6 +3206,23 @@ smartAddBtn.addEventListener('click', smartAdd);
 smartLookupBtn.addEventListener('click', smartLookup);
 smartInputEl.addEventListener('input', invalidateSmartPlan);
 newReminderBtn.addEventListener('click', () => newReminder(null));
+// stopPropagation: this same click would otherwise reach the document-level
+// listener that dismisses context menus, closing the list as soon as it opens.
+gitDiffBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  showChangedFiles(gitDiffBtn);
+});
+viewDiffBtn.addEventListener('click', () => setViewMode('diff'));
+diffVisualBtn.addEventListener('click', () => setDiffMode('visual'));
+diffRawBtn.addEventListener('click', () => setDiffMode('raw'));
+gitPullBtn.addEventListener('click', gitPull);
+gitPushBtn.addEventListener('click', gitCommitPush);
+
+// A vault can be changed from outside the app (a terminal `git` command, another
+// editor), so re-read status whenever the window comes back to the front.
+window.addEventListener('focus', () => {
+  if (baseFolder) refreshGit();
+});
 viewRawBtn.addEventListener('click', () => setViewMode('raw'));
 viewWysBtn.addEventListener('click', () => setViewMode('wysiwyg'));
 viewMdBtn.addEventListener('click', () => setViewMode('preview'));

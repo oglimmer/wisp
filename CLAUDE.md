@@ -49,7 +49,7 @@ Wisp is a single-window Electron app: a folder/file tree on the left, an editor 
 
 The whole app is built around Electron's **three-context security model**, and understanding the boundary between the contexts is the key to working here:
 
-- **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as an `ipcMain.handle` handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `read-reminders`, `write-reminders`), plus folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
+- **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as an `ipcMain.handle` handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
   OS file manager (`reveal-path`) and config. The renderer has **no direct fs access** — anything touching disk must be added as a handler here.
 - **`preload.js`** — the only bridge between the two worlds. Runs with `contextIsolation: true` / `nodeIntegration: false` and exposes a minimal, hand-listed API on `window.api` via `contextBridge`. A new main-process handler is invisible to the UI until a corresponding method is added here.
 - **`renderer.js` (renderer, browser context)** — all UI logic and state (`baseFolder`, `currentFile`, `dirty`, `expanded` set). Talks to disk **only** through `window.api.*`. It never `require`s Node modules.
@@ -126,6 +126,95 @@ Two details keep the description block from corrupting the note:
   block list, so a plain keep would splice it inline and it would stop being its own HTML block. The
   rule rebuilds the block instead of echoing `outerHTML` because turndown collapses whitespace before
   rules run, which would otherwise fold the block onto one line on every WYSIWYG save.
+
+### Git
+
+The vault is **often, but not always** a git repository, so every part of this is
+conditional: `git-info` answers `{ ok: true, repo: false }` for a plain folder rather than
+failing, `gitState` in the renderer is `null`, and the whole `#git-bar` hides itself. Nothing
+else in the app changes. Git is driven only through `spawn('git', […])` from main — never a
+shell — via `runGit()`, which never rejects and always resolves `{ok, code, stdout, stderr}`.
+
+- **The vault may be a subfolder of a larger repo.** `gitRoot()` resolves the real repo root
+  and every path is translated through it, because `git status --porcelain` reports paths
+  relative to the *root*, not the cwd. Status is read with a `-- <baseFolder>` pathspec and
+  `git add -A -- <baseFolder>`, so Wisp only ever sees and commits its own files. The commit
+  is scoped with a pathspec **only** when the vault isn't the repo root — a partial commit is
+  refused during a merge, so the ordinary whole-index commit is used in the common case.
+- **Status is parsed from `--porcelain=v1 -z`**, not the human format: `-z` makes each record
+  NUL-terminated, so a filename containing a space, quote or newline survives intact (the
+  non-`-z` format C-quotes it). A rename/copy entry is followed by one extra field, its old
+  path — `parseStatus()` consumes it, or every subsequent record shifts by one.
+- **`gitEnv()` disables credential prompting** (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS`/
+  `SSH_ASKPASS` deleted). There is no terminal to answer a password prompt, so a push that
+  needs one must fail fast rather than hang the app forever. It also sets
+  `GIT_OPTIONAL_LOCKS=0` so the status call that runs on every tree refresh doesn't fight a
+  `git` command the user is running in a terminal.
+- **Pull passes `--no-rebase`** unless `pull.rebase` / `branch.<n>.rebase` is configured. Since
+  git 2.27 a bare `git pull` *refuses to run at all* once the branches have diverged — which is
+  exactly the "same vault edited on two machines" case this feature exists for. A conflicted
+  merge comes back as `{ok: false, conflict: true}`: a normal, recoverable state (the files are
+  now marked in the tree) rather than a failure.
+- **A commit that lands but fails to push is reported as such.** `git-commit` returns the step
+  that failed plus `committed: true`, because "nothing happened" and "committed locally, retry
+  the push" need different things from the user.
+- **`git-revert` never deletes an untracked file.** Discarding restores from HEAD, so a file git
+  has never seen has nothing to restore *to* — "discarding" it would be an unrecoverable delete
+  wearing the name of an undo. Untracked entries are counted as `skipped` and reported to the
+  user instead; the ordinary Delete menu item remains for anyone who does mean that. A
+  staged-but-new file is only un-staged, so it survives on disk. It also re-reads status itself
+  rather than trusting the renderer's last paint, because it destroys work.
+- **Revert reads status over the whole vault and filters afterwards, not via a pathspec.** Git
+  only detects a rename when *both* halves are in scope, so asking about just the new path
+  reports a bare add and would silently leave the old path deleted.
+
+Tree decoration is **rebuild-then-repaint**, matching how the tree and reminder list already
+work: `refreshGit()` re-reads status whole, `indexGitStatus()` builds a path→status map plus a
+set of folders containing something changed, and `applyGitDecorations()` walks the rendered
+`.node-row[data-path]` elements. Keeping paint separate from `renderNode()` means a status
+refresh doesn't rebuild (and collapse) the tree. `refreshTree()` repaints from cached state
+first so a rebuild never flashes undecorated. Status is re-read after a tree refresh, after an
+autosave (debounced — saving doesn't rebuild the tree but does change what git sees), and on
+window focus (the vault can be changed from a terminal).
+
+**`afterGitChange()` sets its status message last, on purpose.** It re-opens the current file so
+the editor matches what a pull just wrote to disk — and `openFile()` ends by setting the status
+to `Saved`, which would otherwise be all that's left of the pull's result.
+
+### The diff view
+
+The diff is the **fourth view of the open file**, in the editor pane beside Raw / Editor /
+Preview — not a window of its own — so reviewing a change is the same gesture as reading the
+file and the tree stays visible next to it. `viewMode` gains `'diff'`, but it is deliberately
+*not* persisted (`STORED_VIEW_MODES`): it's a mode you step into to check something, not one
+you want the app to reopen into. The three editing views belong to Markdown files and Diff
+belongs to any text file in a repository, so `applyView()` shows each button on its own terms
+and hides the shared group only when nothing is left in it.
+
+A **deleted** file has nothing on disk to open, so it gets `diffOnlyFile`: `currentFile` points
+at it, the buffer stays empty and disabled, the editing views hide, and opening anything else
+clears it. It's reachable from the git bar's ◨ list (a plain popup menu, not a dialog) or by
+discarding its parent folder's changes.
+
+The same change is offered two ways:
+
+- **Visual** — side-by-side, HEAD left / working tree right. Built from `lineOps()` (the LCS
+  core `lineDiff` already used for smart insert, factored out as `lcsOps` so it works on lines
+  *and* words), then `pairRows()` zips each changed block's deletions against its additions so a
+  rewritten line sits opposite the line it replaced, then `condenseRows()` collapses distant
+  context. `wordSegments()` runs the same LCS over words to pick out what actually changed
+  inside a paired line. The LCS table is O(n×m), so both have explicit size caps
+  (`DIFF_MAX_CELLS` / `WORD_DIFF_MAX_CELLS`) past which the view degrades — to Raw for a whole
+  file, to plain line highlighting for one long line — rather than freezing the renderer.
+  Lines come from `splitLines()`, not a bare `split('\n')`: a trailing newline *terminates* the
+  last line rather than starting an empty one, and empty text is no lines at all. Without both,
+  every file grows a phantom blank line and a deleted file shows one empty line opposite its
+  former contents.
+- **Raw** — git's own unified patch, coloured by line kind. An untracked file is invisible to
+  `git diff`, so main falls back to `git diff --no-index -- /dev/null <file>`.
+
+Binary files are detected by a NUL byte in the first 8KB (git's own heuristic) and never handed
+to the visual diff; `head`/`work` come back `null` so there is no text to lay out as lines.
 
 ### Reminders
 

@@ -49,4 +49,12 @@ contextBridge.exposeInMainWorld('api', {
   writeReminders: (baseFolder, reminders) =>
     ipcRenderer.invoke('write-reminders', baseFolder, reminders),
   alertWindow: () => ipcRenderer.invoke('alert-window'),
+  // Git: the vault may or may not be a repository, so gitInfo answers
+  // { repo: false } for a plain folder rather than failing.
+  gitInfo: (baseFolder) => ipcRenderer.invoke('git-info', baseFolder),
+  gitPull: (baseFolder) => ipcRenderer.invoke('git-pull', baseFolder),
+  gitCommit: (baseFolder, message, push) =>
+    ipcRenderer.invoke('git-commit', baseFolder, message, push),
+  gitDiff: (baseFolder, target) => ipcRenderer.invoke('git-diff', baseFolder, target),
+  gitRevert: (baseFolder, targets) => ipcRenderer.invoke('git-revert', baseFolder, targets),
 });

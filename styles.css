@@ -208,6 +208,380 @@ button:hover {
   margin-left: 12px;
 }
 
+/* ---- Git ---- */
+/* One palette for every place a status is shown — the tree and the commit dialog's
+   file list both read from the same data-git values. */
+:root {
+  --git-modified: #e2c08d;
+  --git-added: #81b88b;
+  --git-untracked: #73c991;
+  --git-deleted: #e06c6c;
+  --git-renamed: #6cb6ff;
+  --git-conflict: #ff7a70;
+}
+
+[data-git='modified'] .node-label,
+[data-git='modified'] .git-badge,
+[data-git='modified'] .gc-file-path {
+  color: var(--git-modified);
+}
+[data-git='added'] .node-label,
+[data-git='added'] .git-badge,
+[data-git='added'] .gc-file-path {
+  color: var(--git-added);
+}
+[data-git='untracked'] .node-label,
+[data-git='untracked'] .git-badge,
+[data-git='untracked'] .gc-file-path {
+  color: var(--git-untracked);
+}
+[data-git='deleted'] .node-label,
+[data-git='deleted'] .git-badge,
+[data-git='deleted'] .gc-file-path {
+  color: var(--git-deleted);
+}
+[data-git='renamed'] .node-label,
+[data-git='renamed'] .git-badge,
+[data-git='renamed'] .gc-file-path {
+  color: var(--git-renamed);
+}
+[data-git='conflict'] .node-label,
+[data-git='conflict'] .git-badge,
+[data-git='conflict'] .gc-file-path {
+  color: var(--git-conflict);
+}
+
+/* A folder is never itself modified — the dot only says something inside it is,
+   so the folder's own name stays in the ordinary colour. */
+[data-git='dir'] .git-badge {
+  color: var(--git-modified);
+}
+
+/* Status letter, pinned to the right edge of the row. */
+.git-badge {
+  margin-left: auto;
+  padding-left: 6px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Sits between the sidebar header and the tree; hidden unless the vault is a repo. */
+.git-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.git-branch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Drawn rather than set as a glyph: the branch/fork characters (U+2442, U+2387)
+   aren't in every system font and fall back to tofu. This is just a small
+   forking stem — two dots joined by a rule. */
+.git-branch::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  vertical-align: 0;
+  border-left: 1.5px solid var(--text-dim);
+  border-bottom: 1.5px solid var(--text-dim);
+  border-bottom-left-radius: 3px;
+}
+
+.git-sync {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.git-dirty {
+  flex-shrink: 0;
+  color: var(--git-modified);
+}
+
+.git-dirty.clean {
+  color: var(--text-dim);
+}
+
+/* A conflict is the one state that should stop you committing, so it shouts. */
+.git-bar.conflicted .git-branch {
+  color: var(--git-conflict);
+}
+
+.git-bar .sidebar-actions {
+  margin-left: auto;
+}
+
+.git-bar button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.git-bar.busy {
+  opacity: 0.6;
+}
+
+/* ---- Commit dialog ---- */
+.gc-box {
+  min-width: 520px;
+  max-width: 640px;
+}
+
+.gc-message {
+  font-family: var(--font-ui);
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.gc-list-label {
+  margin-top: 14px;
+}
+
+.gc-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 4px;
+}
+
+.gc-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gc-file:hover {
+  background: var(--bg-hover);
+}
+
+.gc-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gc-push {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+/* ---- Confirm dialog (discarding changes) ---- */
+.cf-message {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+/* The file list here is a statement of what will happen, not a set of controls. */
+.gc-file.cf-static {
+  cursor: default;
+}
+
+.gc-file.cf-static:hover {
+  background: transparent;
+}
+
+.cf-note {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+/* Destructive confirm: red rather than the ordinary blue primary, so it doesn't
+   read as the safe default. */
+.modal-danger {
+  background: #a3271f;
+  border-color: #a3271f;
+  color: #fff;
+}
+
+.modal-danger:hover {
+  background: #b52d24;
+  border-color: #b52d24;
+}
+
+/* ---- Diff view ---- */
+/* Not an overlay: the diff is a pane in the editor stack, shown in place of the
+   textarea exactly like the preview and image panes are. */
+.diff-view {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+  background: var(--bg);
+}
+
+/* The Visual/Raw switch sits next to the Raw/Editor/Preview one, separated so the
+   two groups don't read as a single six-button row. */
+.diff-mode-toggle {
+  margin-left: 2px;
+}
+
+.diff-empty {
+  padding: 24px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.diff-legend {
+  position: sticky;
+  left: 0;
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Status letter leads the row in the commit dialog's file list, rather than being
+   pinned to the right edge the way it is in the tree. */
+.gc-file .git-badge {
+  margin-left: 0;
+  padding-left: 0;
+  width: 12px;
+  text-align: center;
+}
+
+/* ---- Visual (side-by-side) diff ---- */
+/* Line number / text, twice. min-content on the grid so long lines widen the whole
+   thing and scroll horizontally together instead of wrapping out of alignment. */
+.diff-grid {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  min-width: min-content;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.diff-row {
+  display: contents;
+}
+
+.diff-num {
+  padding: 0 8px;
+  text-align: right;
+  color: #5a5a5a;
+  background: var(--bg-alt);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.diff-text {
+  padding: 0 10px;
+  white-space: pre;
+}
+
+/* The right column's edge, so the two sides read as two panes. */
+.diff-text.diff-left {
+  border-right: 1px solid var(--border);
+}
+
+.diff-del .diff-left,
+.diff-mod .diff-left {
+  background: rgba(224, 108, 108, 0.13);
+}
+
+.diff-add .diff-right,
+.diff-mod .diff-right {
+  background: rgba(129, 184, 139, 0.14);
+}
+
+/* Nothing on this side of the pair: filler, so the columns stay in step. */
+.diff-text.diff-blank {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* The words that actually changed inside a rewritten line. */
+.diff-left .diff-word {
+  background: rgba(224, 108, 108, 0.36);
+  border-radius: 2px;
+}
+
+.diff-right .diff-word {
+  background: rgba(129, 184, 139, 0.38);
+  border-radius: 2px;
+}
+
+/* The collapsed-context marker is one cell spanning both panes, so it needs to be a
+   grid item itself rather than `display: contents` like the paired rows. */
+.diff-row.diff-gap {
+  display: block;
+  grid-column: 1 / -1;
+  padding: 3px 14px;
+  color: var(--text-dim);
+  background: var(--bg-alt);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+/* ---- Raw (unified patch) diff ---- */
+.diff-raw {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 8px 0;
+  min-width: min-content;
+}
+
+.diff-raw-line {
+  padding: 0 14px;
+  white-space: pre;
+}
+
+.diff-raw-line.diff-add {
+  color: var(--git-added);
+  background: rgba(129, 184, 139, 0.12);
+}
+
+.diff-raw-line.diff-del {
+  color: var(--git-deleted);
+  background: rgba(224, 108, 108, 0.12);
+}
+
+.diff-raw-line.diff-hunk {
+  color: var(--accent);
+  background: rgba(74, 158, 255, 0.08);
+}
+
+.diff-raw-line.diff-meta {
+  color: var(--text-dim);
+}
+
 /* ---- Reminders (sidebar, below the tree) ---- */
 .reminders {
   flex-shrink: 0;

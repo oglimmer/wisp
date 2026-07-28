@@ -28,6 +28,18 @@
             <button id="change-folder-btn" title="Change folder">⋯</button>
           </div>
         </div>
+        <!-- Git bar: hidden entirely unless the vault is a repository -->
+        <div id="git-bar" class="git-bar hidden">
+          <span id="git-branch" class="git-branch" title=""></span>
+          <span id="git-sync" class="git-sync"></span>
+          <span id="git-dirty" class="git-dirty"></span>
+          <div class="sidebar-actions">
+            <button id="git-diff-btn" title="Changed files">◨</button>
+            <button id="git-pull-btn" title="Pull">↓</button>
+            <button id="git-push-btn" title="Commit &amp; push">↑</button>
+          </div>
+        </div>
+
         <div id="tree" class="tree"></div>
 
         <!-- Drag handle: resize the reminder list below -->
@@ -76,11 +88,18 @@
 
         <div class="editor-header">
           <span id="current-file" class="current-file">No file open</span>
-          <!-- Raw / editor / rendered switch, shown only for Markdown files -->
+          <!-- Raw / editor / rendered switch, shown only for Markdown files; Diff is
+               appended whenever the vault is a git repository. -->
           <div id="view-toggle" class="view-toggle hidden">
             <button id="view-raw-btn" class="view-btn active" title="Edit the raw source">Raw</button>
             <button id="view-wys-btn" class="view-btn" title="Edit formatted text (WYSIWYG)">Editor</button>
             <button id="view-md-btn" class="view-btn" title="Preview rendered Markdown">Preview</button>
+            <button id="view-diff-btn" class="view-btn" title="Show this file's changes against git">Diff</button>
+          </div>
+          <!-- How the diff is drawn; only shown while the Diff view is up -->
+          <div id="diff-mode-toggle" class="view-toggle diff-mode-toggle hidden">
+            <button id="diff-visual-btn" class="view-btn" title="Side by side, with the changed words picked out">Visual</button>
+            <button id="diff-raw-btn" class="view-btn" title="The unified patch, as git prints it">Raw</button>
           </div>
           <span id="status" class="status"></span>
         </div>
@@ -138,6 +157,8 @@
           ></div>
           <!-- Rendered Markdown view; swapped in for the textarea in Preview mode -->
           <div id="rendered" class="rendered markdown-body hidden"></div>
+          <!-- Diff view: this file's changes against git, read-only -->
+          <div id="diff-view" class="diff-view hidden"></div>
           <!-- Image viewer: image files are shown, never edited as text -->
           <div id="image-view" class="image-view hidden">
             <img id="image-view-img" class="image-view-img" alt="" />

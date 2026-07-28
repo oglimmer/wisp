@@ -10,6 +10,9 @@ A minimal, folder-backed Markdown note editor built with [Electron](https://www.
 - **Save** with `Ctrl/Cmd+S`; a status indicator shows `Saved` / `Unsaved changes`, and you're warned before discarding unsaved edits.
 - **Find & replace** in the open file with the usual shortcuts: `Ctrl/Cmd+F` to search (seeded from the selection), `Ctrl/Cmd+G` or `F3` to step through matches (`⇧` to go back), `Esc` to close — leaving the caret on the match you stopped at. Every match is highlighted, in the raw, editor and preview views alike. Replace (`Cmd+⌥+F` / `Ctrl+H`) edits the Markdown source, so it opens the raw view.
 - **File management**: create files (supports nested paths like `folder/note.md`), create folders, rename, and delete (via right-click), plus refresh and change-folder buttons.
+- **Git, if your vault is a repository** — and nothing at all if it isn't, so a plain folder works exactly as before. When the folder *is* a repo, a bar above the tree shows the branch, how far ahead/behind the remote you are, and how many files have changed; every file in the tree is marked with its status (`M` modified, `A` added, `?` untracked, `D` deleted, `R` renamed, `!` conflicted), and a folder gets a dot when something inside it has changed. **Pull** (`↓`) and **Commit & push** (`↑`) sit in the same bar — committing asks for a message and shows exactly which files are included, with a checkbox for whether to push afterwards. A merge conflict marks the affected files and blocks committing until you've resolved them.
+- **Diffs**, shown right where the editor is — **Diff** joins Raw / Editor / Preview as a fourth view of the open file, so the tree stays beside it. Two renderings: **Visual**, a side-by-side view of HEAD against your working copy with the individual changed *words* picked out inside a rewritten line, and **Raw**, git's own unified patch. Reach it from the `Diff` button, from `◨` in the git bar (which lists everything that's changed, including deleted files), or by right-clicking a changed file → *Show diff*.
+- **Discard changes** — right-click to put things back to their last committed state: a file, a folder (which also brings back files deleted inside it), or the whole vault by right-clicking empty space in the tree. It always shows you exactly which files it will touch first. **Untracked files are never deleted**: git has no version to restore them to, so discarding them would be an unrecoverable delete rather than an undo — they're left alone and you're told so.
 - **Reminders**: a list in the lower half of the sidebar (drag the separator to resize), soonest first, with overdue entries highlighted. Add one with `＋`, or right-click a file in the tree. Reminders can repeat daily/weekly/monthly/yearly and can link to a note. When one falls due the app raises its window and shows a large popup with snooze / open-note / done. The list is stored as plain JSON in `.wisp-reminders.json` at the vault root.
 - Hidden by default: `node_modules` and every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`).
 - Secure by design: context isolation on, Node integration off, all file access goes through a minimal IPC bridge with path-traversal guards.
@@ -65,12 +68,21 @@ On first launch, click **Open Folder…** and choose any directory of notes.
 | Complete a reminder | `✓` on hover — repeating ones roll forward to the next occurrence |
 | Refresh tree | `⟳` in the sidebar header |
 | Change base folder | `⋯` in the sidebar header |
+| Diff the open file | `Diff` in the view toggle, next to Raw / Editor / Preview |
+| Switch visual / raw diff | `Visual` / `Raw`, shown beside the toggle while Diff is up |
+| List everything changed | `◨` in the git bar — pick one to see its diff |
+| Diff one file | Right-click a changed file → *Show diff* |
+| Discard a file's changes | Right-click it → *Discard changes…* |
+| Discard a folder's changes | Right-click the folder → *Discard changes in folder…* |
+| Discard everything | Right-click empty space in the tree → *Discard all changes…* |
+| Pull | `↓` in the git bar |
+| Commit & push | `↑` in the git bar — type a message, then `Ctrl/Cmd+Enter` |
 
 ## Project structure
 
 | File | Role |
 |------|------|
-| `main.js` | Main process — window creation, folder dialog, tree building, and file read/write/create/rename/delete IPC handlers |
+| `main.js` | Main process — window creation, folder dialog, tree building, file read/write/create/rename/delete IPC handlers, and the git integration (the only place `git` is run) |
 | `preload.js` | Secure `contextBridge` API exposed to the renderer |
 | `index.html` | Welcome screen + sidebar/editor layout |
 | `renderer.js` | UI logic: tree rendering, open/save, context menu, keyboard shortcuts |
