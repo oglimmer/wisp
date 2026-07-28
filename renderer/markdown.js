@@ -4,10 +4,11 @@
 
 import { IMAGE_SUMMARY } from './state.js';
 
+/** @type {import('turndown') | null} */
 let turndown = null;
 export function getTurndown() {
   if (turndown || !window.TurndownService) return turndown;
-  turndown = new window.TurndownService({
+  const td = new window.TurndownService({
     headingStyle: 'atx',
     hr: '---',
     bulletListMarker: '-',
@@ -16,7 +17,7 @@ export function getTurndown() {
   });
   // Emit the vault-relative path we stashed on hydrated images (their live src is
   // a data: URL), not the inlined base64 — so saved Markdown stays portable.
-  turndown.addRule('vaultImage', {
+  td.addRule('vaultImage', {
     filter: 'img',
     replacement: (_content, node) => {
       const alt = node.getAttribute('alt') || '';
@@ -30,7 +31,7 @@ export function getTurndown() {
   // inline and it would stop being its own HTML block. Rebuilt rather than echoed
   // via outerHTML because turndown collapses whitespace before rules run, which
   // would fold the block onto one line on every WYSIWYG save.
-  turndown.addRule('detailsBlock', {
+  td.addRule('detailsBlock', {
     filter: 'details',
     replacement: (_content, node) => {
       const summary = node.querySelector('summary');
@@ -43,7 +44,8 @@ export function getTurndown() {
       return `\n\n<details>\n<summary>${label}</summary>\n${body}\n</details>\n\n`;
     },
   });
-  addGfmRules(turndown);
+  addGfmRules(td);
+  turndown = td;
   return turndown;
 }
 

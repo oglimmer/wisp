@@ -38,13 +38,16 @@ const GIT_KIND_LABEL = {
 export const DIFF_MAX_CELLS = 1500000;
 export const WORD_DIFF_MAX_CELLS = 40000;
 
+/** @type {import('../types/ipc').GitRepoInfo | null} */
 export let gitState = null; // last git-info result; null when the folder isn't a repo
 export const gitFileStatus = new Map(); // abs file path -> status entry
 export const gitDirtyDirs = new Set(); // abs dir paths with a changed descendant
 export let gitBusy = false; // a pull/commit is running; the bar's buttons are disabled
 let gitRefreshing = false;
 let gitRefreshQueued = false;
+/** @type {Promise<void> | null} */
 let gitRefreshPromise = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
 let gitRefreshTimer = null;
 
 // Re-read status and repaint. Coalesces: a refresh asked for while one is in flight
@@ -108,7 +111,7 @@ export function scheduleGitRefresh() {
 function indexGitStatus() {
   gitFileStatus.clear();
   gitDirtyDirs.clear();
-  if (!gitState) return;
+  if (!gitState || !state.baseFolder) return;
   const sep = state.baseFolder.includes('\\') ? '\\' : '/';
   for (const file of gitState.files) {
     gitFileStatus.set(file.path, file);
@@ -137,7 +140,9 @@ export function gitEntryTitle(entry) {
 // Paint the current status onto the rendered tree. Kept separate from renderNode so
 // a status refresh doesn't have to rebuild (and collapse) the tree.
 export function applyGitDecorations() {
-  for (const row of treeEl.querySelectorAll('.node-row[data-path]')) {
+  for (const row of /** @type {NodeListOf<HTMLElement>} */ (
+    treeEl.querySelectorAll('.node-row[data-path]')
+  )) {
     const existing = row.querySelector('.git-badge');
     if (existing) existing.remove();
     row.removeAttribute('data-git');

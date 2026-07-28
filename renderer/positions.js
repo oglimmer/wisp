@@ -23,7 +23,9 @@ const MAX_FILES = 200;
 const SAVE_MS = 500;
 
 let positions = new Map(); // relative path -> { raw?, wysiwyg?, preview? }
+/** @type {string | null} */
 let storageKey = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
 let saveTimer = null;
 
 // The image and diff panes are read-only views of something that isn't the
@@ -112,7 +114,8 @@ export function capturePosition() {
 // A pane full of images lays out short until they decode (hydrateImages resolves
 // each one through main), so a restore into one clamps and lands high. Remember
 // what was asked for and re-apply it as the pictures arrive.
-let pending = null; // { el, top, applied }
+/** @type {{ el: Element, top: number, applied: number } | null} */
+let pending = null;
 
 function applyScroll(el, top) {
   el.scrollTop = top;

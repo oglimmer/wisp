@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { chooseFolder, init } from './app.js';
 import { dialogOpen } from './dialogs.js';
 import { showChangedFiles } from './diff.js';
-import { diffRawBtn, diffVisualBtn, editorEl, gitDiffBtn, gitPullBtn, gitPushBtn, newReminderBtn, renderedEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, viewDiffBtn, viewMdBtn, viewRawBtn, viewWysBtn } from './dom.js';
+import { byId, diffRawBtn, diffVisualBtn, editorEl, gitDiffBtn, gitPullBtn, gitPushBtn, newReminderBtn, renderedEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, viewDiffBtn, viewMdBtn, viewRawBtn, viewWysBtn } from './dom.js';
 import { cancelPendingSave, flushSave } from './editor.js';
 import { closeFind, findOpen, findStep, openFind } from './find.js';
 import { gitPull, refreshGit } from './git.js';
@@ -18,11 +18,11 @@ import { newFile, newFolder, refreshTree } from './tree.js';
 import { setDiffMode, setViewMode, syncWysiwygToEditor } from './views.js';
 
 // ---- Wire up buttons & shortcuts ----
-document.getElementById('welcome-open-btn').addEventListener('click', chooseFolder);
-document.getElementById('change-folder-btn').addEventListener('click', chooseFolder);
-document.getElementById('refresh-btn').addEventListener('click', refreshTree);
-document.getElementById('new-file-btn').addEventListener('click', newFile);
-document.getElementById('new-folder-btn').addEventListener('click', newFolder);
+byId('welcome-open-btn').addEventListener('click', chooseFolder);
+byId('change-folder-btn').addEventListener('click', chooseFolder);
+byId('refresh-btn').addEventListener('click', refreshTree);
+byId('new-file-btn').addEventListener('click', newFile);
+byId('new-folder-btn').addEventListener('click', newFolder);
 smartCheckBtn.addEventListener('click', smartCheck);
 smartAddBtn.addEventListener('click', smartAdd);
 smartLookupBtn.addEventListener('click', smartLookup);
@@ -54,7 +54,7 @@ if (!window.TurndownService) viewWysBtn.classList.add('hidden');
 // Links in the rendered Markdown must not navigate the app window. Open
 // http(s)/mailto links in the real browser; ignore relative/in-vault links.
 renderedEl.addEventListener('click', (e) => {
-  const a = e.target.closest('a');
+  const a = /** @type {Element} */ (e.target).closest('a');
   if (!a) return;
   e.preventDefault();
   const href = a.getAttribute('href');

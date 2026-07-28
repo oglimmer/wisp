@@ -30,7 +30,9 @@ export function isImage(filePath) {
 // If DOMPurify failed to load, fall closed to plain text rather than injecting.
 function safeMarkdownHtml(source) {
   if (!window.marked) return null;
-  const raw = window.marked.parse(source || '');
+  // marked.parse is only asynchronous when configured with `async: true`, which
+  // this app never does — so the declared string | Promise<string> is a string.
+  const raw = /** @type {string} */ (window.marked.parse(source || ''));
   if (!window.DOMPurify) return null;
   return window.DOMPurify.sanitize(raw, {
     // Standard HTML profile: keeps headings, lists, tables, images, links,

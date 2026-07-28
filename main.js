@@ -67,6 +67,20 @@ function registerAppProtocol() {
 // ---- Simple config persistence (remembers the last base folder) ----
 const configPath = () => path.join(app.getPath('userData'), 'config.json');
 
+/**
+ * The window's saved geometry. Position, maximized and fullScreen are all
+ * optional: a frame that no longer overlaps a live display is restored at its
+ * size but not its position, so unplugging a monitor can't strand it off-screen.
+ * @typedef {{ width: number, height: number, x?: number, y?: number,
+ *             maximized?: boolean, fullScreen?: boolean }} WindowState
+ */
+
+/**
+ * Everything in `config.json` (under Electron's userData dir, never the vault).
+ * @typedef {{ baseFolder?: string, window?: WindowState }} Config
+ */
+
+/** @returns {Config} */
 function loadConfig() {
   try {
     return JSON.parse(fs.readFileSync(configPath(), 'utf8'));
@@ -162,6 +176,7 @@ function restoredWindowState() {
   if (!saved || typeof saved !== 'object') return { ...DEFAULT_WINDOW };
 
   const num = (v, fallback) => (Number.isFinite(v) ? Math.round(v) : fallback);
+  /** @type {WindowState} */
   const state = {
     width: Math.max(MIN_WINDOW.width, num(saved.width, DEFAULT_WINDOW.width)),
     height: Math.max(MIN_WINDOW.height, num(saved.height, DEFAULT_WINDOW.height)),
@@ -191,7 +206,8 @@ function restoredWindowState() {
 
 // Written on a timer rather than per event: dragging or resizing a window emits
 // a stream of move/resize events, and one config rewrite each would hammer disk.
-let saveBoundsTimer = null;
+/** @type {NodeJS.Timeout | undefined} */
+let saveBoundsTimer;
 
 function persistWindowState() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -267,8 +283,11 @@ function createWindow() {
 // shortcut list itself lives in the renderer with the handlers it documents; this
 // only opens it.
 function buildMenu() {
+  /** @type {import('electron').MenuItemConstructorOptions[]} */
   const template = [
-    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    ...(process.platform === 'darwin'
+      ? /** @type {import('electron').MenuItemConstructorOptions[]} */ ([{ role: 'appMenu' }])
+      : []),
     { role: 'fileMenu' },
     { role: 'editMenu' },
     { role: 'viewMenu' },
@@ -390,10 +409,22 @@ function assertReadableFile(filePath, maxBytes, what = 'File') {
 // and a refused operation are the same thing to it. So the try/catch lives here
 // once instead of being repeated (and eventually forgotten) in each handler.
 // `_e` is never passed on: it carries a handle on the sender.
+//
+// Generic over the channel map in `types/ipc.d.ts`, so the channel name alone
+// types each handler below: its parameters come from the declared signature,
+// and a result the renderer isn't expecting is an error here rather than a
+// missing property found later on the other side of the bridge.
+/**
+ * @template {keyof import('./types/ipc').IpcHandlers} C
+ * @param {C} channel
+ * @param {import('./types/ipc').IpcHandlers[C]} fn
+ */
 function handle(channel, fn) {
   ipcMain.handle(channel, async (_e, ...args) => {
     try {
-      return await fn(...args);
+      // The arguments arrive off the wire as `any[]`; each handler declares what
+      // it actually takes, and its own body is checked against that.
+      return await /** @type {(...a: any[]) => any} */ (fn)(...args);
     } catch (err) {
       return { ok: false, error: String(err) };
     }
@@ -541,7 +572,11 @@ handle('create-folder', async (baseFolder, relPath) => {
 // on the entry; it does not delete the outside target).
 handle('delete-path', async (baseFolder, target) => {
   const abs = vaultPath(baseFolder, target, 'Invalid path', { follow: false });
-  if (abs === path.resolve(baseFolder)) return { ok: false, error: 'Invalid path' };
+  // vaultPath has already thrown unless baseFolder is a string, which the type
+  // checker can't see through — hence the cast rather than a second check.
+  if (abs === path.resolve(/** @type {string} */ (baseFolder))) {
+    return { ok: false, error: 'Invalid path' };
+  }
   await fsp.rm(abs, { recursive: true, force: true });
   return { ok: true };
 });
@@ -617,6 +652,7 @@ const GIT_TIMEOUT_MS = 120000;
 // credential prompt — there is no terminal to answer it and the app would hang —
 // so prompting is disabled and a fetch/push needing a password fails fast.
 function gitEnv() {
+  /** @type {NodeJS.ProcessEnv} */
   const env = {
     ...claudeEnv(),
     GIT_TERMINAL_PROMPT: '0',
@@ -865,9 +901,11 @@ handle('git-commit', async (baseFolder, message, push) => {
   // Scoping the commit to a pathspec is what keeps a vault-inside-a-bigger-repo from
   // sweeping up unrelated staged changes — but a partial commit is refused during a
   // merge, so the ordinary whole-index commit is used when the vault *is* the repo.
-  const scoped = path.resolve(root) !== path.resolve(baseFolder);
+  // gitRoot() only answers for a real folder, so baseFolder is a string here.
+  const vault = /** @type {string} */ (baseFolder);
+  const scoped = path.resolve(root) !== path.resolve(vault);
   const commitArgs = ['commit', '-m', message.trim()];
-  if (scoped) commitArgs.push('--', baseFolder);
+  if (scoped) commitArgs.push('--', vault);
   const commit = await runGit(root, commitArgs);
   if (!commit.ok) {
     const text = [commit.stdout.trim(), commit.stderr.trim()].filter(Boolean).join('\n');
@@ -888,6 +926,7 @@ handle('git-commit', async (baseFolder, message, push) => {
 
 // Push the current branch. A branch with no upstream is published against the only
 // remote if there is exactly one; with none or several, we say so rather than guess.
+/** @returns {Promise<{ ok: true, output: string } | { ok: false, error: string }>} */
 async function gitPush(root) {
   const upstream = await runGit(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
   let args = ['push'];
@@ -991,6 +1030,7 @@ handle('git-diff', async (baseFolder, target) => {
   const show = await runGit(root, ['show', `HEAD:${repoRel}`]);
   const headBuf = show.ok ? show.buffer : null;
 
+  /** @type {Buffer | null} */
   let workBuf = null;
   try {
     workBuf = await fsp.readFile(abs);
@@ -1150,6 +1190,7 @@ async function gatherFiles(baseFolder) {
       }
       if (!entry.isFile()) continue;
       const rel = path.relative(baseFolder, full);
+      /** @type {string | null} */
       let content = null;
       try {
         const stat = await fsp.stat(full);
@@ -1350,6 +1391,7 @@ handle('smart-check', async (baseFolder, currentFile, text) => {
   const res = await runClaude(baseFolder, buildInsertPrompt(files, text, currentRel));
   if (!res.ok) return res;
 
+  /** @type {any} */
   let envelope = null;
   try {
     envelope = JSON.parse(res.stdout);
@@ -1482,6 +1524,7 @@ handle('smart-lookup', async (baseFolder, currentFile, question) => {
   const res = await runClaude(baseFolder, buildLookupPrompt(files, question, currentRel));
   if (!res.ok) return res;
 
+  /** @type {any} */
   let envelope = null;
   try {
     envelope = JSON.parse(res.stdout);
@@ -1566,6 +1609,7 @@ handle('analyze-image', async (baseFolder, imagePath) => {
   const res = await runClaude(baseFolder, buildImagePrompt(rel));
   if (!res.ok) return res;
 
+  /** @type {any} */
   let envelope = null;
   try {
     envelope = JSON.parse(res.stdout);

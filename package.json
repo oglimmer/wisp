@@ -10,9 +10,11 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^26.1.2",
     "acorn": "^8.18.0",
     "electron": "^43.2.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "dompurify": "^3.4.12",

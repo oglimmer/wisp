@@ -28,6 +28,7 @@ export let findOpen = false;
 // Raw mode: `{start, end}` offsets into the buffer. WYSIWYG / preview: live Ranges.
 let findMatches = [];
 let findIndex = -1;
+/** @type {ReturnType<typeof setTimeout> | null} */
 let findRefreshTimer = null;
 let findCase = localStorage.getItem('rawNotes.findCase') === '1';
 const HL_ALL = 'wisp-find';
@@ -174,7 +175,9 @@ function scrollToCurrentMatch() {
   if (!m) return;
   const MARGIN = 24;
   if (effectiveViewMode() === 'raw') {
-    const span = findHighlightsEl.querySelector('.find-hit.current');
+    const span = /** @type {HTMLElement | null} */ (
+      findHighlightsEl.querySelector('.find-hit.current')
+    );
     if (!span) return;
     // The mirror shares the textarea's metrics and padding, so an offset measured
     // in one is directly usable as a scroll position in the other.

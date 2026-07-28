@@ -224,9 +224,11 @@ function rawTableOp(op) {
 function caretTableCell() {
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return null;
+  /** @type {Node | Element | null} */
   let node = sel.getRangeAt(0).startContainer;
   if (node && node.nodeType === Node.TEXT_NODE) node = node.parentNode;
-  const cell = node && node.closest ? node.closest('th, td') : null;
+  const el = /** @type {Element | null} */ (node);
+  const cell = el && el.closest ? el.closest('th, td') : null;
   return cell && wysiwygEl.contains(cell) ? cell : null;
 }
 
@@ -235,6 +237,7 @@ function placeCaretIn(node) {
   range.setStart(node, 0);
   range.collapse(true);
   const sel = window.getSelection();
+  if (!sel) return;
   sel.removeAllRanges();
   sel.addRange(range);
 }
@@ -278,6 +281,7 @@ function wysiwygInsertRow(cell, below) {
 function wysiwygInsertColumn(cell, after) {
   const table = cell.closest('table');
   const index = cell.cellIndex + (after ? 1 : 0);
+  /** @type {HTMLTableCellElement | null} */
   let caretCellEl = null;
   Array.from(table.rows).forEach((row) => {
     const fresh = document.createElement(isHeadingCellRow(row) ? 'th' : 'td');
@@ -297,7 +301,9 @@ function wysiwygInsertTable() {
     false,
     `<table data-fresh="1"><thead>${head}</thead><tbody>${body}</tbody></table>`
   );
-  const table = wysiwygEl.querySelector('table[data-fresh]');
+  const table = /** @type {HTMLTableElement | null} */ (
+    wysiwygEl.querySelector('table[data-fresh]')
+  );
   if (!table) return false;
   table.removeAttribute('data-fresh');
   placeCaretIn(table.rows[0].cells[0]);
@@ -336,7 +342,7 @@ export function runTableOp(op) {
   if (!state.currentFile) return;
   // Another text field (find, the smart-insert note) owns its own keyboard while
   // it has focus — a table belongs to the note, not to whatever is being typed.
-  const focus = document.activeElement;
+  const focus = /** @type {HTMLElement | null} */ (document.activeElement);
   const inPane = focus === editorEl || wysiwygEl.contains(focus);
   const typing =
     focus && (focus.tagName === 'INPUT' || focus.tagName === 'TEXTAREA' || focus.isContentEditable);

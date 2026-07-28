@@ -1,7 +1,13 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // Safe, minimal API exposed to the renderer.
-contextBridge.exposeInMainWorld('api', {
+//
+// Annotated against the shared contract in `types/ipc.d.ts`, which is also what
+// `window.api` is declared as — so a method that is missing here, misspelled, or
+// wired to the wrong channel is an error at this line rather than an `undefined`
+// the renderer trips over at runtime.
+/** @type {import('./types/ipc').WispApi} */
+const api = {
   getLastFolder: () => ipcRenderer.invoke('get-last-folder'),
   chooseFolder: () => ipcRenderer.invoke('choose-folder'),
   readTree: (baseFolder) => ipcRenderer.invoke('read-tree', baseFolder),
@@ -64,4 +70,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('git-commit', baseFolder, message, push),
   gitDiff: (baseFolder, target) => ipcRenderer.invoke('git-diff', baseFolder, target),
   gitRevert: (baseFolder, targets) => ipcRenderer.invoke('git-revert', baseFolder, targets),
-});
+};
+
+contextBridge.exposeInMainWorld('api', api);

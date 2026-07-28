@@ -11,13 +11,16 @@ import { expandAncestors, refreshTree } from './tree.js';
 import { cssEscape } from './util.js';
 
 // was computed for. If the text changes, the plan is stale and Add re-checks.
+/** @type {import('../types/ipc').SmartPlan | null} */
 export let smartPlan = null;
+/** @type {string | null} */
 export let smartPlanFor = null;
 // Whether the reminder Claude proposed alongside the plan will be created on Add
 // (the checkbox in the preview). Reset every time a fresh plan is rendered.
 export let smartReminderOn = false;
 // Smart-lookup state: the question the answer shown in the preview was asked for,
 // so a changed question drops it the same way a stale plan is dropped.
+/** @type {string | null} */
 export let smartLookupFor = null;
 
 // ---- Smart insert ----

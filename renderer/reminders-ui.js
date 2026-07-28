@@ -9,6 +9,7 @@ import { REMINDER_TICK_MS, REPEAT_LABELS, SNOOZE_OPTIONS, completeReminder, defa
 // The ticker's own state. It sits here rather than with the model because only
 // the alerting path reads or writes it — and an ES module's exported binding is
 // read-only to importers, so `overdueSig = …` has to happen where it is declared.
+/** @type {ReturnType<typeof setInterval> | null} */
 let reminderTicker = null;
 // Which `id@due` pairs have already popped this session, so a reminder left
 // overdue in the list doesn't re-alert every tick. A restart alerts again on
@@ -278,7 +279,9 @@ export function reminderModal(existing, defaultFile = '') {
     });
   }
 
-  box.addEventListener('input', (e) => e.target.classList.remove('invalid'));
+  box.addEventListener('input', (e) =>
+    /** @type {Element} */ (e.target).classList.remove('invalid')
+  );
   okBtn.addEventListener('click', submit);
   cancelBtn.addEventListener('click', () => close(null));
 

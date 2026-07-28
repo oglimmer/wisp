@@ -13,6 +13,21 @@ export const AUTOSAVE_MS = 400;
 // Heading of the collapsed block holding Claude's description of an image.
 export const IMAGE_SUMMARY = 'Image description';
 
+/** @typedef {'raw' | 'wysiwyg' | 'preview' | 'diff'} ViewMode */
+
+const storedViewMode = localStorage.getItem('rawNotes.viewMode') || 'raw';
+
+/**
+ * @typedef {Object} AppState
+ * @property {string | null} baseFolder  absolute path of the open vault
+ * @property {string | null} currentFile absolute path of the open file
+ * @property {boolean} dirty
+ * @property {ViewMode} viewMode
+ * @property {'visual' | 'raw'} diffMode
+ * @property {string | null} diffOnlyFile
+ */
+
+/** @type {AppState} */
 export const state = {
   // The open vault, and the file being edited within it.
   baseFolder: null,
@@ -26,9 +41,9 @@ export const state = {
   // 'diff' is the fourth: this file's changes against git, read-only. Unlike the
   // other three it is deliberately *not* persisted (see STORED_VIEW_MODES) — it's a
   // mode you step into to check something, not one you want the app to reopen into.
-  viewMode: STORED_VIEW_MODES.includes(localStorage.getItem('rawNotes.viewMode'))
-    ? localStorage.getItem('rawNotes.viewMode')
-    : 'raw',
+  viewMode: /** @type {ViewMode} */ (
+    STORED_VIEW_MODES.includes(storedViewMode) ? storedViewMode : 'raw'
+  ),
 
   // How the Diff view draws: 'visual' side-by-side, or git's unified patch.
   diffMode: localStorage.getItem('rawNotes.diffMode') === 'raw' ? 'raw' : 'visual',

@@ -181,7 +181,7 @@ function commitModal(files, hasUpstream) {
 // Everything a discard of `target` would affect. Untracked files are separated out
 // rather than filtered away, so the dialog can say what it is *not* going to do.
 function revertScope(target, scope) {
-  const sep = state.baseFolder.includes('\\') ? '\\' : '/';
+  const sep = (state.baseFolder || '').includes('\\') ? '\\' : '/';
   const inScope = [...gitFileStatus.values()].filter((f) =>
     scope === 'file' ? f.path === target : f.path.startsWith(target + sep)
   );

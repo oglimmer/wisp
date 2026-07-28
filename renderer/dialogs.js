@@ -13,6 +13,13 @@
 // Returns `{ box, close, promise }`: fill `box`, call `close(value)` to settle.
 // `onKey(e, close)` is consulted first and returns true once it has handled the
 // event; Escape is the fallback. `onClose(value)` runs before the promise settles.
+/**
+ * @typedef {(value?: any) => void} CloseModal
+ * @param {{ overlayClass?: string, boxClass?: string, cancelValue?: any,
+ *           dismissOnBackdrop?: boolean,
+ *           onKey?: (e: KeyboardEvent, close: CloseModal) => boolean | void,
+ *           onClose?: (value: any) => void }} [opts]
+ */
 export function openModal({
   overlayClass = 'modal-overlay',
   boxClass = 'modal-box',

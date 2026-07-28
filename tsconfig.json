@@ -1,0 +1,39 @@
+{
+  // Type-checking only — `noEmit` is the whole point. The app still ships the
+  // .js files the browser and Electron already load, there is no build step and
+  // no bundler, and nothing here changes how the window is served. Types are
+  // written as JSDoc in the .js sources, against the declarations in `types/`.
+  //
+  // Run it with `./oglimmer.sh test` (or `npx tsc --noEmit`).
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+
+    // `preserve` is what lets one project hold both worlds: main.js/preload.js
+    // are CommonJS (`require`), renderer/ is ES modules the browser fetches.
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "resolveJsonModule": true,
+
+    // Not `strict` wholesale, but strictNullChecks is not optional: without it
+    // TypeScript does not narrow `if (!res.ok) …`, and narrowing the `{ ok }`
+    // envelope is the whole point of typing the bridge — a failure result must
+    // not be readable as a successful one. `noImplicitAny` stays off so the
+    // existing un-annotated code is checked where it can be rather than
+    // reported line by line; turn it on one file at a time.
+    "strict": false,
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    "noUnusedLocals": false,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": ["main.js", "preload.js", "renderer/**/*.js", "scripts/**/*.js", "types/**/*.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}

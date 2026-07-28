@@ -18,6 +18,7 @@ function chord(...keys) {
   return keys.join(MAC_KEYS ? '' : '+');
 }
 
+/** @type {Array<[string, Array<[string, string]>]>} */
 const SHORTCUT_GROUPS = [
   [
     'Editing',

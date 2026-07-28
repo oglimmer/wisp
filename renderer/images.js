@@ -225,8 +225,8 @@ async function handleDroppedFiles(fileList, dropRange) {
     if (wys) {
       hydrateImages(wysiwygEl); // resolve the newly inserted <img>s to data URLs
       // Leave the caret after the last inserted image so typing continues there.
-      if (range) {
-        const sel = window.getSelection();
+      const sel = range && window.getSelection();
+      if (sel) {
         sel.removeAllRanges();
         sel.addRange(range);
       }
@@ -255,6 +255,7 @@ function setupDrop(el) {
     el.classList.remove('drag-over');
     // For the visual editor, resolve where the drop landed so images insert at
     // that point rather than at the end. (caretRangeFromPoint is Chromium/Electron.)
+    /** @type {Range | null} */
     let dropRange = null;
     if (el === wysiwygEl && document.caretRangeFromPoint) {
       dropRange = document.caretRangeFromPoint(e.clientX, e.clientY);

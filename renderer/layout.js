@@ -1,17 +1,17 @@
 // The four draggable dividers. Row dividers restore late, on purpose.
 
-import { workspaceEl } from './dom.js';
+import { byId, workspaceEl } from './dom.js';
 
 (function setupDivider() {
-  const divider = document.getElementById('divider');
-  const sidebar = document.getElementById('sidebar');
+  const divider = byId('divider');
+  const sidebar = byId('sidebar');
   const MIN = 160;
   const MAX = 600; // keep in sync with .sidebar min/max-width in styles.css
 
   const clamp = (w) => Math.max(MIN, Math.min(MAX, w));
 
   // Restore a persisted width from a previous session.
-  const saved = parseInt(localStorage.getItem('rawNotes.sidebarWidth'), 10);
+  const saved = parseInt(localStorage.getItem('rawNotes.sidebarWidth') || '', 10);
   if (!Number.isNaN(saved)) sidebar.style.width = clamp(saved) + 'px';
 
   let dragging = false;
@@ -28,7 +28,7 @@ import { workspaceEl } from './dom.js';
     divider.classList.remove('dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    localStorage.setItem('rawNotes.sidebarWidth', parseInt(sidebar.style.width, 10));
+    localStorage.setItem('rawNotes.sidebarWidth', String(parseInt(sidebar.style.width, 10)));
   }
 
   divider.addEventListener('mousedown', (e) => {
@@ -73,7 +73,7 @@ function makeRowDivider(divider, panel, storageKey, minPx, opts = {}) {
   // reads 0 — which would clamp each panel to its minimum and quietly throw the
   // stored layout away on every launch.
   rowDividerRestores.push(() => {
-    const saved = parseInt(localStorage.getItem(storageKey), 10);
+    const saved = parseInt(localStorage.getItem(storageKey) || '', 10);
     if (!Number.isNaN(saved)) panel.style.height = clamp(saved) + 'px';
   });
 
@@ -100,26 +100,14 @@ function makeRowDivider(divider, panel, storageKey, minPx, opts = {}) {
     divider.classList.remove('dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    localStorage.setItem(storageKey, parseInt(panel.style.height, 10));
+    localStorage.setItem(storageKey, String(parseInt(panel.style.height, 10)));
   });
 }
 
-makeRowDivider(
-  document.getElementById('divider-input'),
-  document.getElementById('smart-insert'),
-  'rawNotes.inputHeight',
-  70
-);
-makeRowDivider(
-  document.getElementById('divider-preview'),
-  document.getElementById('smart-preview'),
-  'rawNotes.previewHeight',
-  60
-);
-makeRowDivider(
-  document.getElementById('divider-reminders'),
-  document.getElementById('reminders'),
-  'rawNotes.remindersHeight',
-  92,
-  { container: document.getElementById('sidebar'), reserve: 120, below: true }
-);
+makeRowDivider(byId('divider-input'), byId('smart-insert'), 'rawNotes.inputHeight', 70);
+makeRowDivider(byId('divider-preview'), byId('smart-preview'), 'rawNotes.previewHeight', 60);
+makeRowDivider(byId('divider-reminders'), byId('reminders'), 'rawNotes.remindersHeight', 92, {
+  container: byId('sidebar'),
+  reserve: 120,
+  below: true,
+});

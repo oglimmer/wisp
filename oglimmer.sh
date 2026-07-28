@@ -105,6 +105,27 @@ cmd_test() {
     failed=1
   fi
 
+  say "type-checking (tsc --noEmit against the JSDoc types)"
+  # No build step and no .ts sources: tsconfig.json is checkJs + noEmit, so this
+  # only reads the .js files the app already ships, plus the declarations in
+  # types/. It is what keeps main.js, preload.js and the renderer agreeing about
+  # the IPC contract — a three-file change nothing else verifies.
+  #
+  # tsc is a native binary delivered as a platform-specific optional dependency,
+  # the same trap as Electron's — a node_modules predating this dependency, or
+  # carried over from another OS, has the wrapper but not the binary. Probe for a
+  # runnable tsc first, so that reads as "reinstall" rather than a Node stack
+  # trace: ensure_deps can't see it, since node_modules/typescript is present.
+  if ! npx --no-install tsc --version >/dev/null 2>&1; then
+    warn "tsc is not runnable here — reinstalling dependencies"
+    cmd_deps
+  fi
+  if npx --no-install tsc --noEmit; then
+    ok "no type errors"
+  else
+    failed=1
+  fi
+
   say "checking JSON is well-formed"
   for f in package.json package-lock.json; do
     if node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))"; then
@@ -331,7 +352,8 @@ COMMANDS
 
   test                 Every check that can fail a release, since there is no
                        unit-test suite: syntax-check main/preload/renderer/*,
-                       unbound-name scan of renderer modules, JSON validity,
+                       unbound-name scan of renderer modules, a tsc --noEmit
+                       type-check against the JSDoc types, JSON validity,
                        the electron-builder `files` allowlist, the node_modules
                        paths index.html loads, cask/package version agreement,
                        yamllint on the workflows, shellcheck on self.

@@ -64,7 +64,7 @@ export function defaultDue() {
 function dayDelta(from, to) {
   const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
   const b = new Date(to.getFullYear(), to.getMonth(), to.getDate());
-  return Math.round((b - a) / 86400000);
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
 
 export function formatDue(iso) {
@@ -76,6 +76,7 @@ export function formatDue(iso) {
   if (days === 0) return `Today ${time}`;
   if (days === 1) return `Tomorrow ${time}`;
   if (days === -1) return `Yesterday ${time}`;
+  /** @type {Intl.DateTimeFormatOptions} */
   const opts =
     d.getFullYear() === now.getFullYear()
       ? { weekday: 'short', day: 'numeric', month: 'short' }
@@ -135,7 +136,10 @@ function normalizeReminder(r) {
 
 export async function loadReminders() {
   const res = await api.readReminders(state.baseFolder);
-  reminders = (res.reminders || []).map(normalizeReminder).filter(Boolean);
+  // A failed read has no list at all — an unreadable file leaves the sidebar
+  // empty rather than throwing on the way past.
+  const stored = res.ok ? res.reminders : [];
+  reminders = stored.map(normalizeReminder).filter(Boolean);
   resetAlerts();
   sortReminders();
   renderReminders();

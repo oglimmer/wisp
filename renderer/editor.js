@@ -10,6 +10,7 @@ import { AUTOSAVE_MS, state } from './state.js';
 import { relativePath, setStatus } from './util.js';
 import { applyView, isImage, isMarkdown, showImageView, syncWysiwygToEditor } from './views.js';
 
+/** @type {ReturnType<typeof setTimeout> | null} */
 let saveTimer = null; // pending debounced autosave
 export async function openFile(filePath, rowEl) {
   // Autosave means there's nothing to discard — just flush the current file first.
@@ -33,7 +34,9 @@ export async function openFile(filePath, rowEl) {
     editorEl.value = '';
     editorEl.disabled = true;
     showImageView(filePath, res);
-  } else {
+  } else if ('content' in res) {
+    // `in` rather than the `image` flag: the two branches read different
+    // channels, and this is what tells the checker which result it has.
     editorEl.value = res.content;
     editorEl.disabled = false;
   }
@@ -200,9 +203,11 @@ editorEl.addEventListener('keydown', (e) => {
 function caretListItem() {
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return null;
+  /** @type {Node | Element | null} */
   let node = sel.getRangeAt(0).startContainer;
   if (node && node.nodeType === Node.TEXT_NODE) node = node.parentNode;
-  const li = node && node.closest ? node.closest('li') : null;
+  const el = /** @type {Element | null} */ (node);
+  const li = el && el.closest ? el.closest('li') : null;
   return li && wysiwygEl.contains(li) ? li : null;
 }
 

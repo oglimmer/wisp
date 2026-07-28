@@ -11,8 +11,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 There is no unit-test suite. `./oglimmer.sh test` (also run before `release`)
 does the static checks: `node --check` on main/preload/renderer/*, an Acorn
 unbound-name scan of renderer modules (`scripts/check-unbound.js` — catches
-missing imports after the module split), packaging/HTML/cask consistency,
-yamllint, and shellcheck.
+missing imports after the module split), `tsc --noEmit` (see **Types**),
+packaging/HTML/cask consistency, yamllint, and shellcheck.
 
 ## Packaging & release
 
@@ -118,6 +118,39 @@ Two things about module state are load-bearing:
   dependency — so `init()` is called at the **end of `index.js`**, not where it used to sit at the
   top of the startup section. Under the old classic script hoisting made that work; under modules
   it would run before the other modules had wired themselves up.
+
+### Types
+
+The app is plain JavaScript and stays that way — there is no build step, and the `.js` files
+Electron and the browser load are the files in the repo. Types are **JSDoc annotations checked by
+`tsc --noEmit`**: `tsconfig.json` is `allowJs` + `checkJs` + `noEmit`, so TypeScript reads the same
+sources and emits nothing. `./oglimmer.sh test` runs it; `npx tsc --noEmit` runs it alone.
+
+**`types/ipc.d.ts` is the IPC contract, and it is the point of the exercise.** Adding a filesystem
+operation is a three-file change — handler in `main.js`, method in `preload.js`, call in a
+`renderer/` module — and nothing else checks that the three agree. Each channel's signature is
+declared there once and referred to from all three sides:
+
+- `handle()` in `main.js` is **generic over `IpcHandlers`**, so the channel name types the callback's
+  parameters *and* its return value. A handler that answers with a shape the renderer isn't expecting
+  fails at its own registration.
+- the object `preload.js` exposes is annotated `@type {WispApi}`, so a method that is missing,
+  misspelled or wired to the wrong channel is an error there rather than an `undefined` the renderer
+  trips over at runtime.
+- `window.api` is declared as `WispApi`, so every renderer call site is checked — including the
+  `{ ok }` **narrowing**: reading `res.content` without first checking `res.ok` doesn't compile.
+
+Two settings are deliberate. **`strictNullChecks` is on and not optional** — without it TypeScript
+doesn't narrow `if (!res.ok)`, which is the whole reason for typing the bridge. **`noImplicitAny` is
+off**, so un-annotated parameters are checked where they can be rather than reported line by line;
+turn it on a file at a time if it ever earns its keep. `strict` as a whole is not on.
+
+Two conventions follow from the boundary itself. `baseFolder` is `VaultRoot` (`string | null`)
+throughout, because the renderer passes `state.baseFolder` straight through and every handler is
+already written for the null case — typing it `string` would only push a guard main already has into
+25 call sites. And **`renderer/dom.js` states what each id actually is** (`btn`/`input`/`textarea`/
+`img` helpers), which is what makes `editorEl.value` and `viewRawBtn.disabled` checkable everywhere
+else; change a tag in `index.html`, change the helper there.
 
 ### Conventions that matter
 

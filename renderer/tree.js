@@ -21,10 +21,11 @@ export async function refreshTree() {
     return;
   }
   // Render the base folder's children directly (root is implicit).
-  for (const child of tree.children) {
+  const children = tree.children || [];
+  for (const child of children) {
     treeEl.appendChild(renderNode(child, 0));
   }
-  if (tree.children.length === 0) {
+  if (children.length === 0) {
     const empty = document.createElement('div');
     empty.style.padding = '8px';
     empty.style.color = 'var(--text-dim)';
@@ -156,16 +157,18 @@ export async function newFolder() {
 
 // Make sure every ancestor dir of a path is expanded so it's visible.
 export function expandAncestors(filePath) {
+  const root = state.baseFolder || '';
   let dir = filePath;
   const sep = filePath.includes('\\') ? '\\' : '/';
-  while (dir.length > state.baseFolder.length) {
+  while (dir.length > root.length) {
     dir = dir.slice(0, dir.lastIndexOf(sep));
-    if (dir.length >= state.baseFolder.length) expanded.add(dir);
+    if (dir.length >= root.length) expanded.add(dir);
   }
 }
 
 // ---- Context menu ----
 // `items` is a list of { label, fn } — shared by the tree and the reminder list.
+/** @type {HTMLElement | null} */
 let menuEl = null;
 
 export function showContextMenu(e, items) {
@@ -215,7 +218,7 @@ document.addEventListener('click', removeContextMenu);
 // also the only way to reach a deleted file that sat at the vault root — it has no
 // row of its own, and no parent folder to right-click either.
 treeEl.addEventListener('contextmenu', (e) => {
-  if (e.target.closest('.node-row')) return; // a row handles its own menu
+  if (/** @type {Element} */ (e.target).closest('.node-row')) return; // a row handles its own menu
   e.preventDefault();
   if (!gitState || !gitState.files.length) return;
   showContextMenu(e, [
