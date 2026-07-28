@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -200,6 +200,36 @@ function createWindow() {
   });
 }
 
+// The app menu exists for one item — Help ▸ Keyboard Shortcuts — but building a
+// menu at all replaces Electron's default one, so the standard roles have to be
+// rebuilt with it: on macOS ⌘C/⌘V/⌘Q are menu accelerators, not browser
+// behaviour, and a template without an Edit menu silently takes them away. The
+// shortcut list itself lives in the renderer with the handlers it documents; this
+// only opens it.
+function buildMenu() {
+  const template = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+/',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow() || mainWindow;
+            if (win) win.webContents.send('show-shortcuts');
+          },
+        },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 // Guard against path-traversal: ensure `target` stays inside `base`.
 function isInside(base, target) {
   const rel = path.relative(base, target);
@@ -207,6 +237,7 @@ function isInside(base, target) {
 }
 
 app.whenReady().then(() => {
+  buildMenu();
   createWindow();
 
   app.on('activate', () => {

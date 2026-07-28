@@ -1205,6 +1205,21 @@ button:hover {
   cursor: text;
 }
 
+/* A freshly-inserted table is all empty cells, which collapse to their padding:
+   nothing to click into, and — with no text, so no line box — a row barely taller
+   than its border until the first character lands in it. Only the editable pane
+   needs the target. The zero-width space is generated content, so it gives the
+   cell its line box back without ever reaching the DOM turndown reads on save. */
+.wysiwyg th,
+.wysiwyg td {
+  min-width: 3em;
+}
+
+.wysiwyg th:empty::after,
+.wysiwyg td:empty::after {
+  content: '\200b';
+}
+
 /* Placeholder shown when the editable area is empty. */
 .wysiwyg:empty::before {
   content: attr(data-placeholder);
@@ -1484,6 +1499,49 @@ button:hover {
 .modal-primary:hover {
   filter: brightness(1.1);
   background: var(--accent);
+}
+
+/* ---- Keyboard shortcuts modal ---- */
+.sc-box {
+  min-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.sc-group {
+  margin-bottom: 14px;
+}
+
+.sc-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.sc-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+/* The keys column is fixed-width so the descriptions line up down the list. */
+.sc-keys {
+  flex: none;
+  width: 108px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.sc-text {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 0;
 }
 
 /* ---- Reminder editor modal ---- */

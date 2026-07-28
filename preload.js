@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('rename-path', baseFolder, oldPath, newName),
   // Open a link from the Markdown preview in the default browser.
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  // Main → renderer: Help ▸ Keyboard Shortcuts was picked. The event itself is
+  // never handed over — it carries a handle on the sender.
+  onShowShortcuts: (fn) => ipcRenderer.on('show-shortcuts', () => fn()),
   // Show a vault file/folder in the OS file manager. `platform` is only used to
   // label that menu entry the way the host OS calls it.
   revealPath: (baseFolder, target) => ipcRenderer.invoke('reveal-path', baseFolder, target),

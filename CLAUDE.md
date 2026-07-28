@@ -56,6 +56,11 @@ The whole app is built around Electron's **three-context security model**, and u
 
 So adding any file operation is always a three-file change: handler in `main.js` → method in `preload.js` → call in `renderer.js`.
 
+Traffic runs the other way exactly once — the app menu (see **Keyboard shortcuts help**) — and it
+crosses the same bridge: `webContents.send` in main, an `ipcRenderer.on` subscription hand-listed in
+preload, a callback registered in the renderer. Preload passes the payload on but never the event
+object, which carries a handle on the sender.
+
 ### Conventions that matter
 
 - **`renderer.js` is wrapped in an IIFE on purpose.** A top-level `const api` (or any top-level `const`/`let`) in a classic renderer script collides with the globals `contextBridge` injects and throws `SyntaxError: Identifier 'api' has already been declared`, crashing the renderer silently. Keep new renderer code inside the IIFE.
@@ -88,6 +93,53 @@ row also emits the delimiter row (a GFM table *is* its delimiter row) carrying e
 from the `align` attribute marked wrote. Inside a cell, a literal `|` is escaped and a line break becomes
 `<br>`, because a cell is one line of a pipe-delimited row and either would end it early. A table with
 **no** heading row can't be expressed as GFM at all, so it's `keep`-ed as HTML rather than flattened.
+
+### Tables
+
+Five shortcuts, off the same window-level `keydown` listener as `⌘S`: `⌘⇧T`/`Ctrl+⇧T` inserts a 3×3
+table (a heading row plus two body rows), and `⌘⌥`/`Ctrl+Alt` + an arrow grows the table the caret is
+in by a row or a column in the arrow's direction. `runTableOp()` dispatches on `effectiveViewMode()`,
+because the two editing panes are the same document in two representations and each has to be edited
+in its own terms — Raw rewrites the pipe-delimited source, the Editor rearranges the live `<table>`.
+Preview, diff and image views say so in the status line rather than silently doing nothing, and a
+shortcut pressed while another text field (find, the smart-insert note) has focus is left alone.
+
+- **Raw parses, rewrites, and re-pads the whole table block.** `tableBlockAt()` walks out from the
+  caret's line; `parseTable()` turns the lines into `{aligns, rows}` (the delimiter row isn't content,
+  it's the alignments) with ragged rows padded so a column lands at the same index in each; and
+  `formatTable()` writes it back with the columns aligned. Every operation rewrites all of a table's
+  lines anyway — a new column touches each one — so the padding is free, and it's what keeps a table
+  legible as source. **A table row is a line that opens with `|`.** GFM would also swallow a following
+  paragraph line into the table, but reformatting prose as a row is a silent way to mangle a note, so
+  the block stops where the pipes do.
+- **The Editor edits the DOM directly**, so — like `indent`/`outdent` — no `input` event fires and
+  `runTableOp()` calls `markBufferEdited()` itself. New cells match their row (`th` in the heading row,
+  `td` elsewhere), so a new column stays a column after a save.
+- **An empty cell has nothing to lay out**, so a fresh table would be a grid of slivers with no width
+  to click into and a row barely taller than its border. `.wysiwyg th/td` carry a `min-width`, and an
+  `:empty` cell gets a zero-width space as `::after` — generated content, so it gives the cell its line
+  box back without ever reaching the `innerHTML` turndown reads on save. Chromium may also park its own
+  placeholder `<br>` in an empty editable cell, which `cellText()` drops along with any other break at
+  a cell's edge; left in, an empty cell would save as a literal `<br>`.
+- **Nothing can go above the heading row**, in either pane: a GFM table *is* its delimiter row, and a
+  second heading row can't be expressed. From the heading row both directions mean the same thing — the
+  new row opens the body. In the Editor that's after the row rather than at the body's start whenever
+  the heading row is *in* the body (which is where a browser parks a bare `<tr>`), or the table would
+  come out with no heading at all.
+
+### Keyboard shortcuts help
+
+`Help ▸ Keyboard Shortcuts` (`⌘/` / `Ctrl+/`) opens a modal listing every shortcut, grouped. The list
+(`SHORTCUT_GROUPS` in `renderer.js`) lives beside the handlers it documents rather than in the menu
+that opens it — a shortcut and its help are one change, not two. `chord()` writes each combination the
+way the host OS does: glyphs run together on macOS (`⌘⇧T`), spelled out with pluses elsewhere
+(`Ctrl+Shift+T`). **Add a shortcut, add its row.**
+
+**`buildMenu()` in `main.js` exists for that one item, but it has to rebuild the standard menu roles
+around it.** Setting any application menu replaces Electron's default one, and on macOS ⌘C/⌘V/⌘Q are
+menu accelerators rather than browser behaviour — a template without an Edit menu silently takes them
+away. The dialog is a plain `.modal-overlay`, so the window-level shortcuts stand down while it's up,
+and it refuses to open over another dialog: two overlays would both answer the same Escape.
 
 ### Find & replace
 
