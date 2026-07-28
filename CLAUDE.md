@@ -71,6 +71,16 @@ The `<textarea>` (`editorEl`) holds the **canonical buffer** and is what gets sa
 
 The WYSIWYG **Editor** pane is a `contenteditable` div. `marked` renders the source into it (Markdown→HTML); **turndown** (`node_modules/turndown`, loaded as a UMD global `window.TurndownService`) does the reverse on save. The key invariant: **edits only fold back to the buffer through `syncWysiwygToEditor()`, and only when `dirty`** — so a file the user merely *viewed* in Editor mode is never rewritten by turndown's normalisation (round-tripping is inherently lossy on formatting, so this guard matters). `saveCurrent()`, the pre-switch step in `setViewMode()`, drag & drop, and `beforeunload` all fold back through it before touching disk. If turndown fails to load, the Editor button is hidden and the mode degrades to Raw (edits could otherwise not be saved). Image round-trip: `hydrateImages()` stashes the original vault-relative path in `data-md-src` before swapping in the data URL, and a turndown `img` rule re-emits that path instead of the inlined base64.
 
+**marked speaks GFM, turndown only CommonMark** — so anything GFM adds needs an explicit inverse rule
+(`addGfmRules()`) or a WYSIWYG save silently destroys it: a table flattens into one paragraph per cell,
+`~~strikethrough~~` and `- [ ]` checkboxes come back as bare text. Tables are the fiddly one. Cells emit
+their own leading `|` and the row closes the last, so the pipes never depend on a cell's index among
+sibling nodes — a contenteditable row can hold whitespace and stray nodes between its cells. The heading
+row also emits the delimiter row (a GFM table *is* its delimiter row) carrying each column's alignment
+from the `align` attribute marked wrote. Inside a cell, a literal `|` is escaped and a line break becomes
+`<br>`, because a cell is one line of a pipe-delimited row and either would end it early. A table with
+**no** heading row can't be expressed as GFM at all, so it's `keep`-ed as HTML rather than flattened.
+
 ### Find & replace
 
 The find bar (`#find-bar`, between the editor header and the panes) searches the **open file only** —
