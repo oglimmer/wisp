@@ -95,12 +95,14 @@ cmd_test() {
     fi
   done
 
-  say "checking renderer modules for unbound names"
+  say "checking renderer modules bind and are reachable"
   # Catches missing imports/exports left by the renderer.js → renderer/ split —
-  # the kind of bug that only throws on the code path that hits it.
+  # the kind of bug that only throws on the code path that hits it — and a module
+  # nobody imports, which is quieter still: it is never fetched, so whatever it
+  # registers at load time simply never happens.
   ensure_deps
   if node scripts/check-unbound.js; then
-    ok "no unbound references in renderer/"
+    ok "renderer/ binds and every module is reachable"
   else
     failed=1
   fi
@@ -352,7 +354,8 @@ COMMANDS
 
   test                 Every check that can fail a release, since there is no
                        unit-test suite: syntax-check main/preload/renderer/*,
-                       unbound-name scan of renderer modules, a tsc --noEmit
+                       unbound-name + reachability scan of renderer modules,
+                       a tsc --noEmit
                        type-check against the JSDoc types, JSON validity,
                        the electron-builder `files` allowlist, the node_modules
                        paths index.html loads, cask/package version agreement,

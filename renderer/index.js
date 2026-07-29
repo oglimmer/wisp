@@ -7,10 +7,18 @@ import { showChangedFiles } from './diff.js';
 import { byId, diffRawBtn, diffVisualBtn, editorEl, gitDiffBtn, gitPullBtn, gitPushBtn, newReminderBtn, renderedEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, viewDiffBtn, viewMdBtn, viewRawBtn, viewWysBtn } from './dom.js';
 import { cancelPendingSave, flushSave } from './editor.js';
 import { closeFind, findOpen, findStep, openFind } from './find.js';
+import { formatOpFor, runFormatOp } from './format.js';
 import { gitPull, refreshGit } from './git.js';
 import { gitCommitPush } from './git-commit.js';
 import { flushPositions } from './positions.js';
 import { newReminder } from './reminders-ui.js';
+// Imported for their side effects and nothing else: shortcuts.js registers the
+// Help ▸ Keyboard Shortcuts listener at module scope and images.js the panes'
+// drag & drop, and a module nobody imports is never fetched — under the old
+// classic scripts every file ran, under modules only the graph reachable from
+// here does. `scripts/check-unbound.js` fails the build if one drops out of it.
+import './images.js';
+import './shortcuts.js';
 import { invalidateSmartPlan, smartAdd, smartCheck, smartLookup } from './smart.js';
 import { state } from './state.js';
 import { runTableOp, tableOpFor } from './tables.js';
@@ -89,6 +97,16 @@ window.addEventListener('keydown', (e) => {
   if (tableOp) {
     e.preventDefault();
     runTableOp(tableOp);
+    return;
+  }
+
+  // The same modifier as the table chords, on a digit or C: what kind of block the
+  // cursor is in. Checked after them because both are ⌘⌥ — the arrows are a table's
+  // and never a block level's.
+  const formatOp = formatOpFor(e);
+  if (formatOp) {
+    e.preventDefault();
+    runFormatOp(formatOp);
     return;
   }
 

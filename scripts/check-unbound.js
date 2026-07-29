@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-// Fail if any renderer ES module references an unbound name.
+// Fail if any renderer ES module references an unbound name — or is never
+// reached from the entry point at all.
 //
-// Catches the class of bug left by the renderer.js → renderer/ split: a free
-// identifier that used to resolve via classic-script hoisting but is now an
-// undeclared reference (missing import / forgotten export). Those throw only
-// when the code path runs, so they look like silent UI freezes.
+// Both are the same class of bug, left by the renderer.js → renderer/ split.
+// A free identifier that used to resolve via classic-script hoisting is now an
+// undeclared reference (missing import / forgotten export), and it throws only
+// when its code path runs, so it looks like a silent UI freeze. A module nobody
+// imports is quieter still: index.html loads only `renderer/index.js` and the
+// browser fetches the graph, so a file outside it never *runs* — its top-level
+// listeners are simply never registered, and the feature does nothing at all.
 //
 // Usage: node scripts/check-unbound.js
 // Exit 0 = clean, 1 = issues (or acorn missing / parse error).
@@ -348,6 +352,43 @@ function analyze(src) {
   return issues;
 }
 
+// The entry point index.html loads; everything else has to be reachable from it.
+const ENTRY = 'index.js';
+
+// The modules `file` imports (or re-exports from), by file name.
+function importsOf(src) {
+  const ast = acorn.parse(src, { ecmaVersion: 2022, sourceType: 'module' });
+  const out = [];
+  for (const stmt of ast.body) {
+    const kind = stmt.type;
+    if (
+      kind !== 'ImportDeclaration' &&
+      kind !== 'ExportNamedDeclaration' &&
+      kind !== 'ExportAllDeclaration'
+    ) {
+      continue;
+    }
+    // A side-effect import (`import './shortcuts.js'`) has no specifiers and is
+    // exactly what a module registering listeners at load time needs.
+    if (!stmt.source) continue;
+    const m = /^\.\/(.+)$/.exec(String(stmt.source.value));
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+function unreachable(files) {
+  const seen = new Set();
+  const walk = (file) => {
+    if (seen.has(file) || !files.includes(file)) return;
+    seen.add(file);
+    const src = fs.readFileSync(path.join(RENDERER, file), 'utf8');
+    for (const next of importsOf(src)) walk(next);
+  };
+  walk(ENTRY);
+  return files.filter((f) => !seen.has(f));
+}
+
 function main() {
   const files = fs
     .readdirSync(RENDERER)
@@ -355,6 +396,13 @@ function main() {
     .sort();
 
   let total = 0;
+
+  for (const f of unreachable(files)) {
+    console.error(
+      `renderer/${f}: never imported — nothing in the graph from ${ENTRY} reaches it, so it never runs`
+    );
+    total++;
+  }
   for (const f of files) {
     const rel = path.join('renderer', f);
     const src = fs.readFileSync(path.join(RENDERER, f), 'utf8');

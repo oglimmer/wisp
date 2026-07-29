@@ -6,7 +6,7 @@
 
 import { editorEl, wysiwygEl } from './dom.js';
 import { markBufferEdited } from './editor.js';
-import { formatTable, isDelimiterRow, isHeadingRow, isTableLine, parseTable, pipePositions } from './markdown.js';
+import { blockGap, formatTable, isDelimiterRow, isHeadingRow, isTableLine, parseTable, pipePositions } from './markdown.js';
 import { state } from './state.js';
 import { setStatus } from './util.js';
 import { effectiveViewMode } from './views.js';
@@ -102,16 +102,6 @@ function rewriteRawTable(block, table, at) {
   const before = lines.slice(0, line).reduce((n, text) => n + text.length + 1, 0);
   const caret = block.from + before + cellStart(lines[line], at.col);
   editorEl.setSelectionRange(caret, caret);
-}
-
-// A table has to start its own block, so it takes a blank line on each side —
-// unless the text there already provides one (or there is no text at all).
-function blockGap(text, trailing) {
-  if (!text) return '';
-  const blank = trailing ? /^\n\n/.test(text) : /\n\n$/.test(text);
-  if (blank) return '';
-  const newline = trailing ? text.startsWith('\n') : text.endsWith('\n');
-  return newline ? '\n' : '\n\n';
 }
 
 function rawInsertTable() {

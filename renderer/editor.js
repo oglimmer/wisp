@@ -4,6 +4,7 @@
 import { api } from './api.js';
 import { currentFileEl, editorEl, wysiwygEl } from './dom.js';
 import { scheduleFindRefresh } from './find.js';
+import { bulletInputRule } from './format.js';
 import { scheduleGitRefresh } from './git.js';
 import { restorePosition } from './positions.js';
 import { AUTOSAVE_MS, state } from './state.js';
@@ -129,6 +130,14 @@ wysiwygEl.addEventListener('keydown', (e) => {
     e.preventDefault();
     document.execCommand('italic');
   }
+});
+
+// A Markdown marker typed at the start of a block means what it says: `- ` or `* `
+// starts a bullet list. The space is what commits it — a bare `-` is still a minus
+// sign until it is followed by one — so it is consumed rather than typed.
+wysiwygEl.addEventListener('keydown', (e) => {
+  if (e.key !== ' ' || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (bulletInputRule()) e.preventDefault();
 });
 
 // ---- Tab in the editor ----

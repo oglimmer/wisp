@@ -11,7 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 There is no unit-test suite. `./oglimmer.sh test` (also run before `release`)
 does the static checks: `node --check` on main/preload/renderer/*, an Acorn
 unbound-name scan of renderer modules (`scripts/check-unbound.js` — catches
-missing imports after the module split), `tsc --noEmit` (see **Types**),
+missing imports after the module split, and any module that has dropped out of
+the graph reachable from `renderer/index.js`, which never runs at all),
+`tsc --noEmit` (see **Types**),
 packaging/HTML/cask consistency, yamllint, and shellcheck.
 
 ## Packaging & release
@@ -106,7 +108,7 @@ little or nothing; `index` depends on everything:
 | `util` / `lcs` | `setStatus`/`relativePath`/`cssEscape`; the LCS core (lines *and* words) |
 | `dialogs` | `openModal`, `dialogOpen`, `promptModal` |
 | `markdown` | marked + DOMPurify one way, turndown + the GFM inverse rules + the block-level fold the other; the pipe-table syntax both panes share |
-| `views` / `editor` / `tables` / `find` | the editor pane, its buffer, tables, find & replace |
+| `views` / `editor` / `tables` / `format` / `find` | the editor pane, its buffer, tables, block formatting, find & replace |
 | `positions` | the per-file caret and per-pane scroll offsets |
 | `tree` / `app` / `layout` | the file tree + context menu; opening a vault; the dividers |
 | `git` / `git-commit` / `diff` | status and pull; commit and discard; the diff view |
@@ -278,9 +280,11 @@ Preview, diff and image views say so in the status line rather than silently doi
 shortcut pressed while another text field (find, the smart-insert note) has focus is left alone.
 
 **The pipe syntax itself lives in `markdown.js`, not here** (`splitRow`, `isTableLine`,
-`isDelimiterRow`, `parseTable`, `formatTable`, `pipePositions`): the WYSIWYG fold needs the same
-formatter to re-pad a turned-down table, and two implementations would mean the two panes writing
+`isDelimiterRow`, `parseTable`, `formatTable`, `pipePositions`, `blockGap`): the WYSIWYG fold needs the
+same formatter to re-pad a turned-down table, and two implementations would mean the two panes writing
 tables differently. `tables.js` owns the *operations* — the caret, the blocks, the live `<table>`.
+`blockGap` is there for the same reason: `format.js` inserts a code fence, which has to open its own
+block on exactly the same terms a table does.
 
 - **Raw parses, rewrites, and re-pads the whole table block.** `tableBlockAt()` walks out from the
   caret's line; `parseTable()` turns the lines into `{aligns, rows}` (the delimiter row isn't content,
@@ -304,6 +308,51 @@ tables differently. `tables.js` owns the *operations* — the caret, the blocks,
   new row opens the body. In the Editor that's after the row rather than at the body's start whenever
   the heading row is *in* the body (which is where a browser parks a bare `<tr>`), or the table would
   come out with no heading at all.
+
+### Block formatting
+
+What *kind* of block the cursor is in, from the keyboard: `⌘⌥1`…`⌘⌥6` make it a heading, `⌘⌥0` plain
+text again, `⌘⌥C` a fenced code block. `runFormatOp()` in `renderer/format.js` is shaped exactly like
+`runTableOp()` — dispatched on `effectiveViewMode()`, carried out in each pane's own terms (Raw
+rewrites the source's line markers, the Editor replaces the live block element), refused with a status
+message in Preview/diff/image, and left alone while another text field has focus.
+
+- **The chords are `⌘⌥` + a digit, and they are read off `e.code`.** `⌘0`/`⌘+`/`⌘-` — what most
+  editors use for this — are the View menu's zoom accelerators, and a menu accelerator never reaches
+  the page, so the plain-digit chords aren't available at all. `e.code` is the key's *position*:
+  Option is a character modifier on macOS (`⌥1` types `¡`) and a digit isn't in the same place on
+  every layout. It sits under the same modifier as the table chords on purpose — `⌘⌥` is "the block
+  the cursor is in", by arrow or by level — and is checked *after* them in `index.js`, since an arrow
+  is only ever a table's.
+- **Every operation is absolute, not a toggle**: `⌘⌥2` on a bullet, a quote or an `h1` alike leaves an
+  `h2`. Code is the exception, because a second `⌘⌥C` is the only way back out — and `⌘⌥0` unfences
+  too, since plain text is what unfencing leaves.
+- **Raw rewrites the marker a line opens with**, via one `LINE_PREFIX` that strips quote arrows, a
+  bullet (with its task checkbox) and an ATX `#` run together — so `- item` becomes `## item` rather
+  than `- ## item`. Two things the line alone doesn't say: a **setext** heading is two lines, so the
+  underline is dropped with it (otherwise the line stays a heading and the shortcut looks broken), and
+  **fenced code is a range**, so `fenceBlocks()` re-derives them the way marked reads them —
+  including an unterminated fence, which runs to the end of the file in the panes too.
+- **The Editor replaces the block element** rather than calling `formatBlock`, and **lifts it to the
+  top level first** (`liftOut()` splits every list or quote around it): "make this a heading" on the
+  third bullet means the bullet leaves the list and the list closes up either side of it. Keeping the
+  children — rather than the text — is what carries the bold and the links through the change. A code
+  block is the one conversion that goes by text, so unfencing gives a paragraph *per line* instead of
+  one run-on line. Like the table ops it edits the DOM directly, so no `input` event fires and
+  `runFormatOp()` marks the buffer itself.
+- **A table row is refused in both panes**, with a message pointing at the table shortcuts: `# | a |
+  b |` is not a heading, and a cell is not a block that can hold one.
+- **A marker typed at the start of a block is honoured as one** (`bulletInputRule()`, off the Editor
+  pane's own `keydown` in `editor.js`): `*` or `-` followed by a space starts a bullet list. In Raw
+  that is what those characters already *are*; in the Editor nothing re-reads the pane as Markdown
+  while it is being typed, so they would stay two literal characters. **The space is what commits
+  it** — a bare `-` is a minus sign until one follows — so the space is consumed rather than typed.
+  It applies to a plain paragraph only: a heading, a quote's text, a table cell and a code block keep
+  the character, since converting there would throw away the block the user is in. Two details are
+  what keep it from writing something nobody typed: Chromium makes its own `<ul>` rather than joining
+  the one above, so the new item is **merged with the list before it** (two `<ul>`s turn down as two
+  lists); and in a list item — where Enter has already made a bullet — the marker is **swallowed**
+  instead of converted, or the note ends up holding `- \- eggs`.
 
 ### Keyboard shortcuts help
 

@@ -285,6 +285,24 @@ function repadTable(text) {
   return formatTable(parseTable(lines)).join('\n');
 }
 
+// ---- Block separation ----
+// A block-level construct — a table, a fenced code block — has to start its own
+// block, so it takes a blank line on each side unless the text there already
+// provides one (or there is no text at all). Both panes' inserters need exactly
+// this, for the same reason they need one table formatter: two versions would mean
+// two ideas of where a block begins.
+/**
+ * @param {string} text the source on that side of the insertion point
+ * @param {boolean} trailing true for the text *after* it, which is read outwards
+ */
+export function blockGap(text, trailing) {
+  if (!text) return '';
+  const blank = trailing ? /^\n\n/.test(text) : /\n\n$/.test(text);
+  if (blank) return '';
+  const newline = trailing ? text.startsWith('\n') : text.endsWith('\n');
+  return newline ? '\n' : '\n\n';
+}
+
 // Delimiter-row cell for each alignment GFM can express.
 const CELL_BORDER = { left: ':--', center: ':-:', right: '--:' };
 

@@ -30,6 +30,18 @@ const SHORTCUT_GROUPS = [
     ],
   ],
   [
+    'Formatting',
+    [
+      [
+        `${chord(K_MOD, K_ALT, '1')} … ${chord(K_MOD, K_ALT, '6')}`,
+        'Make the block a heading, level 1 to 6',
+      ],
+      [chord(K_MOD, K_ALT, '0'), 'Make it normal text again (drops the heading, quote or bullet)'],
+      [chord(K_MOD, K_ALT, 'C'), 'Make it a code block (again to unwrap it)'],
+      ['- or * then Space', 'At the start of a line in the Editor view, starts a bullet list'],
+    ],
+  ],
+  [
     'Tables',
     [
       [chord(K_MOD, K_SHIFT, 'T'), 'Insert a 3×3 table'],
