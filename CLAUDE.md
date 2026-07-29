@@ -4,23 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- `npm install` — install dependencies (Electron and `node-pty` both ship platform-specific native binaries; **never copy `node_modules` between machines/OSes** — reinstall on the target, or you'll get `spawn ENOEXEC`). The `postinstall` hook is load-bearing, see **Packaging & release**.
+- `npm install` — install dependencies (Electron, `node-pty` and typescript 7 all ship platform-specific native binaries; **never copy `node_modules` between machines/OSes** — reinstall on the target, or you'll get `spawn ENOEXEC`). The `postinstall` hook is load-bearing, see **Packaging & release**.
+
+**Installing from the wrong OS is the one mistake here that escapes the machine you make it on**, so `deps` refuses to. When this repo is mounted into a Linux container from a mac, an install on the Linux side replaces the *host's* Electron bundle and `node-pty` binary, and the damage outlives the container. It is not hypothetical, and the trap is `test` rather than `deps`: **typescript 7's compiler is a native binary** delivered as one optional dependency per platform, so on Linux a mac-installed tree's `tsc` cannot run — which is exactly the "tsc is not runnable, reinstall" case `cmd_test` handles by installing. One `./oglimmer.sh test` in a container was enough. `assert_native_node_modules()` now reads the platform off `electron/path.txt` and node-pty's binary magic and refuses the install with a pointer to `./oglimmer.sh linux`; `./oglimmer.sh linux checks` runs this same static suite inside the mirror, where the tree is the right platform's.
 - `npm start` — launch the app (`electron .`).
 - `npm run dist` — package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
 
 There is no unit-test suite. `./oglimmer.sh test` (also run before `release`)
-does the static checks: `node --check` on main/preload/renderer/*, an Acorn
+does the static checks: `node --check` on main/preload/renderer/*/scripts/*, an Acorn
 unbound-name scan of renderer modules (`scripts/check-unbound.js` — catches
 missing imports after the module split, and any module that has dropped out of
 the graph reachable from `renderer/index.js`, which never runs at all),
 `tsc --noEmit` (see **Types**),
-packaging/HTML/cask consistency, yamllint, and shellcheck.
+packaging/HTML/cask consistency, yamllint, and shellcheck on `oglimmer.sh` + `scripts/*.sh`.
+
+The *dynamic* half is `./oglimmer.sh linux smoke`, which launches the real app and
+clicks through it — see **Testing on Linux**. It is deliberately not part of `test`.
 
 ## Packaging & release
 
-macOS arm64 is the **only** published target. electron-builder is configured in `package.json`'s
-`build` field; `build/entitlements.mac.plist` (+ `.inherit.`) carry the hardened-runtime entitlements
-Electron needs (JIT, unsigned executable memory, library validation off).
+Two published targets, from one `build` field in `package.json`: **macOS arm64** — signed, notarized,
+and the only one the Homebrew cask serves — and **Linux x86_64** as an AppImage + tar.gz, unsigned
+because Gatekeeper has no Linux equivalent. `build/entitlements.mac.plist` (+ `.inherit.`) carry the
+hardened-runtime entitlements Electron needs (JIT, unsigned executable memory, library validation off).
+
+**The linux target is x86_64 and nothing else, deliberately.** `linux.target` pins the arch rather
+than leaving it to the host, because building for another one is a cross build and node-pty has to be
+*compiled* for the target: `@electron/rebuild` fails at node-gyp for want of a cross toolchain, which
+is the honest outcome but not a thing to hit on a release tag. It is also why a local
+`./oglimmer.sh linux build` overrides the arch to the host's — see **Testing on Linux**. `desktopName`
+(top level, read as package metadata) plus `linux.syncDesktopName` is what makes the `.desktop` entry
+`wisp.desktop` with a matching `StartupWMClass`, which is how a desktop environment associates the
+running window with its launcher.
 
 **App icon.** `build/` is `buildResources`, so the icon lives there. **`build/icon.icns` is the source
 of truth** — `mac.icon` points at it, and electron-builder copies a supplied `.icns` into the bundle
@@ -32,12 +47,25 @@ for non-mac use, so regenerate them from it rather than editing them separately.
 carries the rounded-squircle mask and a transparent margin, so nothing masks or pads it; replacements
 should come pre-masked the same way.
 
-`.github/workflows/release.yml` runs on `v*` tags: it checks the tag matches `package.json`'s version,
-builds signed + notarized (certs and Apple credentials come from repo secrets), publishes a GitHub
-release, then rewrites `version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the
-tap users install from. Without signing secrets the build still happens, ad-hoc signed instead: a
-`workflow_dispatch` run uploads it as a CI artifact, a tag publishes it as a prerelease. Both skip the
-cask bump, so `brew install` only ever serves a signed, notarized build.
+`.github/workflows/release.yml` runs on `v*` tags, as **two jobs, linux first**. The `linux` job
+installs the system libraries (`./scripts/linux-sandbox.sh libs`), drops node-pty's foreign prebuilds,
+builds x86_64, and then **runs what it built** — `scripts/smoke.js --app dist` drives the packaged
+binary — before uploading it as a workflow artifact. The `build` job needs it, does the mac half
+(checks the tag matches `package.json`'s version, builds signed + notarized from repo secrets),
+downloads the linux artifact and publishes **everything in one `gh release create`**, then rewrites
+`version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the tap users install from.
+
+Three things about that order are deliberate. **Linux gates the release**: it is the only job that
+launches the app, it takes ~6 minutes against notarization's 15–50, and a Linux build nobody started
+is exactly the kind of artifact that ships broken. **One `gh release create`** means the release never
+appears half-populated, and the linux assets are collected with `find` rather than by name because
+electron-builder spells x64 differently per target (`x86_64` for AppImage). **The cask is untouched by
+any of it** — it is macOS-only, and Linux has no signing to fail.
+
+Without signing secrets the mac build still happens, ad-hoc signed instead: a `workflow_dispatch` run
+uploads both platforms as CI artifacts, a tag publishes them as a prerelease. Both skip the cask bump,
+so `brew install` only ever serves a signed, notarized build. The linux artifact is unaffected either
+way, and the prerelease notes say so.
 
 Three packaging-specific gotchas worth remembering:
 
@@ -52,11 +80,86 @@ Three packaging-specific gotchas worth remembering:
   `files` list drops the `win32-*`/`darwin-x64` prebuilds, so a mac-arm64 bundle doesn't carry
   foreign Mach-O and PE binaries into notarization. electron-builder rebuilds node-pty from source
   against Electron at package time (into `build/Release`, which node-pty prefers over `prebuilds/`),
-  so the packaged app doesn't depend on the prebuild — but `npm start` does.
+  so the packaged app doesn't depend on the prebuild — but `npm start` does. **The linux build has the
+  same problem mirrored** and the allowlist cannot express it (a platform-specific `files` entry is a
+  second, independent group — see **Testing on Linux**), so `scripts/linux-sandbox.sh prebuilds`
+  removes `prebuilds/` outright before packaging, in both CI and a local build.
 - **A bundled `.app` launched from Finder gets a bare `PATH`** (`/usr/bin:/bin:/usr/sbin:/sbin`), which
   would make `spawn('claude', …)` fail with `ENOENT` even for users who have the CLI. `claudeEnv()` in
   `main.js` appends the usual install locations before spawning; extend that list rather than assuming
   the inherited environment.
+
+## Testing on Linux (the sandbox mirror)
+
+Linux x86_64 is a published target (see **Packaging & release**), and the app also runs on whatever
+arch the sandbox happens to be, which is what makes containers usable: `./oglimmer.sh linux smoke`
+launches the real app headless and clicks through it, `./oglimmer.sh linux verify` does the same to a
+*packaged* build. `scripts/linux-sandbox.sh` is the whole of it, and CI reuses three of its steps
+(`libs`, `prebuilds`, and `smoke.js` itself) so the runner and the sandbox cannot drift.
+
+**The rule it exists to enforce: the two platforms never share a `node_modules`.** The repo is
+normally checked out on the mac that builds it and bind-mounted into the container, so a `npm
+install` on the Linux side would overwrite the mac's binaries *outside* the sandbox, where the
+damage survives everything. Only two dependencies are platform-specific — `electron/dist` (an
+`Electron.app` bundle vs an ELF executable) and `node-pty` (a Mach-O vs an ELF `.node`, plus its
+`spawn-helper`); marked, turndown, DOMPurify and xterm are pure JavaScript. So the script keeps a
+second tree at `$WISP_LINUX_DIR` (default `~/.cache/wisp-linux`): the sources mirrored on every
+run, with a linux `node_modules` of its own that the repo never sees. `./oglimmer.sh linux status`
+prints both.
+
+- **The mirror is a copy, not symlinks into the repo.** Node resolves a module's realpath, so a
+  symlinked `main.js` would report `__dirname` back inside the repo — the `app://` scheme would
+  serve from there and `require('node-pty')` would find the mac's binary. And `index.html` loads
+  marked/turndown/xterm by relative `node_modules/...` path, so whatever directory Electron is
+  pointed at has to own its own. The sources are ~2MB, so the copy is free.
+- **git decides what a source file is**: `git ls-files --cached --others --exclude-standard`, so a
+  module that hasn't been added yet is still tested, and the gitignored `node_modules`/`dist` can
+  never be swept in. The mirror's own `node_modules` and `dist` survive a sync — they're the
+  expensive part.
+- **Four things the sandbox needs that a desktop doesn't.** Electron links GTK, which an image
+  built for headless Chromium doesn't carry (`ensure_system_libs` installs the eight libraries, or
+  says which are missing); there is no display, so everything runs under `xvfb-run -a`;
+  `chrome-sandbox` isn't setuid in a container, hence `--no-sandbox`; and `--user-data-dir` points
+  the config and `localStorage` at the mirror so a smoke run can't disturb an interactive one.
+- **Two install quirks are handled explicitly rather than trusted.** Electron's own postinstall
+  doesn't reliably land the binary here — the package installs but `dist/` is absent — so the
+  script runs `node node_modules/electron/install.js` and checks. And node-pty publishes darwin and
+  win32 prebuilds only, so npm builds it from source into `build/Release`; because it is N-API, the
+  binary node-gyp produced against Node loads under Electron unchanged, which is the same property
+  the mac path relies on.
+
+**`scripts/smoke.js` is the dynamic half of `test`, which is otherwise entirely static.** Playwright
+drives the actual app against a throwaway vault and asserts the things only a running window can
+show: the vault reopens from `config.json`, the tree renders, Preview renders marked's GFM through
+DOMPurify, the Editor pane is live and turndown loaded, a Raw edit reaches disk through the autosave,
+frontmatter is shown verbatim instead of as a heading, the git bar hides itself for a plain folder,
+and node-pty spawns a pty that streams `claude`'s output back over the bridge. **The fold has three
+checks of its own** — after typing into the Editor pane, the table must come back with its original
+padding, `snake_case` must not have grown a backslash, and the heading must be untouched — because
+"only the edited block is rewritten" is exactly what no static check can see. It screenshots each
+pane on the way through.
+
+Playwright is deliberately **not** a dependency: its postinstall downloads browser engines that
+every `npm install` on a dev machine would pay for, and `_electron.launch()` uses the app's own
+Electron rather than any of them. The mirror installs it with `--no-save`, which is also why
+`tsconfig.json` excludes `scripts/smoke.js` — `require('playwright')` resolves there and nowhere
+else. `./oglimmer.sh test` still parses it.
+
+**`linux build` and `linux verify` build for the host's architecture, not x86_64.** node-pty has to be
+compiled for the target and there is no cross toolchain in a sandbox, so an x64 build on arm64 fails at
+node-gyp; the arch is overridden to the host's and the published artifact comes from CI. What a local
+build proves is the packaging config and the app inside it, which is the part that breaks.
+
+**One electron-builder gotcha, earned the hard way: a platform-specific `files` list does not narrow
+the top-level one, it adds a second, independent group** — and a group containing only negations means
+"everything". Adding `linux.files: ["!…/prebuilds/darwin-arm64"]` to keep node-pty's Mach-O out of a
+linux bundle therefore packaged `CLAUDE.md`, `Casks/`, `oglimmer.sh` and the smoke screenshots into it.
+So there is **one** allowlist, at the top level, for both platforms — repeating it per platform would
+put the *signed* list one edit away from drift, and `test`'s packaging check only knows about one — and
+the platform-specific removal happens in the script instead (`drop_foreign_prebuilds`, run from both
+`linux build` and CI). Worth knowing that the trap only shows up on a **fresh** tree: `@electron/rebuild`
+deletes `prebuilds/` when it rebuilds node-pty from source, so the second build of a mirror looks clean
+while CI's checkout never is.
 
 ## Architecture
 

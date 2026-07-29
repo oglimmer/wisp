@@ -35,5 +35,10 @@
     "skipLibCheck": true
   },
   "include": ["main.js", "preload.js", "renderer/**/*.js", "scripts/**/*.js", "types/**/*.d.ts"],
-  "exclude": ["node_modules", "dist"]
+
+  // scripts/smoke.js is the one source that is not checked, because it `require`s
+  // playwright — which is deliberately not a dependency of this package (its
+  // postinstall downloads browser engines nothing else here needs) and is
+  // installed only into the linux mirror. `./oglimmer.sh test` still parses it.
+  "exclude": ["node_modules", "dist", "scripts/smoke.js"]
 }

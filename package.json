@@ -3,9 +3,11 @@
   "version": "0.1.8",
   "description": "A minimal folder-backed Markdown note editor. Shows a folder tree on the left and a raw-text editor on the right.",
   "main": "main.js",
+  "desktopName": "wisp.desktop",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --mac --arm64",
+    "dist:linux": "electron-builder --linux --x64",
     "postinstall": "node scripts/pty-permissions.js"
   },
   "author": "",
@@ -68,6 +70,26 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icons",
+      "category": "Office",
+      "synopsis": "A minimal folder-backed Markdown note editor",
+      "syncDesktopName": true
     },
     "dmg": {
       "title": "${productName} ${version}"

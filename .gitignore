@@ -9,6 +9,9 @@ npm-debug.log*
 dist/
 out/
 
+# scripts/smoke.js screenshots, when it is run from the repo rather than the mirror
+smoke/
+
 # Local config / runtime data
 config.json
 

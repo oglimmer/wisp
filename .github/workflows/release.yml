@@ -1,8 +1,12 @@
-name: Release (macOS arm64)
+name: Release
 
-# Tag push -> signed, notarized release + Homebrew cask bump.
-# Manual run  -> unsigned ad-hoc build uploaded as a CI artifact, so the
-#                packaging can be smoke-tested without touching certificates.
+# Tag push -> signed, notarized macOS arm64 release + a Linux x86_64 build, both
+#             attached to one GitHub release, then the Homebrew cask bump.
+# Manual run  -> unsigned ad-hoc builds uploaded as CI artifacts, so the packaging
+#                can be smoke-tested without touching certificates.
+#
+# Two published targets, and only the mac one is signed: Gatekeeper has no Linux
+# equivalent, and the cask is macOS-only, so the linux job touches neither.
 on:
   push:
     tags:
@@ -13,7 +17,96 @@ permissions:
   contents: write
 
 jobs:
+  # Runs first and gates the release. It is quick (~6 min against the mac job's
+  # notarization wait) and, unlike the mac job, it *runs* what it built — so a tag
+  # can never publish a Linux artifact nobody launched. The mac job collects its
+  # output and publishes everything in one `gh release create`, which is also what
+  # keeps the release from appearing half-populated.
+  linux:
+    name: Build and verify (Linux x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      # Repeated from the mac job on purpose: this job runs first, and finding out
+      # about a mismatched tag after a six-minute build is six minutes wasted.
+      - name: Check the tag matches package.json
+        if: github.ref_type == 'tag'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      # One list of libraries for the sandbox and the runner, so they cannot drift.
+      # A packaging job would not need any of them; running the app does.
+      - name: Install the system libraries Electron needs
+        run: ./scripts/linux-sandbox.sh libs
+
+      # A fresh checkout still has node-pty's darwin/win32 prebuilds, and the
+      # `files` allowlist cannot drop them for one platform only — see the script.
+      # Without this the linux artifact ships a Mach-O binary and a darwin
+      # spawn-helper it can never load.
+      - name: Drop the foreign prebuilds
+        run: ./scripts/linux-sandbox.sh prebuilds .
+
+      - name: Build (x86_64)
+        run: npx electron-builder --linux --x64
+
+      # The artifact users download, driven for real: node-pty is asarUnpack'ed and
+      # loaded by path, so a bundle can boot perfectly and still have no terminal.
+      # Playwright is installed here rather than being a dependency — its
+      # postinstall would otherwise download browser engines on every npm install.
+      - name: Smoke-test the packaged build
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          npm install --no-save --no-audit --no-fund playwright
+          xvfb-run -a node scripts/smoke.js --app dist --out smoke
+
+      - name: Check the artifacts are there
+        run: |
+          ls -lh dist/*.AppImage dist/*.tar.gz
+          # A truncated artifact is worse than a missing one: it uploads fine.
+          for f in dist/*.AppImage dist/*.tar.gz; do
+            size=$(stat -c %s "$f")
+            if [ "$size" -lt 50000000 ]; then
+              echo "::error::$f is only $size bytes — the build is incomplete"
+              exit 1
+            fi
+          done
+
+      # The screenshots are the only way to see what a headless failure looked like.
+      - name: Upload smoke screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisp-linux-smoke-screenshots
+          path: smoke/
+          if-no-files-found: ignore
+
+      # Consumed by the mac job on a tag; on a manual run it is the dry-run download.
+      - name: Upload the linux build
+        uses: actions/upload-artifact@v4
+        with:
+          name: wisp-linux-x64
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+
   build:
+    name: Build and publish (macOS arm64)
+    needs: linux
     runs-on: macos-15
     # `notarytool --wait` blocks until Apple answers, with no timeout of its own, so a
     # stuck submission would otherwise hold the runner for GitHub's 6-hour default.
@@ -157,17 +250,30 @@ jobs:
             dist/*.dmg
             dist/*.zip
 
+      # electron-builder spells x64 differently per target (`x86_64` for AppImage),
+      # so the linux assets are collected by find rather than named — a hardcoded
+      # name would publish a mac-only release the day that spelling changes.
+      - name: Collect the linux build
+        if: github.ref_type == 'tag'
+        uses: actions/download-artifact@v4
+        with:
+          name: wisp-linux-x64
+          path: dist-linux
+
       - name: Publish release
         if: github.ref_type == 'tag' && steps.signing.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.v.outputs.version }}
         run: |
+          set -- "dist/Wisp-$VERSION-arm64.dmg" "dist/Wisp-$VERSION-arm64.zip"
+          while IFS= read -r f; do set -- "$@" "$f"; done \
+            < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \))
+          echo "publishing: $*"
           gh release create "$GITHUB_REF_NAME" \
             --title "Wisp $VERSION" \
             --generate-notes \
-            "dist/Wisp-$VERSION-arm64.dmg" \
-            "dist/Wisp-$VERSION-arm64.zip"
+            "$@"
 
       # A tag built without signing secrets still publishes, but as a clearly
       # labelled prerelease — and the cask is deliberately NOT bumped, so
@@ -178,6 +284,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.v.outputs.version }}
         run: |
+          set -- "dist/Wisp-$VERSION-arm64.dmg" "dist/Wisp-$VERSION-arm64.zip"
+          while IFS= read -r f; do set -- "$@" "$f"; done \
+            < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \))
           gh release create "$GITHUB_REF_NAME" \
             --title "Wisp $VERSION (unsigned test build)" \
             --prerelease \
@@ -190,9 +299,11 @@ jobs:
           ```
 
           `brew install --cask wisp` does **not** serve this build: the cask is only
-          bumped for signed, notarized releases.' \
-            "dist/Wisp-$VERSION-arm64.dmg" \
-            "dist/Wisp-$VERSION-arm64.zip"
+          bumped for signed, notarized releases.
+
+          The Linux x86_64 build attached here is unaffected — Apple signing does not
+          apply to it, and it was launched and driven by the smoke test before upload.' \
+            "$@"
 
       # The tag was built from a detached HEAD, so land the cask bump on the
       # default branch — that is the ref `brew tap` actually reads.

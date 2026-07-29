@@ -19,7 +19,9 @@ A minimal, folder-backed Markdown note editor built with [Electron](https://www.
 - Hidden by default: `node_modules` and every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`).
 - Secure by design: context isolation on, Node integration off, all file access goes through a minimal IPC bridge with path-traversal guards.
 
-## Install (macOS, Apple Silicon)
+## Install
+
+### macOS (Apple Silicon)
 
 ```bash
 brew tap oglimmer/wisp https://github.com/oglimmer/wisp
@@ -29,7 +31,21 @@ brew install --cask wisp
 The build is signed and notarized, so it opens without a Gatekeeper prompt. `brew upgrade --cask wisp`
 updates it; `brew uninstall --zap --cask wisp` removes the app together with its stored config.
 
-macOS arm64 is the only published target. On anything else, run from source (below).
+### Linux (x86_64)
+
+Download the `.AppImage` or the `.tar.gz` from the
+[latest release](https://github.com/oglimmer/wisp/releases/latest):
+
+```bash
+chmod +x Wisp-*.AppImage && ./Wisp-*.AppImage    # or: tar xf Wisp-*.tar.gz && ./wisp
+```
+
+There is no Linux package repository and no auto-update — re-download to upgrade. The build is
+unsigned, which on Linux is normal; it is launched and driven by a smoke test in CI before every
+release. An AppImage needs FUSE (`libfuse2` on Debian/Ubuntu); the tar.gz needs nothing.
+
+macOS arm64 and Linux x86_64 are the published targets. On anything else — including Apple Silicon's
+Linux cousin, arm64 — run from source (below).
 
 > **Smart insert needs the `claude` CLI.** The app looks for it on `PATH` plus the usual install
 > locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.claude/local`). If it lives
@@ -50,6 +66,29 @@ npm start
 On first launch, click **Open Folder…** and choose any directory of notes.
 
 > **Note:** `node_modules` is platform-specific because Electron ships a native binary. If you move this project between machines or operating systems, delete `node_modules` and run `npm install` again on the target machine — don't copy it over.
+
+### Working on it from Linux
+
+If you are in a container or sandbox with the repo mounted from a mac, don't reinstall in place: that
+would replace the mac's Electron and `node-pty` binaries with Linux ones. Use the mirror instead, which
+keeps a Linux `node_modules` in a tree of its own (`~/.cache/wisp-linux` by default):
+
+```bash
+./oglimmer.sh linux smoke    # launch the real app headless and click through it
+./oglimmer.sh linux verify   # package it, then drive the packaged build
+./oglimmer.sh linux checks   # the static checks, run inside the mirror
+./oglimmer.sh linux run      # just launch it
+./oglimmer.sh linux build    # package for this machine's architecture
+```
+
+`./oglimmer.sh deps` refuses to install over a `node_modules` that belongs to another OS, and
+`./oglimmer.sh test` needs one — which is why the static checks have a `linux` form too. (`test` would
+otherwise install one itself: typescript 7's compiler is a per-platform native binary, so a
+mac-installed tree looks unrunnable from Linux.)
+
+The first run installs the GTK libraries Electron needs, so it may ask for `sudo`. Local builds are for
+your own architecture — the published x86_64 artifact is built and smoke-tested by CI, because
+cross-compiling `node-pty` needs a toolchain a sandbox doesn't have.
 
 ## Usage
 
@@ -91,13 +130,17 @@ On first launch, click **Open Folder…** and choose any directory of notes.
 | `styles.css` | Dark theme |
 | `package.json` | Metadata, dependencies, scripts, and the `electron-builder` config |
 | `build/entitlements.mac.*.plist` | Hardened-runtime entitlements for the signed build |
+| `scripts/linux-sandbox.sh` | Runs the app on Linux from a mirrored tree, so a Linux install never overwrites the mac binaries in `node_modules` |
+| `scripts/smoke.js` | Drives the running app with Playwright — the one test that is not static |
 | `Casks/wisp.rb` | Homebrew cask (version + sha256 bumped by CI on each tag) |
-| `.github/workflows/release.yml` | Builds, signs, notarizes and releases the macOS arm64 build |
+| `.github/workflows/release.yml` | Builds and smoke-tests Linux x86_64, then builds, signs and notarizes macOS arm64 and publishes both |
 
 ## Releasing
 
 `npm run dist` builds a local `dist/Wisp-<version>-arm64.dmg` (macOS only — signing is skipped
-unless certificates are present in your keychain).
+unless certificates are present in your keychain). `npm run dist:linux` builds the x86_64 AppImage and
+tar.gz, on an x86_64 Linux host; elsewhere use `./oglimmer.sh linux build`, which targets your own
+architecture (cross-compiling `node-pty` needs a toolchain that generally isn't installed).
 
 A real release is cut by tagging:
 
@@ -106,14 +149,18 @@ npm version patch          # or minor / major — bumps package.json and tags
 git push --follow-tags
 ```
 
-The tag must match `package.json`'s version; CI fails fast otherwise. The workflow then builds,
-signs, notarizes, attaches the `.dmg` and `.zip` to a GitHub release, and commits the matching
-cask bump to the default branch.
+The tag must match `package.json`'s version; CI fails fast otherwise. The workflow then builds Linux
+x86_64 and **launches it** — the packaged app is driven by `scripts/smoke.js` before anything is
+published — then builds, signs and notarizes the macOS arm64 app, attaches all four files (`.dmg`,
+`.zip`, `.AppImage`, `.tar.gz`) to one GitHub release, and commits the matching cask bump to the default
+branch. A failure on the Linux side stops the release: an artifact nobody started is not worth
+shipping.
 
 If the signing secrets below are **not** configured, a tagged build still publishes — but as an
 unsigned prerelease, and the cask is left alone, so `brew install --cask wisp` never serves a build
 Gatekeeper would block. Opening an unsigned build needs
-`xattr -dr com.apple.quarantine /Applications/Wisp.app`.
+`xattr -dr com.apple.quarantine /Applications/Wisp.app`. None of this touches the Linux artifact:
+Apple signing does not apply to it, and it is verified the same way either way.
 
 These repository secrets are what turn a tagged build into a signed, notarized one.
 **[docs/SIGNING.md](docs/SIGNING.md) walks through obtaining every one of them** — Apple Developer
@@ -128,7 +175,8 @@ enrollment, creating the certificate, exporting the `.p12`, and the app-specific
 | `APPLE_TEAM_ID` | 10-character Apple Developer team ID |
 
 Running the workflow manually (**Actions → Release → Run workflow**) with no secrets set produces an
-unsigned ad-hoc build as a downloadable artifact — useful for checking the packaging without certificates.
+unsigned ad-hoc macOS build and the Linux build as downloadable artifacts — useful for checking the
+packaging without certificates.
 
 ## License
 

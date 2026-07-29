@@ -8,6 +8,7 @@
 #   ./oglimmer.sh build [--unsigned] package a macOS arm64 dmg + zip into dist/
 #   ./oglimmer.sh release <version>  bump, tag and push — CI builds and publishes
 #   ./oglimmer.sh clean              remove dist/ (and node_modules with --all)
+#   ./oglimmer.sh linux <cmd>        run/smoke/build on Linux in a mirrored tree
 #
 # See ./oglimmer.sh help for the details of each command.
 
@@ -43,10 +44,73 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$1 is not installed"; }
 
 # --- deps -------------------------------------------------------------------
 
+# What OS this node_modules was installed for, read off the two dependencies that
+# carry native binaries: `electron/path.txt` names the executable inside the
+# platform's own layout, and node-pty's compiled binary is a Mach-O or an ELF.
+# Prints `macos`, `linux` or `unknown` — unknown when neither signal is there,
+# which is also what a half-installed tree looks like.
+node_modules_platform() {
+  if [ -f node_modules/electron/path.txt ]; then
+    case "$(cat node_modules/electron/path.txt)" in
+      Electron.app/*) printf 'macos\n'; return ;;
+      electron) printf 'linux\n'; return ;;
+    esac
+  fi
+  local pty=node_modules/node-pty/build/Release/pty.node
+  if [ -f "$pty" ]; then
+    case "$(head -c 4 "$pty" | od -An -tx1 | tr -d ' \n')" in
+      7f454c46) printf 'linux\n'; return ;;
+      cffaedfe | cefaedfe | feedfacf) printf 'macos\n'; return ;;
+    esac
+  fi
+  printf 'unknown\n'
+}
+
+host_platform() {
+  case "$(uname -s)" in
+    Darwin) printf 'macos\n' ;;
+    Linux) printf 'linux\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# Refuse to install over a node_modules that belongs to another OS.
+#
+# This repo is often checked out on a mac and mounted into a Linux container, and
+# an install on the Linux side replaces Electron's bundle and node-pty's binary
+# *outside* the container, where the damage outlives it — the app on the host then
+# fails with `spawn ENOEXEC` or a missing Electron. It is not hypothetical: `test`
+# installs on its own initiative when tsc looks unrunnable, and a foreign tree is
+# exactly what that looks like, so one `./oglimmer.sh test` in a container is
+# enough to do it.
+#
+# On Linux the answer is `./oglimmer.sh linux <command>`, which keeps its own
+# node_modules in a mirrored tree and never touches this one.
+assert_native_node_modules() {
+  [ -d node_modules ] || return 0
+  local host tree
+  host=$(host_platform)
+  tree=$(node_modules_platform)
+  # An explicit `if`, not `[ … ] && return 0`: under `set -e` a false AND-OR list
+  # is the script's exit status, so the guard would abort silently on exactly the
+  # case it exists to report.
+  if [ "$tree" = unknown ] || [ "$host" = unknown ] || [ "$tree" = "$host" ]; then
+    return 0
+  fi
+  warn "node_modules here was installed for $tree, and this is $host"
+  warn "  installing would overwrite binaries the $tree host needs — and if this repo"
+  warn "  is mounted from there, outside this container where the damage persists."
+  if [ "$host" = linux ]; then
+    die "use './oglimmer.sh linux <command>' (a mirrored tree with its own node_modules), or 'rm -rf node_modules' first if you really do mean to reinstall here"
+  fi
+  die "remove node_modules first if you really do mean to reinstall here"
+}
+
 # Electron ships a platform-specific native binary, so node_modules is never
 # portable between machines or OSes — always install on the target host.
 cmd_deps() {
   need npm
+  assert_native_node_modules
   if [ -f package-lock.json ]; then
     say "npm ci"
     npm ci
@@ -87,7 +151,7 @@ cmd_test() {
 
   say "syntax-checking the app sources"
   local f
-  for f in main.js preload.js renderer/*.js; do
+  for f in main.js preload.js renderer/*.js scripts/*.js; do
     if node --check "$f" >/dev/null; then
       ok "$f parses"
     else
@@ -180,6 +244,22 @@ cmd_test() {
     warn "cask is at $cask_version, package.json at $version (CI bumps the cask on release)"
   fi
 
+  say "checking the workflow's script references resolve"
+  # The release job shells out to scripts/ (libs, prebuilds). A path that is wrong,
+  # or a script that lost its executable bit, fails on a release tag and nowhere
+  # else — by which point the tag is already pushed.
+  local script
+  while read -r script; do
+    [ -z "$script" ] && continue
+    if [ -x "$script" ]; then
+      ok "$script is executable"
+    else
+      printf '%serror:%s release.yml runs %s, which is missing or not executable\n' \
+        "$RED" "$OFF" "$script" >&2
+      failed=1
+    fi
+  done < <(grep -oE '\./scripts/[A-Za-z0-9_.-]+' .github/workflows/release.yml | sort -u)
+
   if command -v yamllint >/dev/null 2>&1; then
     say "yamllint .github/workflows"
     yamllint -d '{extends: relaxed, rules: {line-length: disable}}' .github/workflows/ || failed=1
@@ -189,9 +269,9 @@ cmd_test() {
   fi
 
   if command -v shellcheck >/dev/null 2>&1; then
-    say "shellcheck oglimmer.sh"
-    shellcheck oglimmer.sh || failed=1
-    ok "script lints clean"
+    say "shellcheck the shell sources"
+    shellcheck oglimmer.sh scripts/*.sh || failed=1
+    ok "scripts lint clean"
   else
     warn "shellcheck not installed — skipping"
   fi
@@ -240,6 +320,16 @@ cmd_build() {
 
   say "built artifacts"
   ls -lh dist/*.dmg dist/*.zip 2>/dev/null || warn "no dmg/zip in dist/"
+}
+
+# --- linux ------------------------------------------------------------------
+
+# Everything Linux-specific lives in scripts/linux-sandbox.sh: it mirrors the
+# sources into a tree of its own so a linux `npm install` can never overwrite the
+# mac binaries in this node_modules. See the header there, and CLAUDE.md's
+# "Testing on Linux".
+cmd_linux() {
+  exec "$ROOT/scripts/linux-sandbox.sh" "$@"
 }
 
 # --- release ----------------------------------------------------------------
@@ -292,8 +382,9 @@ cmd_release() {
   git --no-pager diff --stat -- package.json package-lock.json
   echo
   say "about to commit '$tag', tag it, and push to origin"
-  echo "    the tag push triggers a signed, notarized build, a public GitHub"
-  echo "    release, and a cask bump on '$default_branch' — all visible to users."
+  echo "    the tag push triggers a Linux x86_64 build, a signed and notarized"
+  echo "    macOS build, one public GitHub release holding both, and a cask bump"
+  echo "    on '$default_branch' — all visible to users."
   if ! confirm "Release $tag?"; then
     git checkout -- package.json package-lock.json
     die "aborted — version reverted"
@@ -315,7 +406,7 @@ cmd_release() {
   ok "pushed — CI is building $tag"
 
   if command -v gh >/dev/null 2>&1; then
-    echo "    watch it with: gh run watch \$(gh run list -w Release -L1 --json databaseId -q '.[0].databaseId')"
+    echo "    watch it with: gh run watch \$(gh run list -w release.yml -L1 --json databaseId -q '.[0].databaseId')"
   fi
 }
 
@@ -348,6 +439,10 @@ COMMANDS
   deps                 Install dependencies (npm ci when a lockfile is present).
                        Electron's binary is platform-specific — never copy
                        node_modules between machines, reinstall on the target.
+                       Refuses to install over a node_modules belonging to
+                       another OS: on Linux with a macOS tree (a container with
+                       the repo mounted from a mac) that would break the app on
+                       the host, so use `linux <command>` there instead.
 
   run                  Launch the app with `npm start`. Installs deps if missing.
                        Extra arguments are passed through to electron.
@@ -376,11 +471,29 @@ COMMANDS
 
   clean [--all]        Remove dist/; --all also removes node_modules/.
 
+  linux <command>      Run the app on Linux from a mirrored tree, so a linux
+                       install never overwrites the mac binaries in this
+                       node_modules. Linux host only. Builds here target the
+                       host's architecture; the published x86_64 artifact comes
+                       from CI, which cross-compiling node-pty would need a
+                       toolchain for.
+                         run        launch headless under xvfb
+                         smoke      drive the sources with scripts/smoke.js
+                         checks     run these static checks in the mirror
+                         verify     package, then drive the packaged build
+                         build      package into the mirror's dist/
+                         libs       install the libraries Electron needs
+                         prebuilds  drop node-pty's darwin/win32 prebuilds
+                         status     where the mirror is, what is installed
+                         clean      remove the mirror
+                       See scripts/linux-sandbox.sh for the details.
+
 EXAMPLES
   ./oglimmer.sh run
   ./oglimmer.sh test
   ./oglimmer.sh build --unsigned
   ./oglimmer.sh release patch
+  ./oglimmer.sh linux smoke
 EOF
 }
 
@@ -394,6 +507,7 @@ main() {
     build | dist) cmd_build "$@" ;;
     release) cmd_release "$@" ;;
     clean) cmd_clean "$@" ;;
+    linux) cmd_linux "$@" ;;
     help | -h | --help) usage ;;
     *) usage >&2; die "unknown command: $cmd" ;;
   esac
