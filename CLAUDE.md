@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- `npm install` — install dependencies (Electron ships a platform-specific native binary; **never copy `node_modules` between machines/OSes** — reinstall on the target, or you'll get `spawn ENOEXEC`).
+- `npm install` — install dependencies (Electron and `node-pty` both ship platform-specific native binaries; **never copy `node_modules` between machines/OSes** — reinstall on the target, or you'll get `spawn ENOEXEC`). The `postinstall` hook is load-bearing, see **Packaging & release**.
 - `npm start` — launch the app (`electron .`).
 - `npm run dist` — package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
 
@@ -37,11 +37,20 @@ tap users install from. Without signing secrets the build still happens, ad-hoc 
 `workflow_dispatch` run uploads it as a CI artifact, a tag publishes it as a prerelease. Both skip the
 cask bump, so `brew install` only ever serves a signed, notarized build.
 
-Two packaging-specific gotchas worth remembering:
+Three packaging-specific gotchas worth remembering:
 
-- **The renderer loads `marked`/`turndown` by relative `node_modules/...` path** from `index.html`.
-  That works inside `app.asar`, and electron-builder always bundles production dependencies, so the
-  `files` allowlist only needs the app's own sources.
+- **The renderer loads `marked`/`turndown`/DOMPurify/xterm by relative `node_modules/...` path** from
+  `index.html`. That works inside `app.asar`, and electron-builder always bundles production
+  dependencies, so the `files` allowlist only needs the app's own sources.
+- **`node-pty` is the one native module** (the terminal pane's pty), and it needs three things the
+  rest of the dependencies don't. It is in `asarUnpack`, because its `spawn-helper` is *exec'd by
+  path* and a binary inside an asar has no path. `npm run postinstall` →
+  `scripts/pty-permissions.js` sets that helper's executable bit, which node-pty's published tarball
+  ships as `0644` — without it every `pty.spawn()` fails with a bare `posix_spawnp failed.`. And the
+  `files` list drops the `win32-*`/`darwin-x64` prebuilds, so a mac-arm64 bundle doesn't carry
+  foreign Mach-O and PE binaries into notarization. electron-builder rebuilds node-pty from source
+  against Electron at package time (into `build/Release`, which node-pty prefers over `prebuilds/`),
+  so the packaged app doesn't depend on the prebuild — but `npm start` does.
 - **A bundled `.app` launched from Finder gets a bare `PATH`** (`/usr/bin:/bin:/usr/sbin:/sbin`), which
   would make `spawn('claude', …)` fail with `ENOENT` even for users who have the CLI. `claudeEnv()` in
   `main.js` appends the usual install locations before spawning; extend that list rather than assuming
@@ -53,7 +62,9 @@ Wisp is a single-window Electron app: a folder/file tree on the left, an editor 
 
 The whole app is built around Electron's **three-context security model**, and understanding the boundary between the contexts is the key to working here:
 
-- **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as a handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
+- **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as a handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `move-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), the terminal pane's pty
+  (`term-start`, `term-input`, `term-resize`, `term-stop` — the only place a *process* is spawned
+  interactively), watching the vault (`watch-vault`), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
   OS file manager (`reveal-path`) and config. The renderer has **no direct fs access** — anything touching disk must be added as a handler here.
 - **`preload.js`** — the only bridge between the two worlds. Runs with `contextIsolation: true` / `nodeIntegration: false` and exposes a minimal, hand-listed API on `window.api` via `contextBridge`. A new main-process handler is invisible to the UI until a corresponding method is added here.
 - **`renderer/` (renderer, browser context)** — all UI logic and state, split into ES modules with
@@ -62,10 +73,10 @@ The whole app is built around Electron's **three-context security model**, and u
 
 So adding any file operation is always a three-file change: handler in `main.js` → method in `preload.js` → call in a `renderer/` module.
 
-Traffic runs the other way exactly once — the app menu (see **Keyboard shortcuts help**) — and it
-crosses the same bridge: `webContents.send` in main, an `ipcRenderer.on` subscription hand-listed in
-preload, a callback registered in the renderer. Preload passes the payload on but never the event
-object, which carries a handle on the sender.
+Traffic runs the other way for the app menu (see **Keyboard shortcuts help**), the terminal pane's
+output and the vault watcher — and each crosses the same bridge: `webContents.send` in main, an
+`ipcRenderer.on` subscription hand-listed in preload, a callback registered in the renderer. Preload
+passes the payload on but never the event object, which carries a handle on the sender.
 
 ### The renderer's modules
 
@@ -94,13 +105,14 @@ little or nothing; `index` depends on everything:
 | `api` / `state` / `dom` | the preload bridge; shared mutable state; every element ref |
 | `util` / `lcs` | `setStatus`/`relativePath`/`cssEscape`; the LCS core (lines *and* words) |
 | `dialogs` | `openModal`, `dialogOpen`, `promptModal` |
-| `markdown` | turndown + the GFM inverse rules |
+| `markdown` | marked + DOMPurify one way, turndown + the GFM inverse rules + the block-level fold the other; the pipe-table syntax both panes share |
 | `views` / `editor` / `tables` / `find` | the editor pane, its buffer, tables, find & replace |
 | `positions` | the per-file caret and per-pane scroll offsets |
 | `tree` / `app` / `layout` | the file tree + context menu; opening a vault; the dividers |
 | `git` / `git-commit` / `diff` | status and pull; commit and discard; the diff view |
 | `reminders` / `reminders-ui` | the model and repeat maths; the list, editor and alert |
 | `smart` / `images` / `shortcuts` | Claude-backed filing and lookup; image import; the help list |
+| `terminal` / `watch` | the `claude` pane; re-reading the vault when it changes underneath |
 | `index` | wires the UI up, then calls `init()` |
 
 Two things about module state are load-bearing:
@@ -154,7 +166,7 @@ else; change a tag in `index.html`, change the helper there.
 
 ### Conventions that matter
 
-- **Divider positions restore late, on purpose.** All four drag handles persist to `localStorage` (`rawNotes.sidebarWidth` / `inputHeight` / `previewHeight` / `remindersHeight`). The sidebar width clamps against constants so it restores immediately, but each *row* divider clamps its saved height against its container's measured height — and `#workspace` is `display:none` until a folder opens, where every measurement reads 0. So `makeRowDivider()` registers a restore step instead of applying one, and `restoreRowDividers()` runs them from `openFolder()` once the workspace is on screen. Restoring any earlier clamps every panel to its minimum and throws the stored layout away.
+- **Divider positions restore late, on purpose.** All five drag handles persist to `localStorage` (`rawNotes.sidebarWidth` / `inputHeight` / `previewHeight` / `remindersHeight` / `terminalHeight`). The sidebar width clamps against constants so it restores immediately, but each *row* divider clamps its saved height against its container's measured height — and `#workspace` is `display:none` until a folder opens, where every measurement reads 0. So `makeRowDivider()` registers a restore step instead of applying one, and `restoreRowDividers()` runs them from `openFolder()` once the workspace is on screen. Restoring any earlier clamps every panel to its minimum and throws the stored layout away.
 - **Handlers are registered through `handle()`, not `ipcMain.handle` directly.** It wraps the call in
   the try/catch that turns a thrown error into the `{ ok: false, error }` every handler already
   answers with, so the renderer has one way to read a result and no handler can reject. The few that
@@ -177,6 +189,65 @@ else; change a tag in `index.html`, change the helper there.
 The `<textarea>` (`editorEl`) holds the **canonical buffer** and is what gets saved — the other two panes are projections of it. `applyView()` shows exactly one pane for the active `viewMode`; `renderMarkdown()`/`renderWysiwyg()` reproject `editorEl.value` into the Preview/Editor panes on entry.
 
 The WYSIWYG **Editor** pane is a `contenteditable` div. `marked` renders the source into it (Markdown→HTML); **turndown** (`node_modules/turndown`, loaded as a UMD global `window.TurndownService`) does the reverse on save. The key invariant: **edits only fold back to the buffer through `syncWysiwygToEditor()`, and only when `dirty`** — so a file the user merely *viewed* in Editor mode is never rewritten by turndown's normalisation (round-tripping is inherently lossy on formatting, so this guard matters). `saveCurrent()`, the pre-switch step in `setViewMode()`, drag & drop, and `beforeunload` all fold back through it before touching disk. If turndown fails to load, the Editor button is hidden and the mode degrades to Raw (edits could otherwise not be saved). Image round-trip: `hydrateImages()` stashes the original vault-relative path in `data-md-src` before swapping in the data URL, and a turndown `img` rule re-emits that path instead of the inlined base64.
+
+**The fold is reconciled block by block, and that is what keeps a WYSIWYG edit from rewriting the whole
+file.** Markdown → HTML → Markdown is lossy on *syntax*, not only on the GFM the inverse rules restore:
+the DOM does not record whether a heading was `#` or underlined, which of `-`/`*`/`+` a bullet used,
+where a paragraph's source lines were wrapped, how a table's columns were padded, or whether a bare URL
+was written as one — and turndown escapes anything that could be read as markup, so `snake_case` comes
+back as `snake\_case`. Handing it the whole pane therefore rewrote *every* block on the first keystroke,
+which the 400ms autosave then put on disk: a whole-file diff that reads exactly like data loss even
+where nothing was lost. So `foldToMarkdown()` re-renders each block of the **old source** on its own and
+matches it, by canonicalised HTML, against the blocks now in the pane (`lcsOps` over the signatures, the
+same LCS core the diff view uses). A block that still renders to what the pane holds is emitted as **its
+original bytes**; only genuinely edited or new blocks go through turndown.
+
+Four things make that safe to run over a whole note:
+
+- **Every byte of the source is in exactly one block, and it's asserted.** Blocks come from
+  `marked.lexer`, whose tokens carry `raw` — so `prefix` plus every `raw` must equal the body, or the
+  fold refuses to run. A byte in no block would be a byte dropped from every save.
+- **What the pane can't show is never compared.** A block that renders to nothing — a link definition, a
+  comment DOMPurify strips — is *hidden*: it rides along verbatim rather than being matched against a
+  pane node that was never there (and so deleted). Blank lines are hidden too, but held back as the
+  pending separation, so deleting a block doesn't leave the separators from both its sides behind.
+  Definitions are also in scope when each block is rendered, which is what keeps `[text][ref]` matching
+  instead of being rewritten inline.
+- **Nothing inline is skipped.** `paneBlocks()` groups stray top-level text and inline elements — what a
+  contenteditable can leave behind — into one paragraph. A skipped node is an edit thrown away.
+- **Every uncertainty falls back to turning the whole pane down**: no marked, an unparseable buffer, an
+  LCS table over `FOLD_MAX_CELLS`, a pane that folded to nothing. That is the old behaviour — reformatted
+  but complete. The fallback may never be "drop the edit".
+
+**A block that *does* go through turndown is written the way this app writes Markdown.** Three narrowings,
+because "only the edited block is reformatted" is worth little if that block comes back mangled:
+
+- **`narrowEscape` replaces turndown's escape table.** Stock turndown escapes every `*`, `_`, `[` and `]`
+  in a text node unconditionally, so it answers with `5 \* 3`, `snake\_case`, `\[\[WikiLink\]\]` — none of
+  which was markup, and none of which *can* become markup. Each is now escaped only where it would
+  re-parse: `*` where it flanks a word or opens a line, `_` where it isn't inside a word (which is exactly
+  CommonMark's own rule, and what makes `snake_case` safe), `[` only where a `]` follows with `(`/`[`/`:`
+  behind it — and never `[^`, which is a footnote marked doesn't render. `]` needs no escape at all once
+  the opening bracket has one. The line-anchored rules are turndown's own.
+- **A bare URL stays bare.** It is a link only because marked speaks GFM; turndown answered `[url](url)`,
+  growing a link out of text nobody wrote as one. The `bareLink` rule re-emits it as itself.
+- **Tables are re-padded through `formatTable`**, the Raw pane's own formatter — turndown emits
+  `| a | b |` with no padding, so without it a one-cell edit rewrote every line of the table. This is why
+  the pipe syntax (`splitRow`, `isDelimiterRow`, `parseTable`, `formatTable`) lives in `markdown.js` and
+  `tables.js` imports it: one formatter, so the two panes can't drift into writing tables differently.
+
+`canonicalHtml()` is what makes the comparison meaningful: marked's string and the live pane's own
+serialization are both round-tripped through a detached element, and `hydrateImages()`' swaps are undone
+(`data-md-src` back into `src`, the not-found marker off) so a resolved picture doesn't read as an edit.
+
+**Frontmatter is split off before rendering and re-attached byte-for-byte.** marked has no idea what a
+leading `---` block is: it reads one as a thematic break plus a setext heading, so both panes showed a
+bogus heading at the top of the note — and the fold then wrote *that* back, turning the block into
+`## title: … tags: \[…\]` permanently. `splitFrontmatter()` takes it off the front, `frontmatterNode()`
+shows it verbatim in a `contenteditable="false"` `<pre>` (the buffer keeps the canonical copy, so an edit
+made there could only be discarded — Raw view is where it's edited), a turndown `remove` rule drops the
+node, and `foldToMarkdown()` puts the original text back on. It is also the one thing the fold restores
+in the *fallback* path, so a frontmatter note is safe even when reconciliation bails.
 
 **Tab types, it doesn't move focus.** Both editing panes take Tab over from the browser's focus
 navigation: in Raw it inserts a tab, or indents/outdents (⇧) every line a multi-line selection touches;
@@ -205,6 +276,11 @@ because the two editing panes are the same document in two representations and e
 in its own terms — Raw rewrites the pipe-delimited source, the Editor rearranges the live `<table>`.
 Preview, diff and image views say so in the status line rather than silently doing nothing, and a
 shortcut pressed while another text field (find, the smart-insert note) has focus is left alone.
+
+**The pipe syntax itself lives in `markdown.js`, not here** (`splitRow`, `isTableLine`,
+`isDelimiterRow`, `parseTable`, `formatTable`, `pipePositions`): the WYSIWYG fold needs the same
+formatter to re-pad a turned-down table, and two implementations would mean the two panes writing
+tables differently. `tables.js` owns the *operations* — the caret, the blocks, the live `<table>`.
 
 - **Raw parses, rewrites, and re-pads the whole table block.** `tableBlockAt()` walks out from the
   caret's line; `parseTable()` turns the lines into `{aligns, rows}` (the delimiter row isn't content,
@@ -289,6 +365,16 @@ the Markdown source, and the other panes are projections of it, so `⌘⌥F` swi
 Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two things make this work despite the app's `file://` origin + CSP:
 
 - **Preview embeds via data URLs.** `marked` emits `<img src="…">` with vault-relative paths the page can't load directly. After every render, `hydrateImages()` (renderer) asks the `read-image` handler (main) to resolve each local `src` **relative to the open file**, then inlines it as a base64 `data:` URL. So CSP stays tight (`img-src 'self' data:`) and all disk access stays in main. Remote (`http(s)`/`data:`) sources are left untouched; unresolvable refs get an `.img-missing` marker.
+- **Two ref conventions are resolved, note-relative first.** A ref can be relative
+  to the note that holds it — what this app writes — or relative to the **vault
+  root**, which is what Obsidian's "relative to vault root" setting produces:
+  a note in `hiring/` refers to its own picture as `./hiring/images/x.png`, which
+  resolves nowhere note-relative. `resolveVaultRef()` in `main.js` tries the note
+  first and the vault root second, and the fallback is only taken when the
+  candidate **is** an image that exists — so the second convention can never
+  claim a ref the first one already answered. It reports which one hit (`style`),
+  which is what lets a move rewrite a ref *in the convention it already used*
+  instead of quietly converting the vault to one of them.
 - **Drag & drop imports.** Dropping image files onto the editor (or preview) copies each into the vault's `images/` folder via the `import-image` handler (name-deduped, path-guarded) and inserts a reference to the open file — at the cursor in Raw view; in the WYSIWYG **Editor** an `<img>` node is inserted at the drop point (`caretRangeFromPoint`) and hydrated in place; in read-only Preview (no cursor) the Markdown ref is appended to the buffer. Dropped `File`s are turned into absolute paths with `webUtils.getPathForFile` (Electron 32 removed `File.path`), exposed as `api.getPathForFile` from preload. A window-level `drop`/`dragover` `preventDefault` stops stray drops from navigating the app away.
 - **Clicking an image in the tree shows the picture.** An image file has no text behind it, so
   `openFile()` routes it past `read-file` to `read-image-file` (main resolves the absolute vault path
@@ -317,6 +403,53 @@ Two details keep the description block from corrupting the note:
   block list, so a plain keep would splice it inline and it would stop being its own HTML block. The
   rule rebuilds the block instead of echoing `outerHTML` because turndown collapses whitespace before
   rules run, which would otherwise fold the block onto one line on every WYSIWYG save.
+
+### Moving things (and keeping the refs true)
+
+Dragging a tree row onto a folder moves it (`move-path`); dropping it on the tree's
+**background** moves it to the vault root, which is the only way back out of a folder
+when there is no other folder to aim at. A file row hands the drop on to the folder it
+sits in, so dropping next to a note means "into that note's folder" rather than falling
+through to the root. Refused combinations (into itself, into its own descendant, into
+the folder it is already in) are simply not offered as drop targets — main refuses them
+too, but a highlight that can only end in an error message is worse than no highlight.
+
+**A move is a rename plus a ref rewrite, and the rewrite is the hard half.**
+`updateRefsAfterMove()` in `main.js` walks every text file in the vault and fixes both
+directions, because a move breaks refs both ways: a note that moved has to re-aim its
+own refs, and every note that pointed *at* something moved has to follow it. A moved
+folder is both at once. `rename-path` goes through the same helper — renaming an image
+every note references is the same problem wearing a different name — and both channels
+report `updated`, the number of notes rewritten, which the status line shows.
+
+Four things make it safe to run over a whole vault:
+
+- **It runs *after* the rename**, and existence is tested at the ref's *post-move*
+  location (`mapTarget`). That is what lets one pass validate refs to moved and unmoved
+  files alike, rather than needing a pre-move snapshot.
+- **A ref whose target and note both stayed put is left byte-for-byte alone.** The walk
+  visits every note, so recomputing (and re-encoding) untouched refs would turn one move
+  into a diff across the whole vault. Only `targetMoved || noteMoved` rewrites.
+- **A ref that resolves to nothing is never touched** — a move must not "fix" a broken
+  ref by pointing it somewhere new — and neither is a URL, a `data:`, a bare anchor, or
+  a ref carrying a query/fragment (a rewrite would drop it).
+- **`MD_REF_RE` matches what `marked` actually renders**, which is what decides whether
+  a ref is visible in the app at all: an unescaped space ends a ref (`](./a b.png)` is
+  not an image to marked either), the `<…>` form may contain one, and one level of
+  balanced parens is allowed. `encodeRef()` escapes spaces *and* parens on the way back
+  out, so a rewritten ref can't close its own `](…)` early.
+
+**The renderer re-keys everything a move invalidates**, in `rekeyMovedPaths()`: the
+`expanded` set (absolute paths — without this a moved folder comes back collapsed), the
+reading positions and the reminders' `file` links (both vault-relative, both re-keyed by
+prefix so a moved folder takes its children's state with it). Positions and reminders are
+owned by their own modules, so each exports a remap (`remapPositions`,
+`remapReminderFiles`) rather than being reached into from the tree.
+
+**The open file is re-opened, not re-labelled** — after a move *or* a rename, and also
+when it didn't move at all but `updated` is non-zero. Its refs may have just been
+rewritten on disk, and a buffer one version behind is exactly what the next autosave
+would write back over the rewrite.
 
 ### Git
 
@@ -442,3 +575,62 @@ filing it into the vault, `smart-lookup` (main) answers it **from** the vault an
   so each clears the other: `renderPreview()` drops `smartLookupFor`, `smartLookup()` drops
   `smartPlan`/`smartPlanFor` (otherwise **Add** would apply a plan that's no longer on screen), and
   `invalidateSmartPlan()` clears whichever of the two the edited text has invalidated.
+
+### The terminal pane (interactive claude)
+
+Under the editor's view stack sits a collapsible pane running **`claude` interactively** at the vault
+root — the third way the app talks to Claude, beside smart insert and image analysis, and the only one
+that isn't a one-shot `runClaude()` call. `⌘J` / `Ctrl+J` toggles it; the header is also the toggle;
+`⟳` restarts the session. Open/closed lives in `localStorage` (`rawNotes.terminalOpen`) and its height
+in `rawNotes.terminalHeight`, resized by `#divider-terminal` — a *below*-style row divider, so
+dragging up grows it.
+
+- **It needs a real pty, which is why `node-pty` is here.** The CLI is a full-screen TUI: it wants its
+  own tty, raw keystrokes and a SIGWINCH when the pane is resized, none of which a pipe provides.
+  node-pty ships N-API prebuilds, so nothing needs rebuilding against Electron's ABI for `npm start`
+  (see **Packaging & release** for the two things that *do* need arranging). The renderer draws it with
+  **xterm.js** — a classic script like marked/turndown, so `window.Terminal` exists synchronously, and
+  a build where it didn't load degrades to a header that says so rather than throwing on first expand.
+- **The renderer never names the program.** `term-start` always spawns `claude`, in the open vault;
+  `term-input` only ever writes to that process's tty. There is deliberately no channel that runs an
+  arbitrary command — the same principle as git being driven only through `spawn('git', …)`.
+- **One session per window, and it dies with the window.** Starting another replaces the first
+  (`killPty()` clears `ptyProcess` *before* killing, so the dying session's `onExit` can tell it is no
+  longer the current one and stay quiet — otherwise a restart reports the old exit over the new
+  session). Both the window's `close` and `before-quit` kill it: an orphaned `claude` holding a pty
+  nobody can see would keep running, and keep spending.
+- **Collapsing does not stop the session**, because hiding a panel is a view change and killing a
+  running agent is not. The header keeps reporting it. A vault change *does* replace it — the session's
+  cwd is the vault and can't follow one — which is why `openFolder()` calls `terminalVaultChanged()`
+  **last**: fitting the pane needs the workspace already on screen, the same reason the row dividers
+  restore late.
+- **While the terminal has focus, the editor's shortcuts stand down** (`terminalFocused()` in
+  `index.js`'s keydown, right after the `dialogOpen()` check). ⌘F, Tab and the table chords are
+  claude's keystrokes there. ⌘J is handled *before* that check, because it is the way back out.
+
+### Watching the vault
+
+The terminal makes something new possible: **the vault changing while the app is open.** Everything on
+screen is read from disk once and rebuilt on demand, so without this a file claude just wrote is
+invisible until the user hits refresh — and worse, the open buffer is a version behind, so the next
+autosave writes it back over claude's work. `watch-vault` (main) watches the open folder with
+`fs.watch(…, { recursive: true })` and sends one debounced `vault-changed`; `renderer/watch.js`
+re-reads the tree, git status, the reminder list and the open file. `openFolder()` starts it, and each
+call replaces the previous vault's watch.
+
+- **It watches the filesystem rather than reading the terminal's output.** A pty carries bytes, not
+  "the task finished": claude prints continuously while it works, and a statusline keeps printing when
+  it doesn't — so a pause in the output is not a signal (an earlier version waited for one and never
+  fired for anyone with a live statusline). Watching also covers what the terminal can't: the pane
+  collapsed, another editor, a `git` command in a real terminal.
+- **The app's own writes are not news.** `noteOwnWrite()` records each `write-file` /
+  `write-file-sync` / `write-reminders` target *before* writing, and an event for a path written in the
+  last 1.5s is dropped — otherwise every autosave would re-read the whole tree, and an event racing
+  ahead of `writeFile` settling would reload the buffer the user is typing into.
+- **`isIgnored()` filters events per path segment**, the same helper the tree uses. Without it a single
+  commit would fire dozens of times over `.git`, none of it anything the UI shows.
+- **A dirty buffer is never reloaded.** `openFile()` flushes before reading, so reloading an unsaved
+  buffer would write the user's edits over the new content and then read that back as if it were the
+  change — their edit wins, because it's the one they can see. A file whose content already matches is
+  left alone (no status flicker), an unreadable one means deleted or moved (the rebuilt tree already
+  says so), and the status line is set *last* because `openFile()` ends by reporting `Saved`.

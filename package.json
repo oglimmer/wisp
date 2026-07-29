@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --mac --arm64"
+    "dist": "electron-builder --mac --arm64",
+    "postinstall": "node scripts/pty-permissions.js"
   },
   "author": "",
   "license": "MIT",
@@ -17,8 +18,11 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "dompurify": "^3.4.12",
     "marked": "^18.0.7",
+    "node-pty": "^1.1.0",
     "turndown": "^7.2.4"
   },
   "build": {
@@ -34,7 +38,12 @@
       "preload.js",
       "renderer/**",
       "index.html",
-      "styles.css"
+      "styles.css",
+      "!node_modules/node-pty/prebuilds/win32-*",
+      "!node_modules/node-pty/prebuilds/darwin-x64"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
     ],
     "mac": {
       "target": [

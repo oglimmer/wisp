@@ -146,11 +146,19 @@ export type CreateEntry = (
   relPath: string
 ) => Promise<Result<{ path: string }>>;
 export type DeletePath = (baseFolder: VaultRoot, target: string) => Promise<Ok | Fail>;
+/** `updated` counts notes whose Markdown refs were rewritten to follow the move. */
 export type RenamePath = (
   baseFolder: VaultRoot,
   oldPath: string,
   newName: string
-) => Promise<Result<{ path: string }>>;
+) => Promise<Result<{ path: string; updated: number }>>;
+
+/** Move an entry into `destDir` (a folder inside the vault, or the vault root). */
+export type MovePath = (
+  baseFolder: VaultRoot,
+  target: string,
+  destDir: string
+) => Promise<Result<{ path: string; updated: number }>>;
 
 /** Entries come off disk unvalidated; `normalizeReminder()` vets each one. */
 export type ReadReminders = (baseFolder: VaultRoot) => Promise<Result<{ reminders: unknown[] }>>;
@@ -271,6 +279,37 @@ export type SmartLookup = (
   question: string
 ) => Promise<Result<{ result: LookupResult }>>;
 
+// ---- The terminal pane ----
+//
+// One interactive `claude` session per window, in a pty. The renderer supplies a
+// size and keystrokes and nothing else — there is no channel that takes a command
+// to run, which is what keeps this from being a general-purpose shell.
+
+/** Starts (or replaces) the session, at the vault root, sized to the pane. */
+export type TermStart = (
+  baseFolder: VaultRoot,
+  cols: number,
+  rows: number
+) => Promise<Result<{ pid: number }>>;
+/** Keystrokes for the tty. Fails only when no session is running. */
+export type TermInput = (data: string) => Promise<Ok | Fail>;
+export type TermResize = (cols: number, rows: number) => Promise<Ok | Fail>;
+export type TermStop = () => Promise<Ok | Fail>;
+
+/** claude stopped: either it exited on its own or the session was replaced. */
+export interface TermExit {
+  exitCode: number;
+  signal?: number;
+}
+
+/**
+ * Watch the open vault for changes made outside the app — the terminal's claude,
+ * another editor, a `git` command. Replaces any previous watch, and fails (rather
+ * than throwing) on a filesystem that can't be watched: the app then behaves as it
+ * did before, refreshing only when asked.
+ */
+export type WatchVault = (baseFolder: VaultRoot) => Promise<Ok | Fail>;
+
 // ---- Main process ----
 
 /**
@@ -291,6 +330,7 @@ export interface IpcHandlers {
   'create-folder': CreateEntry;
   'delete-path': DeletePath;
   'rename-path': RenamePath;
+  'move-path': MovePath;
   'read-reminders': ReadReminders;
   'write-reminders': WriteReminders;
   'git-info': GitInfo;
@@ -305,6 +345,11 @@ export interface IpcHandlers {
   'smart-check': SmartCheck;
   'smart-apply': SmartApply;
   'smart-lookup': SmartLookup;
+  'term-start': TermStart;
+  'term-input': TermInput;
+  'term-resize': TermResize;
+  'term-stop': TermStop;
+  'watch-vault': WatchVault;
 }
 
 // ---- The bridge ----
@@ -326,6 +371,7 @@ export interface WispApi {
   smartLookup: SmartLookup;
   deletePath: DeletePath;
   renamePath: RenamePath;
+  movePath: MovePath;
   /** Only http(s)/mailto are opened; anything else is ignored. */
   openExternal: (url: string) => Promise<void>;
   /** Main → renderer: Help ▸ Keyboard Shortcuts was picked. */
@@ -347,6 +393,16 @@ export interface WispApi {
   gitCommit: GitCommit;
   gitDiff: GitDiff;
   gitRevert: GitRevert;
+  termStart: TermStart;
+  termInput: TermInput;
+  termResize: TermResize;
+  termStop: TermStop;
+  /** Main → renderer: bytes from the pty, to be written into xterm.js verbatim. */
+  onTermData: (fn: (data: string) => void) => void;
+  onTermExit: (fn: (info: TermExit) => void) => void;
+  watchVault: WatchVault;
+  /** Main → renderer: something outside the app changed the vault (debounced). */
+  onVaultChanged: (fn: () => void) => void;
 }
 
 declare global {
@@ -356,5 +412,8 @@ declare global {
     marked?: typeof import('marked');
     TurndownService?: typeof import('turndown');
     DOMPurify?: (typeof import('dompurify'))['default'];
+    /** xterm.js and its fit addon, loaded the same way, for the terminal pane. */
+    Terminal?: typeof import('@xterm/xterm').Terminal;
+    FitAddon?: typeof import('@xterm/addon-fit');
   }
 }

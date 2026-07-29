@@ -266,6 +266,9 @@ function createWindow() {
   mainWindow.on('close', () => {
     clearTimeout(saveBoundsTimer);
     persistWindowState();
+    // The terminal's claude belongs to this window; without this it survives as an
+    // orphan process holding a pty nobody can see or answer.
+    killPty();
   });
 
   // Stop the taskbar flash we start when a reminder comes due, once the user looks.
@@ -451,6 +454,140 @@ function assertTextContent(content, maxBytes = MAX_TEXT_BYTES) {
   return content;
 }
 
+// ---- Markdown references ----
+//
+// Notes point at other files — images above all — with ordinary Markdown refs,
+// and two conventions are in the wild. A ref can be relative to the note that
+// holds it (what this app writes), or relative to the vault root: Obsidian's
+// "relative to vault root" setting writes `./dir/img.png` from a note sitting in
+// a subfolder, which resolves nowhere note-relative. Both are resolved, and
+// `move-path` rewrites a ref in whichever convention it already used rather than
+// silently converting the vault to one of them.
+
+// Files that can hold a ref worth rewriting. Every text file is a note here, so
+// this is about skipping binaries, not about Markdown in particular.
+const TEXT_REF_EXT = new Set(['.md', '.markdown', '.mdown', '.txt']);
+
+// Inline links and images: `](target)`, `](<target>)`, `](target "title")`. The
+// target group stops at whitespace, so the title (and the closing paren) stay in
+// the trailing group and are put back untouched — and an unescaped space ends the
+// target, which is what marked does too: `](./a b.png)` isn't a link at all.
+// One level of *balanced* parens is allowed, because marked accepts those
+// (`./a%20(1).png`); the refs this app writes escape them either way.
+const MD_REF_RE = /(\]\(\s*)(<[^<>\n]*>|[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)([^)\n]*\))/g;
+
+// A ref as a plain relative path, or null for anything that doesn't name a file
+// on disk: a URL scheme, a protocol-relative or absolute URL, a bare anchor. A
+// query or fragment is refused too — it would be dropped by a rewrite.
+function refToRelPath(ref) {
+  let value = String(ref).trim();
+  if (value.startsWith('<') && value.endsWith('>')) value = value.slice(1, -1).trim();
+  if (!value || value.includes('\0')) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) return null;
+  if (value.includes('#') || value.includes('?')) return null;
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+    // A stray `%` that isn't an escape — take the ref literally.
+  }
+  if (!value || value.includes('\0') || path.isAbsolute(value)) return null;
+  return value;
+}
+
+// Resolve a ref to the file it names inside the vault: note-relative first, then
+// vault-root-relative. `exists` decides which candidate wins, so a ref is only
+// ever claimed by a convention that actually finds a file, and `style` reports
+// the one that hit so a rewrite can stay in it.
+/** @param {(abs: string) => boolean} [exists] */
+function resolveVaultRef(baseFolder, noteDir, ref, exists = fs.existsSync) {
+  const rel = refToRelPath(ref);
+  if (rel === null) return null;
+  const base = path.resolve(baseFolder);
+  const candidates = [
+    { abs: path.resolve(noteDir, rel), style: 'note' },
+    { abs: path.resolve(base, rel), style: 'root' },
+  ];
+  for (const cand of candidates) {
+    if (!isInside(base, cand.abs)) continue;
+    if (exists(cand.abs)) return cand;
+  }
+  return null;
+}
+
+// Percent-encode a path for a Markdown ref, segment by segment so the separators
+// survive: spaces (a ref ends at the first one) and the parens that would close
+// `](…)` early.
+function encodeRef(rel) {
+  return rel
+    .split('/')
+    .map((seg) => encodeURIComponent(seg).replace(/\(/g, '%28').replace(/\)/g, '%29'))
+    .join('/');
+}
+
+// The ref text for `target`, written from `noteDir` in `style` — the convention
+// the ref being replaced already used.
+function refFor(baseFolder, noteDir, target, style) {
+  const from = style === 'root' ? path.resolve(baseFolder) : noteDir;
+  let rel = path.relative(from, target).split(path.sep).join('/');
+  if (!rel) return null;
+  if (!rel.startsWith('.')) rel = './' + rel;
+  return encodeRef(rel);
+}
+
+// Rewrite every ref in `text` that a move invalidated. `mapTarget` maps a
+// pre-move absolute path to its post-move one (identity for anything the move
+// didn't touch), and `noteOldDir`/`noteNewDir` differ when the note itself moved
+// — a note that changed folder has to re-aim even refs whose target stayed put.
+//
+// A ref whose target and note both stayed put is left exactly as written: this
+// runs over every note in the vault, and re-encoding refs that nothing happened
+// to would turn one move into a diff across the whole vault.
+function rewriteMovedRefs(baseFolder, text, noteOldDir, noteNewDir, mapTarget) {
+  let changed = 0;
+  const out = text.replace(MD_REF_RE, (whole, open, ref, tail) => {
+    // Existence is tested at the post-move location: the rename has already
+    // happened, so a moved file is only findable through mapTarget.
+    const hit = resolveVaultRef(baseFolder, noteOldDir, ref, (abs) =>
+      fs.existsSync(mapTarget(abs))
+    );
+    if (!hit) return whole;
+    const target = mapTarget(hit.abs);
+    const targetMoved = target !== hit.abs;
+    const noteMoved = hit.style === 'note' && noteNewDir !== noteOldDir;
+    if (!targetMoved && !noteMoved) return whole;
+    const next = refFor(baseFolder, noteNewDir, target, hit.style);
+    if (!next || next === ref) return whole;
+    changed++;
+    return open + next + tail;
+  });
+  return { text: out, changed };
+}
+
+// Every text file in the vault, as absolute paths. Uses the same isIgnored() as
+// the tree, so a move never rewrites anything the app doesn't show.
+async function gatherTextFiles(baseFolder) {
+  /** @type {string[]} */
+  const out = [];
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (isIgnored(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.isFile() && TEXT_REF_EXT.has(path.extname(entry.name).toLowerCase())) {
+        out.push(full);
+      }
+    }
+  }
+  await walk(baseFolder);
+  return out;
+}
+
 app.whenReady().then(() => {
   registerAppProtocol();
   buildMenu();
@@ -464,6 +601,10 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// Belt and braces with the window's own 'close': a quit that never closes a window
+// (⌘Q from the menu while hidden) must not leave the terminal's claude behind.
+app.on('before-quit', () => killPty());
 
 // ---- IPC handlers ----
 
@@ -531,6 +672,10 @@ handle('read-file', async (baseFolder, filePath) => {
 handle('write-file', async (baseFolder, filePath, content) => {
   const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
   assertTextContent(content);
+  // Before the write, not after: the watcher can see the change while writeFile is
+  // still settling, and an event that arrives first would be treated as somebody
+  // else's edit and reload the buffer the user is typing into.
+  noteOwnWrite(target);
   await fsp.writeFile(target, content, 'utf8');
   return { ok: true };
 });
@@ -542,6 +687,7 @@ ipcMain.on('write-file-sync', (e, baseFolder, filePath, content) => {
   try {
     const target = vaultPath(baseFolder, filePath, 'Outside the vault.');
     assertTextContent(content);
+    noteOwnWrite(target);
     fs.writeFileSync(target, content, 'utf8');
     e.returnValue = { ok: true };
   } catch (err) {
@@ -581,6 +727,53 @@ handle('delete-path', async (baseFolder, target) => {
   return { ok: true };
 });
 
+// Keep the vault's Markdown refs true across a completed move (a rename is one
+// too — of a folder, or of an image every note points at). Runs *after* the
+// rename, so each ref is validated against where its target now is, and covers
+// both directions: a note that moved re-aims its own refs, and a note that
+// pointed at something moved follows it.
+//
+// Returns how many notes were rewritten. A ref-rewrite failure never fails the
+// move itself — the files are already where the user asked for them, and an
+// unreadable or oversized note is skipped rather than taking the move down.
+async function updateRefsAfterMove(baseFolder, src, dest) {
+  // Pre-move ↔ post-move. The walk finds notes at their new paths, but their refs
+  // were written relative to where they used to sit.
+  const remap = (abs, from, to) => {
+    if (abs === from) return to;
+    const rel = path.relative(from, abs);
+    return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? path.join(to, rel) : abs;
+  };
+  const mapTarget = (/** @type {string} */ abs) => remap(abs, src, dest);
+
+  let updated = 0;
+  for (const file of await gatherTextFiles(baseFolder)) {
+    let text;
+    try {
+      assertReadableFile(file, MAX_TEXT_BYTES, 'File');
+      text = await fsp.readFile(file, 'utf8');
+    } catch {
+      continue;
+    }
+    const wasAt = remap(file, dest, src);
+    const res = rewriteMovedRefs(
+      baseFolder,
+      text,
+      path.dirname(wasAt),
+      path.dirname(file),
+      mapTarget
+    );
+    if (!res.changed) continue;
+    try {
+      await fsp.writeFile(file, res.text, 'utf8');
+      updated++;
+    } catch {
+      // Read-only note, vanished mid-walk — leave it as it was.
+    }
+  }
+  return updated;
+}
+
 // Rename / move a file or folder within the base folder.
 // follow: false on both ends: rename moves the directory entry (including a
 // symlink) without writing through it.
@@ -597,7 +790,45 @@ handle('rename-path', async (baseFolder, oldPath, newName) => {
   );
   if (fs.existsSync(target)) return { ok: false, error: 'Target already exists' };
   await fsp.rename(source, target);
-  return { ok: true, path: target };
+  const updated = await updateRefsAfterMove(baseFolder, source, target);
+  return { ok: true, path: target, updated };
+});
+
+// Move a file or folder into another folder in the vault — the tree's drag & drop.
+//
+// The move itself is a rename; the work is keeping the notes' references true
+// (see updateRefsAfterMove). follow: false for the source, like rename-path — the
+// directory entry moves rather than being written through. The destination is
+// resolved with the default follow: true, because we write *into* it: a vault
+// folder that symlinks outside must not be able to accept a move.
+handle('move-path', async (baseFolder, target, destDir) => {
+  const src = vaultPath(baseFolder, target, 'Invalid path', { follow: false });
+  // vaultPath has already thrown unless baseFolder is a string, which the type
+  // checker can't see through — hence the cast rather than a second check.
+  const root = path.resolve(/** @type {string} */ (baseFolder));
+  if (src === root) return { ok: false, error: 'Cannot move the vault itself' };
+
+  const dir = vaultPath(baseFolder, destDir, 'Invalid destination');
+  let st;
+  try {
+    st = fs.statSync(dir);
+  } catch {
+    return { ok: false, error: 'Destination folder not found' };
+  }
+  if (!st.isDirectory()) return { ok: false, error: 'Destination is not a folder' };
+  if (dir === path.dirname(src)) return { ok: false, error: 'Already in that folder' };
+  // Covers dropping a folder on itself (isInside is true for an equal path) as
+  // well as on anything below it, either of which would move it out of existence.
+  if (isInside(src, dir)) return { ok: false, error: 'Cannot move a folder into itself' };
+
+  const dest = vaultPath(baseFolder, path.join(dir, path.basename(src)), 'Invalid path', {
+    follow: false,
+  });
+  if (fs.existsSync(dest)) return { ok: false, error: 'Target already exists' };
+
+  await fsp.rename(src, dest);
+  const updated = await updateRefsAfterMove(baseFolder, src, dest);
+  return { ok: true, path: dest, updated };
 });
 
 // ---- Reminders ----
@@ -618,6 +849,7 @@ handle('write-reminders', async (baseFolder, reminders) => {
   if (!baseFolder || !fs.existsSync(baseFolder)) return { ok: false, error: 'No folder open.' };
   const file = path.join(baseFolder, REMINDERS_FILE);
   const body = JSON.stringify({ reminders: Array.isArray(reminders) ? reminders : [] }, null, 2);
+  noteOwnWrite(file);
   await fsp.writeFile(file, body, 'utf8');
   return { ok: true };
 });
@@ -635,6 +867,211 @@ ipcMain.handle('alert-window', () => {
     }
     mainWindow.focus();
   } catch {}
+});
+
+// ---- The terminal pane ----
+//
+// The pane at the bottom of the editor runs `claude` interactively, which is a
+// different thing from the one-shot `runClaude()` calls smart insert makes: the
+// CLI is a full-screen TUI, so it needs a real pty — its own tty, raw keystrokes,
+// a SIGWINCH when the pane is resized — rather than pipes it would see as a
+// non-interactive stream. node-pty provides that, and ships N-API prebuilds, so
+// nothing has to be rebuilt against Electron's ABI (`scripts/pty-permissions.js`
+// covers the one thing those prebuilds get wrong).
+//
+// **The renderer never names the program.** `term-start` always spawns `claude`
+// in the open vault, and `term-input` only ever writes to that process's tty:
+// there is deliberately no channel here that runs an arbitrary command, which is
+// the same reason git is only ever driven through `spawn('git', …)` below.
+//
+// One session at a time, for the one window. Starting a second replaces the
+// first, and the window going away kills it — an orphaned `claude` holding a pty
+// nobody can see would keep running (and keep spending) invisibly.
+
+/** @type {import('node-pty').IPty | null} */
+let ptyProcess = null;
+/** @type {typeof import('node-pty') | null | undefined} */
+let ptyModule; // undefined = not tried yet, null = unavailable
+
+// Required on first use rather than at startup: a missing or unloadable native
+// prebuild has to degrade to a terminal pane that says so, not take the app down
+// before the window exists.
+function loadPty() {
+  if (ptyModule === undefined) {
+    try {
+      ptyModule = require('node-pty');
+    } catch (err) {
+      ptyModule = null;
+      console.error('node-pty is unavailable, the terminal pane is disabled:', err);
+    }
+  }
+  return ptyModule;
+}
+
+// A pty size arrives from the renderer's fit calculation, so it is only ever as
+// trustworthy as any other renderer input; the ioctl behind it takes 16-bit
+// values, and 0 columns makes the TUI unrenderable.
+function ptyDimension(value, fallback) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n >= 2 && n <= 1000 ? n : fallback;
+}
+
+function sendToWindow(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+// Clears `ptyProcess` *before* killing, so the dying session's onExit — which is
+// how the renderer learns claude stopped — can tell it is not the current one and
+// stay quiet. Otherwise a restart reports the old session's exit over the new one.
+function killPty() {
+  const doomed = ptyProcess;
+  ptyProcess = null;
+  if (!doomed) return;
+  try {
+    doomed.kill();
+  } catch {}
+}
+
+handle('term-start', async (baseFolder, cols, rows) => {
+  const pty = loadPty();
+  if (!pty) return { ok: false, error: 'The terminal is unavailable in this build.' };
+  if (typeof baseFolder !== 'string' || !fs.existsSync(baseFolder)) {
+    return { ok: false, error: 'No folder is open.' };
+  }
+  killPty();
+
+  // claudeEnv() for the same reason every other spawn uses it: a bundled .app
+  // launched from Finder has a bare PATH and would not find `claude` at all.
+  // TERM is what makes the CLI draw its full-screen UI rather than fall back to
+  // line-at-a-time output, and it has to match what xterm.js can actually paint.
+  const child = pty.spawn('claude', [], {
+    name: 'xterm-256color',
+    cols: ptyDimension(cols, 80),
+    rows: ptyDimension(rows, 24),
+    cwd: baseFolder,
+    env: { ...claudeEnv(), TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+  });
+  ptyProcess = child;
+
+  // Both callbacks check they still own the session: a replaced pty can emit a
+  // last chunk (or its exit) after `term-start` has handed the pane to a new one.
+  child.onData((data) => {
+    if (ptyProcess === child) sendToWindow('term-data', data);
+  });
+  child.onExit(({ exitCode, signal }) => {
+    if (ptyProcess !== child) return;
+    ptyProcess = null;
+    sendToWindow('term-exit', { exitCode, signal });
+  });
+
+  return { ok: true, pid: child.pid };
+});
+
+// Keystrokes, straight through to the tty. A write to a session that has already
+// exited is an ordinary race (the user typed into a pane whose claude just quit),
+// not an error worth surfacing.
+handle('term-input', async (data) => {
+  if (!ptyProcess) return { ok: false, error: 'No session is running.' };
+  if (typeof data !== 'string') throw new Error('Invalid terminal input.');
+  ptyProcess.write(data);
+  return { ok: true };
+});
+
+// The pane was resized: tell the tty, so the TUI reflows instead of drawing to a
+// width that no longer exists.
+handle('term-resize', async (cols, rows) => {
+  if (!ptyProcess) return { ok: false, error: 'No session is running.' };
+  ptyProcess.resize(ptyDimension(cols, 80), ptyDimension(rows, 24));
+  return { ok: true };
+});
+
+handle('term-stop', async () => {
+  killPty();
+  return { ok: true };
+});
+
+// ---- Watching the vault ----
+//
+// The terminal makes something new possible: the vault changing *while the app is
+// running*, from outside the app. Everything the renderer shows is read from disk
+// once and rebuilt on demand, so without this a file claude just wrote is invisible
+// until the user hits refresh — and the open buffer would be written back over it
+// by the next autosave.
+//
+// It watches, rather than guessing from the terminal's output, because there is no
+// "task finished" byte in a pty: claude prints continuously while it works, and a
+// statusline keeps printing when it doesn't. A pause is not a signal; a write is.
+// This also covers the cases the terminal can't — the pane collapsed, another
+// editor, a `git` command in a real terminal.
+
+/** @type {import('fs').FSWatcher | null} */
+let vaultWatcher = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let vaultChangeTimer = null;
+// A burst of writes (claude editing five files, git checking out a branch) is one
+// change as far as the UI is concerned — it rebuilds everything either way.
+const VAULT_DEBOUNCE_MS = 400;
+// The app's own writes are not news: the autosave already knows what it wrote, and
+// a refresh per keystroke-burst would re-read the whole tree for nothing.
+const OWN_WRITE_MS = 1500;
+/** @type {Map<string, number>} */
+const recentWrites = new Map();
+
+function noteOwnWrite(target) {
+  const now = Date.now();
+  recentWrites.set(target, now);
+  if (recentWrites.size > 200) {
+    for (const [p, t] of recentWrites) if (now - t > OWN_WRITE_MS) recentWrites.delete(p);
+  }
+}
+
+function stopVaultWatch() {
+  if (vaultChangeTimer) clearTimeout(vaultChangeTimer);
+  vaultChangeTimer = null;
+  if (!vaultWatcher) return;
+  try {
+    vaultWatcher.close();
+  } catch {}
+  vaultWatcher = null;
+}
+
+function onVaultEvent(root, filename) {
+  // macOS can report an event with no name; there is nothing to filter it by, so
+  // treat it as noise rather than refreshing on it.
+  if (!filename) return;
+  const rel = String(filename);
+  // The same isIgnored() the tree uses, per path segment: without this every commit
+  // would fire dozens of times over .git, and none of it is anything the UI shows.
+  if (rel.split(path.sep).some(isIgnored)) return;
+  const written = recentWrites.get(path.join(root, rel));
+  if (written !== undefined && Date.now() - written < OWN_WRITE_MS) return;
+  if (vaultChangeTimer) clearTimeout(vaultChangeTimer);
+  vaultChangeTimer = setTimeout(() => {
+    vaultChangeTimer = null;
+    sendToWindow('vault-changed');
+  }, VAULT_DEBOUNCE_MS);
+}
+
+// Watch the open vault, replacing any previous watch. Called on every vault open,
+// so there is exactly one watcher and it always points at what is on screen.
+handle('watch-vault', async (baseFolder) => {
+  stopVaultWatch();
+  if (typeof baseFolder !== 'string' || !fs.existsSync(baseFolder)) {
+    return { ok: false, error: 'No folder is open.' };
+  }
+  try {
+    vaultWatcher = fs.watch(baseFolder, { recursive: true }, (_type, filename) =>
+      onVaultEvent(baseFolder, filename)
+    );
+  } catch (err) {
+    // A vault on a filesystem that can't be watched still works; it just doesn't
+    // refresh itself, which is what the app did before this existed.
+    return { ok: false, error: String(err) };
+  }
+  // The watcher must never take the app down: a vanished folder or an exhausted
+  // handle limit arrives here as an error event, not a throw at the call site.
+  vaultWatcher.on('error', () => stopVaultWatch());
+  return { ok: true };
 });
 
 // ---- Git ----
@@ -1078,14 +1515,19 @@ function isBinaryBuffer(buf) {
 // Only local paths that stay inside the vault (after symlink resolution) are served.
 handle('read-image', async (baseFolder, currentFile, src) => {
   if (!baseFolder || !src) return { ok: false };
-  let ref = String(src).trim();
-  if (/^(https?:|data:|file:)/i.test(ref)) return { ok: false }; // not a local ref
-  if (ref.includes('\0')) return { ok: false };
-  try {
-    ref = decodeURIComponent(ref);
-  } catch {}
   const fromDir = currentFile ? path.dirname(currentFile) : baseFolder;
-  const target = path.resolve(fromDir, ref);
+  // Note-relative first, then vault-root-relative — an Obsidian-written ref from a
+  // note in a subfolder is `./dir/img.png` and resolves nowhere note-relative. The
+  // candidate has to *be* an image for the fallback to be taken, so the second
+  // convention can't claim a ref the first one already answered.
+  const hit = resolveVaultRef(
+    baseFolder,
+    fromDir,
+    src,
+    (abs) => !!IMAGE_MIME[path.extname(abs).toLowerCase()] && fs.existsSync(abs)
+  );
+  if (!hit) return { ok: false };
+  const target = hit.abs;
   try {
     assertInsideVault(baseFolder, target, 'Outside the vault.');
     assertReadableFile(target, MAX_IMAGE_BYTES, 'Image');

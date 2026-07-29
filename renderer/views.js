@@ -7,7 +7,7 @@ import { diffModeToggleEl, diffRawBtn, diffViewEl, diffVisualBtn, editorEl, imag
 import { flushSave } from './editor.js';
 import { refreshFind } from './find.js';
 import { gitState } from './git.js';
-import { getTurndown } from './markdown.js';
+import { foldToMarkdown, frontmatterNode, safeMarkdownHtml, splitFrontmatter } from './markdown.js';
 import { restorePosition } from './positions.js';
 import { STORED_VIEW_MODES, VIEW_MODES, state } from './state.js';
 
@@ -25,57 +25,47 @@ export function isImage(filePath) {
   return IMAGE_RE.test(filePath || '');
 }
 
-// marked leaves raw HTML in the source intact (`<script>`, event handlers,
-// javascript: links). Never assign its output to innerHTML without sanitizing.
-// If DOMPurify failed to load, fall closed to plain text rather than injecting.
-function safeMarkdownHtml(source) {
-  if (!window.marked) return null;
-  // marked.parse is only asynchronous when configured with `async: true`, which
-  // this app never does — so the declared string | Promise<string> is a string.
-  const raw = /** @type {string} */ (window.marked.parse(source || ''));
-  if (!window.DOMPurify) return null;
-  return window.DOMPurify.sanitize(raw, {
-    // Standard HTML profile: keeps headings, lists, tables, images, links,
-    // <details>/<summary> (image description blocks), strips scripts/handlers.
-    USE_PROFILES: { html: true },
-  });
+// Project the buffer into one of the two display panes. Frontmatter is shown
+// verbatim rather than rendered — marked reads a leading `---` block as a rule
+// plus a heading, and the fold re-attaches the buffer's copy.
+function renderPane(paneEl, source) {
+  const { fm, body } = splitFrontmatter(source || '');
+  const html = safeMarkdownHtml(body);
+  if (html !== null) {
+    paneEl.innerHTML = html;
+  } else {
+    // marked or DOMPurify failed to load — fall back to showing the source as-is.
+    paneEl.textContent = body;
+  }
+  if (fm) paneEl.prepend(frontmatterNode(fm));
+  hydrateImages(paneEl);
 }
 
 // Render the current editor buffer as Markdown into the preview pane.
 export function renderMarkdown() {
-  const html = safeMarkdownHtml(editorEl.value);
-  if (html !== null) {
-    renderedEl.innerHTML = html;
-  } else {
-    // marked or DOMPurify failed to load — fall back to showing the source as-is.
-    renderedEl.textContent = editorEl.value || '';
-  }
-  hydrateImages(renderedEl);
+  renderPane(renderedEl, editorEl.value);
 }
 
 // Render the current editor buffer as editable formatted HTML in the WYSIWYG pane.
 function renderWysiwyg() {
-  const html = safeMarkdownHtml(editorEl.value);
-  if (html !== null) {
-    wysiwygEl.innerHTML = html;
-  } else {
-    wysiwygEl.textContent = editorEl.value || '';
-  }
-  hydrateImages(wysiwygEl);
+  renderPane(wysiwygEl, editorEl.value);
 }
 
 // Convert the WYSIWYG pane's current HTML back to Markdown and write it into the
 // editor buffer (the single source of truth that gets saved). No-op unless we're
-// actually in WYSIWYG mode with a file open and turndown available.
+// actually in WYSIWYG mode with a file open.
 export function syncWysiwygToEditor() {
   if (state.viewMode !== 'wysiwyg' || !state.currentFile) return;
   // Only fold back when there are real WYSIWYG edits (every edit sets `dirty`).
-  // Skipping when clean keeps an unedited buffer byte-for-byte as loaded, so
-  // turndown's normalisation never silently rewrites a file the user only viewed.
+  // Skipping when clean keeps an unedited buffer byte-for-byte as loaded, so the
+  // fold is never even asked about a file the user only viewed.
   if (!state.dirty) return;
-  const td = getTurndown();
-  if (!td) return; // turndown unavailable — leave the buffer untouched
-  editorEl.value = td.turndown(wysiwygEl.innerHTML);
+  // Block-by-block against the buffer it came from, so an untouched block keeps
+  // its own source rather than turndown's rendering of it (see markdown.js).
+  const folded = foldToMarkdown(editorEl.value, wysiwygEl);
+  // Usually identical for an edit inside one block: leave the textarea (and its
+  // native undo stack and caret) alone rather than reassigning the same text.
+  if (folded !== editorEl.value) editorEl.value = folded;
 }
 
 // marked emits <img src="images/foo.png"> with vault-relative paths, but the app's

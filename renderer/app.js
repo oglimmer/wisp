@@ -8,8 +8,10 @@ import { loadPositions } from './positions.js';
 import { loadReminders } from './reminders.js';
 import { resetSmartPanel } from './smart.js';
 import { state } from './state.js';
+import { terminalVaultChanged } from './terminal.js';
 import { expanded, refreshTree } from './tree.js';
 import { applyView } from './views.js';
+import { watchVault } from './watch.js';
 
 export async function init() {
   const last = await api.getLastFolder();
@@ -45,6 +47,13 @@ async function openFolder(folder) {
   resetGitState();
   await refreshTree();
   await loadReminders();
+  // Watch this folder rather than the last one: the terminal below works in the
+  // vault while the app is open, and so can anything else.
+  watchVault();
+  // Last, and not before: the terminal runs `claude` *in* the vault, so a new
+  // vault is a new session — and fitting it needs the workspace already on screen,
+  // same reason the row dividers restore late.
+  await terminalVaultChanged();
 }
 
 export async function chooseFolder() {

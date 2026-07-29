@@ -7,6 +7,8 @@ import { currentFileEl, editorEl, treeEl } from './dom.js';
 import { cancelPendingSave, flushSave, openFile } from './editor.js';
 import { applyGitDecorations, gitDirtyDirs, gitFileStatus, gitState, refreshGit } from './git.js';
 import { discardChanges } from './git-commit.js';
+import { remapPositions } from './positions.js';
+import { remapReminderFiles } from './reminders.js';
 import { newReminder } from './reminders-ui.js';
 import { state } from './state.js';
 import { cssEscape, relativePath, setStatus } from './util.js';
@@ -64,6 +66,11 @@ function renderNode(node, depth) {
   row.appendChild(icon);
   row.appendChild(label);
   wrapper.appendChild(row);
+  attachDragSource(row, node);
+  // A folder takes a drop itself; a file hands it on to the folder it sits in, so
+  // dropping onto a note means "into that note's folder" rather than nothing (or,
+  // worse, falling through to the background and landing in the vault root).
+  attachDropTarget(row, () => (node.type === 'dir' ? node.path : parentDir(node.path)));
 
   if (node.type === 'dir') {
     const isOpen = expanded.has(node.path);
@@ -126,6 +133,166 @@ function renderNode(node, depth) {
   });
 
   return wrapper;
+}
+
+// ---- Drag & drop moves ----
+//
+// Dragging an entry onto a folder moves it there. The move itself is one IPC call
+// (`move-path`), but a move invalidates four things the app keys by path — the
+// notes' own Markdown refs (rewritten in main, in both directions), the open file,
+// the remembered reading positions and the reminders' note links — so `moveNode()`
+// re-keys the three the renderer owns rather than letting them quietly go stale.
+
+// The dragged path is kept here rather than read back off the dataTransfer:
+// Chromium exposes the data's *types* during a drag but not its values, so a
+// dragover handler could not otherwise tell a vault entry from a file being
+// dragged in out of another app. It goes on the dataTransfer too, so dragging a
+// note *out* to another app still hands over something meaningful.
+/** @type {string | null} */
+let dragPath = null;
+/** @type {HTMLElement | null} */
+let dropEl = null;
+
+function markDropTarget(el) {
+  if (dropEl === el) return;
+  clearDropTarget();
+  dropEl = el;
+  el.classList.add('drop-target');
+}
+
+function clearDropTarget() {
+  if (dropEl) dropEl.classList.remove('drop-target');
+  dropEl = null;
+}
+
+function parentDir(p) {
+  const cut = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return cut === -1 ? '' : p.slice(0, cut);
+}
+
+// Whether dropping the dragged entry into `destDir` is a move worth offering.
+// Main refuses the rest anyway, but a highlight that can only lead to an error
+// message is worse than no highlight at all.
+function canDrop(destDir) {
+  if (!dragPath || !destDir) return false;
+  const sep = dragPath.includes('\\') ? '\\' : '/';
+  // Into itself or into something below it: the folder would move out of existence.
+  if (destDir === dragPath || destDir.startsWith(dragPath + sep)) return false;
+  return destDir !== parentDir(dragPath); // already there
+}
+
+function attachDragSource(row, node) {
+  row.draggable = true;
+  row.addEventListener('dragstart', (e) => {
+    dragPath = node.path;
+    row.classList.add('dragging');
+    if (!e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', node.path);
+  });
+  row.addEventListener('dragend', () => {
+    dragPath = null;
+    row.classList.remove('dragging');
+    clearDropTarget();
+  });
+}
+
+// `destDir()` says where a drop on `el` would land. `accepts(e)` is the extra test
+// the tree's background needs — it sits under every row, so it must ignore any
+// event a row has already been offered.
+/**
+ * @param {HTMLElement} el
+ * @param {() => string} destDir
+ * @param {(e: DragEvent) => boolean} [accepts]
+ */
+function attachDropTarget(el, destDir, accepts = () => true) {
+  el.addEventListener('dragover', (e) => {
+    // No preventDefault when we can't take it: that is what tells the browser this
+    // is not a drop target, and what lets the event go on to the one behind it.
+    if (!accepts(e) || !canDrop(destDir())) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    markDropTarget(el);
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (e.target === el) clearDropTarget();
+  });
+  el.addEventListener('drop', (e) => {
+    const dir = destDir();
+    if (!accepts(e) || !canDrop(dir)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const source = dragPath;
+    dragPath = null;
+    clearDropTarget();
+    if (source) moveNode(source, dir);
+  });
+}
+
+// The empty part of the tree is the vault root — the only way to drag something
+// back out of a folder without another folder to aim at.
+attachDropTarget(
+  treeEl,
+  () => state.baseFolder || '',
+  (e) => !(e.target instanceof Element && e.target.closest('.node-row'))
+);
+
+// Everything the renderer keys by path, re-keyed after an entry has moved: the
+// expanded folders (absolute paths), the remembered reading positions and the
+// reminders' note links (both vault-relative). A rename is a move too, so both
+// paths through main come here.
+//
+// The expanded set matters for more than tidiness — without it a moved folder,
+// and anything expanded under it, comes back collapsed.
+async function rekeyMovedPaths(oldPath, newPath) {
+  const sep = oldPath.includes('\\') ? '\\' : '/';
+  const prefix = oldPath + sep;
+  for (const dir of [...expanded]) {
+    if (dir !== oldPath && !dir.startsWith(prefix)) continue;
+    expanded.delete(dir);
+    expanded.add(newPath + dir.slice(oldPath.length));
+  }
+  remapPositions(relativePath(oldPath), relativePath(newPath));
+  await remapReminderFiles(relativePath(oldPath), relativePath(newPath));
+}
+
+async function moveNode(source, destDir) {
+  const sep = source.includes('\\') ? '\\' : '/';
+  const open = state.currentFile;
+  const movingOpen = !!open && (open === source || open.startsWith(source + sep));
+  // Flush first so a queued autosave lands on the old path before it moves, rather
+  // than re-creating the old file underneath us afterwards.
+  if (movingOpen) await flushSave();
+
+  const res = await api.movePath(state.baseFolder, source, destDir);
+  if (!res.ok) {
+    setStatus('Error: ' + res.error, true);
+    return;
+  }
+
+  await rekeyMovedPaths(source, res.path);
+  expandAncestors(res.path);
+  await refreshTree();
+
+  if (movingOpen && open) {
+    // Re-opened from the new path rather than just re-labelled: the move may have
+    // rewritten this note's own refs, so the buffer on screen is out of date — and
+    // the next autosave would write it straight back over them.
+    const moved = res.path + open.slice(source.length);
+    state.currentFile = moved;
+    await openFile(moved, treeEl.querySelector(`[data-path="${cssEscape(moved)}"]`));
+  } else if (res.updated && open) {
+    // The open note didn't move, but its refs may have followed what did.
+    await openFile(open, treeEl.querySelector(`[data-path="${cssEscape(open)}"]`));
+  }
+
+  // Last: openFile() ends by setting the status to `Saved`, which would otherwise
+  // be all that was left of the move's own result.
+  const name = source.slice(source.lastIndexOf(sep) + 1);
+  const into = destDir === state.baseFolder ? 'the vault root' : relativePath(destDir) + '/';
+  const refs = res.updated ? ` — refs updated in ${res.updated} note(s)` : '';
+  setStatus(`Moved "${name}" to ${into}${refs}`);
 }
 
 // ---- Toolbar actions ----
@@ -247,24 +414,33 @@ async function revealNode(node) {
 async function renameNode(node) {
   const newName = await promptModal('Rename to:', node.name);
   if (!newName || newName === node.name) return;
+  const sep = node.path.includes('\\') ? '\\' : '/';
+  const open = state.currentFile;
+  // A renamed *folder* moves the open file without the open file being the node.
+  const renamingOpen = !!open && (open === node.path || open.startsWith(node.path + sep));
   // Flush first so the pending write lands on the old path before it moves,
   // rather than re-creating the old file after the rename.
-  if (state.currentFile === node.path) await flushSave();
+  if (renamingOpen) await flushSave();
   const res = await api.renamePath(state.baseFolder, node.path, newName);
   if (!res.ok) {
     setStatus('Error: ' + res.error, true);
     return;
   }
-  if (state.currentFile === node.path) {
-    const wasImage = isImage(node.path);
-    state.currentFile = res.path;
-    currentFileEl.textContent = relativePath(res.path);
-    // A rename can change what kind of file this is (image ↔ text), and with it
-    // which pane should be showing — re-open rather than leave the old one up.
-    if (wasImage !== isImage(res.path)) await openFile(res.path);
-    else applyView();
+  await rekeyMovedPaths(node.path, res.path);
+  // Re-opened rather than re-labelled, in both cases for the same reason: the
+  // rename may have rewritten refs, and a buffer a version behind what is now on
+  // disk is one the next autosave would write straight back over. It also settles
+  // the case where a rename changes what kind of file this is (image ↔ text), and
+  // with it which pane should be showing.
+  if (renamingOpen && open) {
+    const moved = res.path + open.slice(node.path.length);
+    state.currentFile = moved;
+    await openFile(moved);
+  } else if (res.updated && open) {
+    await openFile(open); // not renamed itself, but its refs followed what was
   }
   await refreshTree();
+  if (res.updated) setStatus(`Renamed — refs updated in ${res.updated} note(s)`);
 }
 
 async function deleteNode(node) {

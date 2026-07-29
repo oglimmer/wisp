@@ -46,6 +46,12 @@ const SHORTCUT_GROUPS = [
       ['Esc', 'Close the find bar'],
     ],
   ],
+  [
+    'Terminal',
+    [
+      [chord(K_MOD, 'J'), 'Show or hide the Claude terminal (the session keeps running)'],
+    ],
+  ],
   ['Help', [[chord(K_MOD, '/'), 'This list']]],
 ];
 

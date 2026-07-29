@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
     <title>Wisp</title>
+    <!-- xterm.js owns the terminal pane's own layout; ours is in styles.css. -->
+    <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -165,6 +167,30 @@
             <div id="image-view-meta" class="image-view-meta"></div>
           </div>
         </div>
+
+        <!-- Drag handle: resize the terminal below. Hidden while it's collapsed,
+             where there is nothing but a header bar to resize. -->
+        <div id="divider-terminal" class="hdivider hidden" title="Drag to resize"></div>
+
+        <!-- Terminal pane: an interactive `claude` at the vault root. Starts
+             collapsed; the header is the toggle. -->
+        <section id="terminal-pane" class="terminal-pane collapsed">
+          <div class="terminal-header">
+            <button
+              id="terminal-toggle"
+              class="terminal-toggle"
+              aria-expanded="false"
+              title="Show the Claude terminal (⌘J)"
+            >
+              <span id="terminal-caret" class="terminal-caret">▸</span> Claude
+            </button>
+            <span id="terminal-status" class="terminal-status"></span>
+            <button id="terminal-restart-btn" class="terminal-icon hidden" title="Restart Claude">
+              ⟳
+            </button>
+          </div>
+          <div id="terminal-body" class="terminal-body"></div>
+        </section>
       </main>
     </div>
 
@@ -178,6 +204,9 @@
     <script src="node_modules/turndown/lib/turndown.browser.umd.js"></script>
     <!-- Sanitizes marked HTML before it hits innerHTML (preview + WYSIWYG). -->
     <script src="node_modules/dompurify/dist/purify.min.js"></script>
+    <!-- xterm.js draws the terminal pane; the fit addon sizes it to the pane. -->
+    <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+    <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script type="module" src="renderer/index.js"></script>
   </body>
 </html>

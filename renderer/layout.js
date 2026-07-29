@@ -106,6 +106,11 @@ function makeRowDivider(divider, panel, storageKey, minPx, opts = {}) {
 
 makeRowDivider(byId('divider-input'), byId('smart-insert'), 'rawNotes.inputHeight', 70);
 makeRowDivider(byId('divider-preview'), byId('smart-preview'), 'rawNotes.previewHeight', 60);
+// The terminal sits *under* its divider, so dragging up grows it — and it is only
+// draggable while expanded (the handle hides itself with the pane's body).
+makeRowDivider(byId('divider-terminal'), byId('terminal-pane'), 'rawNotes.terminalHeight', 120, {
+  below: true,
+});
 makeRowDivider(byId('divider-reminders'), byId('reminders'), 'rawNotes.remindersHeight', 92, {
   container: byId('sidebar'),
   reserve: 120,

@@ -81,6 +81,24 @@ export function flushPositions() {
   }
 }
 
+// A moved (or renamed) file keeps its reading position. The store is keyed by
+// vault-relative path, so the key has to follow the file — including every file
+// under a folder that moved, which is why this re-keys by prefix as well.
+export function remapPositions(oldRel, newRel) {
+  if (!oldRel || !newRel || oldRel === newRel) return;
+  const sep = oldRel.includes('\\') ? '\\' : '/';
+  const prefix = oldRel + sep;
+  // Rebuilt in order rather than edited in place: the Map's order is the LRU one.
+  const next = new Map();
+  for (const [key, pos] of positions) {
+    if (key === oldRel) next.set(newRel, pos);
+    else if (key.startsWith(prefix)) next.set(newRel + sep + key.slice(prefix.length), pos);
+    else next.set(key, pos);
+  }
+  positions = next;
+  schedulePersist();
+}
+
 // Fetch this file's entry, moving it to the end: the Map's order is the LRU one.
 function touch(key) {
   const pos = positions.get(key) || {};

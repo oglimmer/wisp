@@ -1,9 +1,12 @@
 // Table insertion and growth, in both editing panes. Raw rewrites the pipe-
-// delimited source; the Editor rearranges the live <table>.
+// delimited source; the Editor rearranges the live <table>. The pipe syntax itself
+// — splitting a row, reading the delimiter, formatting the model back out — lives
+// in markdown.js, because the WYSIWYG fold needs the same formatter to write a
+// turned-down table the way this pane writes one.
 
 import { editorEl, wysiwygEl } from './dom.js';
 import { markBufferEdited } from './editor.js';
-import { isHeadingRow } from './markdown.js';
+import { formatTable, isDelimiterRow, isHeadingRow, isTableLine, parseTable, pipePositions } from './markdown.js';
 import { state } from './state.js';
 import { setStatus } from './util.js';
 import { effectiveViewMode } from './views.js';
@@ -19,58 +22,6 @@ import { effectiveViewMode } from './views.js';
 // table *is* its delimiter row), so no operation can put a row above it.
 
 const TABLE_SIZE = 3; // a fresh table: a heading row plus two body rows, 3 columns
-const MIN_CELL_WIDTH = 3; // the narrowest delimiter GFM can express (`:-:`)
-
-// Delimiter cell → column alignment, mirroring CELL_BORDER on the way back in.
-function borderAlign(cell) {
-  const left = cell.startsWith(':');
-  const right = cell.endsWith(':');
-  if (left && right) return 'center';
-  if (left) return 'left';
-  if (right) return 'right';
-  return '';
-}
-
-// Positions of the cell-separating pipes in a source row. A `\|` is an escaped
-// literal inside a cell (that's how cellText writes one out), not a separator.
-function pipePositions(line) {
-  const at = [];
-  for (let i = 0; i < line.length; i += 1) {
-    if (line[i] === '|' && line[i - 1] !== '\\') at.push(i);
-  }
-  return at;
-}
-
-// The cells of one source row. GFM makes the outer pipes optional, so a blank
-// segment before the first pipe or after the last is a delimiter's shadow rather
-// than a cell — dropping them keeps the column count honest either way.
-function splitRow(line) {
-  const at = pipePositions(line);
-  if (!at.length) return null;
-  const cells = [];
-  let from = 0;
-  for (const pipe of at) {
-    cells.push(line.slice(from, pipe));
-    from = pipe + 1;
-  }
-  cells.push(line.slice(from));
-  if (!cells[0].trim()) cells.shift();
-  if (cells.length && !cells[cells.length - 1].trim()) cells.pop();
-  return cells.map((cell) => cell.trim());
-}
-
-// A table row, strictly: it opens with a pipe. GFM would also swallow a following
-// paragraph line into the table, but reformatting prose as a row is a silent way
-// to mangle a note, so the block we edit stops where the pipes do.
-function isTableLine(line) {
-  return line.trim().startsWith('|');
-}
-
-function isDelimiterRow(line) {
-  const cells = splitRow(line);
-  return !!cells && cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
-}
-
 // The table the caret sits in, as source lines plus the offsets they occupy, or
 // null. A run of pipe rows is only a table if its second line is the delimiter —
 // without one the block is prose that merely contains pipes.
@@ -98,41 +49,6 @@ function tableBlockAt(value, caret) {
     line: idx - first,
     column: caret - starts[idx],
   };
-}
-
-// Source lines → the model every operation works on: the heading row and the body
-// rows as one list (the delimiter row isn't content, it's the alignments), padded
-// to a common width so a column can be inserted at the same index in every row.
-function parseTable(lines) {
-  const rows = lines.map(splitRow).filter(Boolean);
-  const aligns = rows[1].map(borderAlign);
-  const body = rows.filter((_, i) => i !== 1);
-  const cols = Math.max(aligns.length, ...body.map((row) => row.length));
-  body.forEach((row) => {
-    while (row.length < cols) row.push('');
-  });
-  while (aligns.length < cols) aligns.push('');
-  return { aligns, rows: body };
-}
-
-// The model back to source, with the columns padded to a common width. Every
-// operation rewrites all of a table's lines anyway (a new column touches each
-// one), so lining them up costs nothing and keeps the raw source readable.
-function formatTable(table) {
-  const widths = table.aligns.map((_, col) =>
-    table.rows.reduce((max, row) => Math.max(max, (row[col] || '').length), MIN_CELL_WIDTH)
-  );
-  const border = table.aligns.map((align, col) => {
-    const width = widths[col];
-    if (align === 'center') return `:${'-'.repeat(width - 2)}:`;
-    if (align === 'left') return `:${'-'.repeat(width - 1)}`;
-    if (align === 'right') return `${'-'.repeat(width - 1)}:`;
-    return '-'.repeat(width);
-  });
-  const line = (cells) => `| ${cells.map((cell, col) => cell.padEnd(widths[col])).join(' | ')} |`;
-  const out = table.rows.map((row) => line(row));
-  out.splice(1, 0, line(border));
-  return out;
 }
 
 // Where a cell's text starts in a formatted line: past its opening pipe and the

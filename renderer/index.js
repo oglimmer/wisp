@@ -14,6 +14,7 @@ import { newReminder } from './reminders-ui.js';
 import { invalidateSmartPlan, smartAdd, smartCheck, smartLookup } from './smart.js';
 import { state } from './state.js';
 import { runTableOp, tableOpFor } from './tables.js';
+import { terminalFocused, toggleTerminal } from './terminal.js';
 import { newFile, newFolder, refreshTree } from './tree.js';
 import { setDiffMode, setViewMode, syncWysiwygToEditor } from './views.js';
 
@@ -73,6 +74,16 @@ window.addEventListener('keydown', (e) => {
   // A modal or reminder popup owns the keyboard while it's up (they handle their
   // own Escape / Enter on the capture phase).
   if (dialogOpen()) return;
+
+  // ⌘J from anywhere, including from inside the terminal — it's the way back out.
+  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j') {
+    e.preventDefault();
+    toggleTerminal();
+    return;
+  }
+  // Everything below is an editor shortcut, and while the terminal has focus the
+  // keystrokes are claude's: ⌘F, Tab and the table chords go through to the pty.
+  if (terminalFocused()) return;
 
   const tableOp = tableOpFor(e);
   if (tableOp) {

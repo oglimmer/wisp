@@ -157,6 +157,23 @@ async function persistReminders() {
   if (!res.ok) setStatus('Error saving reminders: ' + res.error, true);
 }
 
+// A reminder points at its note by vault-relative path, so a moved note has to
+// take its reminders with it or the list's "open note" button goes nowhere. Same
+// prefix rule as the positions store: a moved folder moves everything under it.
+export async function remapReminderFiles(oldRel, newRel) {
+  if (!oldRel || !newRel || oldRel === newRel) return;
+  const sep = oldRel.includes('\\') ? '\\' : '/';
+  const prefix = oldRel + sep;
+  let touched = false;
+  for (const rem of reminders) {
+    if (rem.file === oldRel) rem.file = newRel;
+    else if (rem.file.startsWith(prefix)) rem.file = newRel + sep + rem.file.slice(prefix.length);
+    else continue;
+    touched = true;
+  }
+  if (touched) await persistReminders();
+}
+
 export async function upsertReminder(rem) {
   const i = reminders.findIndex((r) => r.id === rem.id);
   if (i === -1) reminders.push(rem);

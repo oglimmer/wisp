@@ -32,6 +32,10 @@ const api = {
   deletePath: (baseFolder, target) => ipcRenderer.invoke('delete-path', baseFolder, target),
   renamePath: (baseFolder, oldPath, newName) =>
     ipcRenderer.invoke('rename-path', baseFolder, oldPath, newName),
+  // Tree drag & drop: move an entry into another folder. Both this and renamePath
+  // rewrite the vault's Markdown refs so they follow what moved.
+  movePath: (baseFolder, target, destDir) =>
+    ipcRenderer.invoke('move-path', baseFolder, target, destDir),
   // Open a link from the Markdown preview in the default browser.
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   // Main → renderer: Help ▸ Keyboard Shortcuts was picked. The event itself is
@@ -70,6 +74,21 @@ const api = {
     ipcRenderer.invoke('git-commit', baseFolder, message, push),
   gitDiff: (baseFolder, target) => ipcRenderer.invoke('git-diff', baseFolder, target),
   gitRevert: (baseFolder, targets) => ipcRenderer.invoke('git-revert', baseFolder, targets),
+  // The terminal pane: one interactive `claude` in a pty, at the vault root. The
+  // renderer supplies a size and keystrokes — never a command to run.
+  termStart: (baseFolder, cols, rows) =>
+    ipcRenderer.invoke('term-start', baseFolder, cols, rows),
+  termInput: (data) => ipcRenderer.invoke('term-input', data),
+  termResize: (cols, rows) => ipcRenderer.invoke('term-resize', cols, rows),
+  termStop: () => ipcRenderer.invoke('term-stop'),
+  // Main → renderer, same shape as onShowShortcuts: the payload crosses, the
+  // event (which carries a handle on the sender) does not.
+  onTermData: (fn) => ipcRenderer.on('term-data', (_e, data) => fn(data)),
+  onTermExit: (fn) => ipcRenderer.on('term-exit', (_e, info) => fn(info)),
+  // Watch the vault for changes made outside the app (the terminal's claude, most
+  // of all) and re-read what they touched.
+  watchVault: (baseFolder) => ipcRenderer.invoke('watch-vault', baseFolder),
+  onVaultChanged: (fn) => ipcRenderer.on('vault-changed', () => fn()),
 };
 
 contextBridge.exposeInMainWorld('api', api);
