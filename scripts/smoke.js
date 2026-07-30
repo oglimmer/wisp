@@ -106,7 +106,33 @@ const args = parseArgs(process.argv.slice(2));
 
 // The mirror hands us a userData dir of its own, so a smoke run never reads or
 // writes the config.json and localStorage of an interactive session.
-const USER_DATA = process.env.WISP_USER_DATA || path.join(args.out, 'user-data');
+//
+// **A Flatpak gets a *private* /tmp**, so anything the sandboxed app has to read
+// back — the seeded config.json above all — is invisible there no matter how the
+// host driver writes it. The vault already defaults out of /tmp for --flatpak
+// (parseArgs); the userData dir has to move with it, or the app opens with no
+// vault and the run dies as a bare "waiting for .node-row" timeout 20s later,
+// which says nothing about the cause. CI only escapes it by accident: its --out
+// happens to resolve inside the workspace rather than /tmp.
+const USER_DATA = process.env.WISP_USER_DATA
+  || (args.flatpak
+    ? path.join(os.homedir(), '.cache', 'wisp-smoke-user-data')
+    : path.join(args.out, 'user-data'));
+
+// The two paths above can still be pointed into /tmp explicitly (--vault, or
+// WISP_USER_DATA from the mirror). Say so here rather than let it surface as
+// that same unexplained timeout.
+if (args.flatpak) {
+  const tmp = fs.realpathSync(os.tmpdir());
+  for (const [what, dir] of [['--vault', args.vault], ['the userData dir', USER_DATA]]) {
+    if (path.resolve(dir) === tmp || path.resolve(dir).startsWith(tmp + path.sep)) {
+      throw new Error(
+        `${what} is ${dir}, under ${tmp} — a Flatpak has its own private /tmp and `
+        + 'cannot see it. Point it somewhere under $HOME instead.',
+      );
+    }
+  }
+}
 
 // ---- checks ----------------------------------------------------------------
 
