@@ -220,6 +220,29 @@ cmd_test() {
     ok "every top-level source file is packaged"
   fi
 
+  say "checking every Linux release target is published"
+  local target ext
+  for target in AppImage tar.gz deb flatpak; do
+    if node -e '
+      const want = process.argv[1];
+      const targets = require("./package.json").build.linux.target;
+      process.exit(targets.some((entry) => (entry.target || entry) === want) ? 0 : 1);
+    ' "$target"; then
+      ok "$target is configured"
+    else
+      printf '%serror:%s package.json does not configure Linux target %s\n' \
+        "$RED" "$OFF" "$target" >&2
+      failed=1
+    fi
+    ext=$target
+    if ! grep -Fq "dist/*.$ext" .github/workflows/release.yml \
+      || ! grep -Fq -- "-name '*.$ext'" .github/workflows/release.yml; then
+      printf '%serror:%s release.yml does not upload and publish *.%s\n' \
+        "$RED" "$OFF" "$ext" >&2
+      failed=1
+    fi
+  done
+
   say "checking index.html references resolve"
   # The renderer loads marked/turndown by relative node_modules path; a rename
   # in a dependency shows up as a silently degraded UI, not an error.

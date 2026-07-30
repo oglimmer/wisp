@@ -21,7 +21,8 @@
 // also why tsconfig.json excludes this file — `require('playwright')` resolves
 // there and nowhere else.
 //
-// Usage: node scripts/smoke.js [--out <dir>] [--vault <dir>] [--app <dir|bin>] [--keep]
+// Usage: node scripts/smoke.js [--out <dir>] [--vault <dir>]
+//        [--app <dir|bin> | --flatpak <app-id>] [--repo] [--host-tools] [--keep]
 //
 // --app drives a *packaged* build instead of the sources — the artifact users
 // actually download, asar and all. That is the only way to find out whether
@@ -41,16 +42,35 @@ const APP_DIR = path.resolve(__dirname, '..');
 // ---- arguments -------------------------------------------------------------
 
 function parseArgs(argv) {
-  const out = { out: path.join(APP_DIR, 'smoke'), vault: '', app: '', keep: false };
+  const out = {
+    out: path.join(APP_DIR, 'smoke'),
+    vault: '',
+    app: '',
+    flatpak: '',
+    repo: false,
+    hostTools: false,
+    keep: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--out') out.out = path.resolve(argv[(i += 1)]);
     else if (a === '--vault') out.vault = path.resolve(argv[(i += 1)]);
     else if (a === '--app') out.app = path.resolve(argv[(i += 1)]);
+    else if (a === '--flatpak') out.flatpak = argv[(i += 1)];
+    else if (a === '--repo') out.repo = true;
+    else if (a === '--host-tools') out.hostTools = true;
     else if (a === '--keep') out.keep = true;
     else throw new Error(`unknown argument: ${a}`);
   }
-  if (!out.vault) out.vault = path.join(os.tmpdir(), 'wisp-smoke-vault');
+  if (out.app && out.flatpak) throw new Error('--app and --flatpak are mutually exclusive');
+  if (out.flatpak && !/^[A-Za-z0-9._-]+$/.test(out.flatpak)) {
+    throw new Error(`invalid Flatpak app id: ${out.flatpak}`);
+  }
+  if (!out.vault) {
+    out.vault = out.flatpak
+      ? path.join(os.homedir(), '.cache', 'wisp-smoke-vault')
+      : path.join(os.tmpdir(), 'wisp-smoke-vault');
+  }
   return out;
 }
 
@@ -71,6 +91,15 @@ function appBinary(target) {
   if (unpacked.length > 1) throw new Error(`${target} holds more than one unpacked build: ${unpacked.join(', ')}`);
   if (!unpacked.length) throw new Error(`no packaged linux build under ${target}`);
   return unpacked[0];
+}
+
+// Playwright needs to start Electron itself so it can inject its debugging
+// flags. A tiny executable wrapper puts the Flatpak app id before those flags,
+// leaving `flatpak run` to forward them to Wisp's Electron binary.
+function flatpakLauncher(appId, out) {
+  const launcher = path.join(out, 'run-flatpak-smoke');
+  fs.writeFileSync(launcher, `#!/bin/sh\nexec flatpak run ${appId} "$@"\n`, { mode: 0o755 });
+  return launcher;
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -231,6 +260,7 @@ async function waitForDisk(vault, rel, predicate, timeout = 8000) {
 async function main() {
   const { vault, out } = args;
   writeVault(vault);
+  if (args.repo) execFileSync('git', ['init', '-q', vault]);
   fs.mkdirSync(out, { recursive: true });
 
   // No folder picker in headless, and no gesture to drive it — seed the config
@@ -240,11 +270,17 @@ async function main() {
 
   // chrome-sandbox is not setuid in a container, and the userData dir is the
   // mirror's so a run can't disturb an interactive session's config.
-  const electronArgs = ['--no-sandbox', `--user-data-dir=${USER_DATA}`];
+  const electronArgs = [
+    ...(args.flatpak ? [] : ['--no-sandbox']),
+    `--user-data-dir=${USER_DATA}`,
+  ];
+  const packaged = args.app
+    ? { executablePath: appBinary(args.app), args: electronArgs }
+    : args.flatpak
+      ? { executablePath: flatpakLauncher(args.flatpak, out), args: electronArgs }
+      : { args: [...electronArgs, APP_DIR], cwd: APP_DIR };
   const app = await electron.launch(
-    args.app
-      ? { executablePath: appBinary(args.app), args: electronArgs }
-      : { args: [...electronArgs, APP_DIR], cwd: APP_DIR },
+    packaged,
   );
 
   const win = await app.firstWindow();
@@ -262,7 +298,12 @@ async function main() {
   checkEqual('vault name in the sidebar', (await text(win, '#vault-name'))?.toLowerCase(), 'wisp-smoke-vault');
   const rows = await win.evaluate(() => document.querySelectorAll('.node-row').length);
   check('tree renders the vault entries', rows >= 3, `only ${rows} rows`, `${rows} rows`);
-  check('git bar is hidden for a plain folder', !(await visible(win, '#git-bar')));
+  if (args.repo) {
+    await win.waitForFunction(() => getComputedStyle(document.getElementById('git-bar')).display !== 'none');
+    check('git bar detects a repository through the packaged process bridge', await visible(win, '#git-bar'));
+  } else {
+    check('git bar is hidden for a plain folder', !(await visible(win, '#git-bar')));
+  }
   check('reminder list shows its empty state', (await text(win, '#reminder-list'))?.includes('No reminders'));
 
   // --- Raw: the buffer is what is on disk ----------------------------------
@@ -497,6 +538,25 @@ async function main() {
   // which view an interactive one opens in.
   await win.click('#tree-mode-tree-btn');
 
+  // A Flatpak has no direct view of host-installed programs. Exercise the
+  // non-interactive Claude path separately from the pty path below when CI has
+  // installed its controlled host stub.
+  if (args.hostTools) {
+    await win.fill('#smart-input', 'Does the host Claude bridge work?');
+    await win.click('#smart-lookup-btn');
+    await win.waitForFunction(
+      () => document.getElementById('smart-status')?.textContent === 'Answered.',
+      undefined,
+      { timeout: 30_000 },
+    );
+    const answer = await text(win, '#smart-preview');
+    check(
+      'smart lookup reaches the host Claude CLI',
+      answer?.includes('Flatpak host lookup works.'),
+      JSON.stringify(answer),
+    );
+  }
+
   // --- the terminal pane: node-pty under Electron --------------------------
   // The one native module. Skipped rather than failed when the CLI it spawns is
   // not installed — that is the environment, not the app.
@@ -507,7 +567,11 @@ async function main() {
     hasClaude = false;
   }
   if (!hasClaude) {
-    skip('terminal pane spawns a pty', 'the `claude` CLI is not on PATH here');
+    if (args.hostTools) {
+      check('terminal pane finds the required host Claude CLI', false, 'the `claude` CLI is not on PATH here');
+    } else {
+      skip('terminal pane spawns a pty', 'the `claude` CLI is not on PATH here');
+    }
   } else {
     await win.click('#terminal-toggle');
     let bytes = 0;
@@ -549,7 +613,7 @@ main()
     }
     console.log(
       `\n${checks.length} checks, ${failed} failed — ` +
-        `${args.app ? `packaged build ${appBinary(args.app)}` : 'the source tree'}, ` +
+        `${args.app ? `packaged build ${appBinary(args.app)}` : args.flatpak ? `Flatpak ${args.flatpak}` : 'the source tree'}, ` +
         `screenshots in ${args.out}`,
     );
     process.exit(failed === 0 ? 0 : 1);

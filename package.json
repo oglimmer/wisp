@@ -3,14 +3,18 @@
   "version": "0.1.9",
   "description": "A minimal folder-backed Markdown note editor. Shows a folder tree on the left and a raw-text editor on the right.",
   "main": "main.js",
-  "desktopName": "wisp.desktop",
+  "desktopName": "com.oglimmer.wisp.desktop",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --mac --arm64",
     "dist:linux": "electron-builder --linux --x64",
     "postinstall": "node scripts/pty-permissions.js"
   },
-  "author": "",
+  "author": {
+    "name": "Oli Zimpasser",
+    "email": "oglimmer@gmail.com"
+  },
+  "homepage": "https://oglimmer.github.io/wisp-homepage",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^26.1.2",
@@ -84,12 +88,43 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "flatpak",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icons",
       "category": "Office",
       "synopsis": "A minimal folder-backed Markdown note editor",
+      "maintainer": "Oli Zimpasser <oglimmer@gmail.com>",
       "syncDesktopName": true
+    },
+    "flatpak": {
+      "runtime": "org.freedesktop.Platform",
+      "runtimeVersion": "25.08",
+      "sdk": "org.freedesktop.Sdk",
+      "base": "org.electronjs.Electron2.BaseApp",
+      "baseVersion": "25.08",
+      "branch": "stable",
+      "finishArgs": [
+        "--share=ipc",
+        "--share=network",
+        "--socket=x11",
+        "--device=dri",
+        "--socket=pulseaudio",
+        "--filesystem=host",
+        "--talk-name=org.freedesktop.Notifications",
+        "--talk-name=org.freedesktop.Flatpak"
+      ]
     },
     "dmg": {
       "title": "${productName} ${version}"

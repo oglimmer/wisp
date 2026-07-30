@@ -1,11 +1,12 @@
 name: Release
 
-# Tag push -> signed, notarized macOS arm64 release + a Linux x86_64 build, both
-#             attached to one GitHub release, then the Homebrew cask bump.
+# Tag push -> signed, notarized macOS arm64 release + Linux x86_64 AppImage,
+#             tar.gz, deb and Flatpak builds, all attached to one GitHub release,
+#             then the Homebrew cask bump.
 # Manual run  -> unsigned ad-hoc builds uploaded as CI artifacts, so the packaging
 #                can be smoke-tested without touching certificates.
 #
-# Two published targets, and only the mac one is signed: Gatekeeper has no Linux
+# Two published platforms, and only the mac one is signed: Gatekeeper has no Linux
 # equivalent, and the cask is macOS-only, so the linux job touches neither.
 on:
   push:
@@ -25,7 +26,7 @@ jobs:
   linux:
     name: Build and verify (Linux x86_64)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -53,6 +54,12 @@ jobs:
       - name: Install the system libraries Electron needs
         run: ./scripts/linux-sandbox.sh libs
 
+      # electron-builder's Flatpak target assembles a single-file bundle against
+      # these pinned runtimes. The helper is shared with local sandbox builds so
+      # CI and development cannot silently choose different runtime branches.
+      - name: Install Flatpak build tools and runtimes
+        run: ./scripts/linux-sandbox.sh flatpak-deps
+
       # A fresh checkout still has node-pty's darwin/win32 prebuilds, and the
       # `files` allowlist cannot drop them for one platform only — see the script.
       # Without this the linux artifact ships a Mach-O binary and a darwin
@@ -74,11 +81,38 @@ jobs:
           npm install --no-save --no-audit --no-fund playwright
           xvfb-run -a node scripts/smoke.js --app dist --out smoke
 
+      # A Flatpak can boot while every host process fails at the sandbox edge.
+      # Install the actual bundle and use a controlled host-side Claude stub to
+      # cover smart lookup and node-pty; --repo covers the host git bridge.
+      - name: Smoke-test the installed Flatpak
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          flatpak install --user --noninteractive -y --reinstall dist/*.flatpak
+          mkdir -p "$HOME/.local/bin"
+          cat > "$HOME/.local/bin/claude" <<'EOF'
+          #!/bin/sh
+          if [ "${1:-}" = "-p" ]; then
+            printf '%s\n' '{"result":"{\"answer\":\"Flatpak host lookup works.\",\"sources\":[]}"}'
+            exit 0
+          fi
+          printf 'Flatpak host terminal works.\r\n'
+          while IFS= read -r _line; do :; done
+          EOF
+          chmod +x "$HOME/.local/bin/claude"
+          PATH="$HOME/.local/bin:$PATH" dbus-run-session -- \
+            xvfb-run -a node scripts/smoke.js \
+              --flatpak com.oglimmer.wisp --repo --host-tools --out smoke-flatpak
+
       - name: Check the artifacts are there
         run: |
-          ls -lh dist/*.AppImage dist/*.tar.gz
+          ls -lh dist/*.AppImage dist/*.tar.gz dist/*.deb dist/*.flatpak
+          for f in dist/*.deb; do
+            dpkg-deb --info "$f" >/dev/null
+            dpkg-deb --contents "$f" >/dev/null
+          done
           # A truncated artifact is worse than a missing one: it uploads fine.
-          for f in dist/*.AppImage dist/*.tar.gz; do
+          for f in dist/*.AppImage dist/*.tar.gz dist/*.deb dist/*.flatpak; do
             size=$(stat -c %s "$f")
             if [ "$size" -lt 50000000 ]; then
               echo "::error::$f is only $size bytes — the build is incomplete"
@@ -92,7 +126,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wisp-linux-smoke-screenshots
-          path: smoke/
+          path: |
+            smoke/
+            smoke-flatpak/
           if-no-files-found: ignore
 
       # Consumed by the mac job on a tag; on a manual run it is the dry-run download.
@@ -103,6 +139,8 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.tar.gz
+            dist/*.deb
+            dist/*.flatpak
 
   build:
     name: Build and publish (macOS arm64)
@@ -268,7 +306,8 @@ jobs:
         run: |
           set -- "dist/Wisp-$VERSION-arm64.dmg" "dist/Wisp-$VERSION-arm64.zip"
           while IFS= read -r f; do set -- "$@" "$f"; done \
-            < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \))
+            < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \
+              -o -name '*.deb' -o -name '*.flatpak' \))
           echo "publishing: $*"
           gh release create "$GITHUB_REF_NAME" \
             --title "Wisp $VERSION" \
@@ -286,7 +325,8 @@ jobs:
         run: |
           set -- "dist/Wisp-$VERSION-arm64.dmg" "dist/Wisp-$VERSION-arm64.zip"
           while IFS= read -r f; do set -- "$@" "$f"; done \
-            < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \))
+            < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \
+              -o -name '*.deb' -o -name '*.flatpak' \))
           gh release create "$GITHUB_REF_NAME" \
             --title "Wisp $VERSION (unsigned test build)" \
             --prerelease \

@@ -4,6 +4,56 @@ const fs = require('fs');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
 
+// Flatpak cannot see programs installed on the host. Keep the command itself
+// fixed in each caller, but cross the sandbox boundary when this build is
+// running there so git and the user's Claude installation remain available.
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {string} cwd
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string[]} [unset]
+ */
+function hostCommand(command, args, cwd, env = {}, unset = []) {
+  if (!process.env.FLATPAK_ID) return { command, args, cwd };
+  const envArgs = Object.entries(env)
+    .filter((entry) => typeof entry[1] === 'string')
+    .map(([name, value]) => `--env=${name}=${value}`);
+  return {
+    command: 'flatpak-spawn',
+    args: [
+      '--host',
+      '--watch-bus',
+      `--directory=${cwd}`,
+      ...envArgs,
+      ...unset.map((name) => `--unset-env=${name}`),
+      command,
+      ...args,
+    ],
+    cwd,
+  };
+}
+
+// Preserve only the caller-controlled CLI settings when crossing to the host.
+// In particular, forwarding Flatpak's XDG_* variables would make host Claude
+// read configuration from the app sandbox instead of the user's normal config.
+function hostCliEnv(env) {
+  /** @type {NodeJS.ProcessEnv} */
+  const out = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (
+      name === 'PATH'
+      || name === 'TERM'
+      || name === 'COLORTERM'
+      || name.startsWith('ANTHROPIC_')
+      || name.startsWith('CLAUDE_')
+    ) {
+      out[name] = value;
+    }
+  }
+  return out;
+}
+
 // ---- The app:// scheme ----
 //
 // The UI is served from a custom scheme rather than loaded off disk with
@@ -959,12 +1009,14 @@ handle('term-start', async (baseFolder, cols, rows) => {
   // launched from Finder has a bare PATH and would not find `claude` at all.
   // TERM is what makes the CLI draw its full-screen UI rather than fall back to
   // line-at-a-time output, and it has to match what xterm.js can actually paint.
-  const child = pty.spawn('claude', [], {
+  const env = { ...claudeEnv(), TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+  const command = hostCommand('claude', [], baseFolder, hostCliEnv(env));
+  const child = pty.spawn(command.command, command.args, {
     name: 'xterm-256color',
     cols: ptyDimension(cols, 80),
     rows: ptyDimension(rows, 24),
-    cwd: baseFolder,
-    env: { ...claudeEnv(), TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+    cwd: command.cwd,
+    env,
   });
   ptyProcess = child;
 
@@ -1122,7 +1174,19 @@ function runGit(cwd, args, opts = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn('git', args, { cwd, env: gitEnv() });
+      const env = gitEnv();
+      const command = hostCommand(
+        'git',
+        args,
+        cwd,
+        {
+          PATH: env.PATH,
+          GIT_TERMINAL_PROMPT: env.GIT_TERMINAL_PROMPT,
+          GIT_OPTIONAL_LOCKS: env.GIT_OPTIONAL_LOCKS,
+        },
+        ['GIT_ASKPASS', 'SSH_ASKPASS']
+      );
+      child = spawn(command.command, command.args, { cwd: command.cwd, env });
     } catch (err) {
       resolve({ ok: false, code: -1, stdout: '', stderr: String(err), missing: true });
       return;
@@ -1774,11 +1838,14 @@ function runClaude(cwd, prompt) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(
+      const env = claudeEnv();
+      const command = hostCommand(
         'claude',
         ['-p', prompt, '--output-format', 'json', '--allowedTools', 'Read,Glob,Grep'],
-        { cwd, env: claudeEnv() }
+        cwd,
+        hostCliEnv(env)
       );
+      child = spawn(command.command, command.args, { cwd: command.cwd, env });
     } catch (err) {
       resolve({ ok: false, error: String(err) });
       return;
