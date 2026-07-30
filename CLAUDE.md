@@ -52,7 +52,8 @@ should come pre-masked the same way.
 installs the system libraries (`./scripts/linux-sandbox.sh libs`) and pinned Flatpak 25.08 runtimes,
 drops node-pty's foreign prebuilds, builds x86_64, and then **runs what it built** —
 `scripts/smoke.js --app dist` drives the packaged binary, then a second run installs and drives the
-Flatpak with host git and Claude stubs — before uploading it as a workflow artifact. The `build` job needs it, does the mac half
+Flatpak with host git and Claude stubs — before uploading it as a workflow artifact. The `build` job
+needs it, does the mac half
 (checks the tag matches `package.json`'s version, builds signed + notarized from repo secrets),
 downloads the linux artifact and publishes **everything in one `gh release create`**, then rewrites
 `version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the tap users install from.
@@ -95,7 +96,14 @@ Four packaging-specific gotchas worth remembering:
   its defining git/Claude integrations, so it deliberately has `--filesystem=host` and permission to
   call `org.freedesktop.Flatpak`; `hostCommand()` then runs only the fixed `git` and `claude` programs
   through `flatpak-spawn --host`. Keep the installed-Flatpak smoke run when changing this boundary — a
-  bundle can launch perfectly while all three host-process paths are broken.
+  bundle can launch perfectly while all three host-process paths are broken. **`PATH` is the one
+  variable that cannot be forwarded across it**: inside the sandbox it describes the sandbox
+  (`/app/bin:/usr/bin`), so passing it on *replaces* the host session's own — `git` still resolves from
+  `/usr/bin` and so does a smoke stub in one of `cliPathExtras()`' locations, which is why a test cannot
+  see this, but a `claude` installed through nvm, mise or pnpm stops resolving in the Flatpak while the
+  AppImage finds it. `hostSearchPath()` reads the host's PATH once (memoized — `runGit` runs on every
+  tree refresh) and appends `cliPathExtras()` to *that*; no answer means no `--env=PATH` at all, leaving
+  flatpak-spawn to resolve against the host's own.
 
 ## Testing on Linux (the sandbox mirror)
 
