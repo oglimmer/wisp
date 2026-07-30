@@ -3,7 +3,7 @@
 import { api } from './api.js';
 import { promptModal } from './dialogs.js';
 import { showDiffFor } from './diff.js';
-import { currentFileEl, editorEl, treeEl } from './dom.js';
+import { currentFileEl, editorEl, treeEl, treeModeRecentBtn, treeModeTreeBtn } from './dom.js';
 import { cancelPendingSave, flushSave, openFile } from './editor.js';
 import { applyGitDecorations, gitDirtyDirs, gitFileStatus, gitState, refreshGit } from './git.js';
 import { discardChanges } from './git-commit.js';
@@ -15,8 +15,59 @@ import { cssEscape, relativePath, setStatus } from './util.js';
 import { applyView, isImage } from './views.js';
 
 export const expanded = new Set(); // dir paths currently expanded
+
+// ---- The two views of the same files ----
+//
+// The tree answers "what is in this folder"; the recency list answers "what have I
+// been working on", which the tree cannot show at all — the file changed a minute
+// ago is wherever it happens to live, possibly inside a folder that is collapsed.
+// Both are built from the one `read-tree` call (files carry an `mtime`), and both
+// render the same `.node-row[data-path]` rows, so the git decorations, drag & drop
+// and the context menu are written once and work in either.
+
+/** @typedef {'tree' | 'recent'} TreeMode */
+
+/** @type {TreeMode} */
+let treeMode = localStorage.getItem('rawNotes.treeMode') === 'recent' ? 'recent' : 'tree';
+
+/** @param {TreeMode} mode */
+export async function setTreeMode(mode) {
+  if (mode === treeMode) return;
+  treeMode = mode;
+  localStorage.setItem('rawNotes.treeMode', mode);
+  paintTreeModeButtons();
+  if (state.baseFolder) await refreshTree();
+}
+
+function paintTreeModeButtons() {
+  treeModeTreeBtn.classList.toggle('active', treeMode === 'tree');
+  treeModeRecentBtn.classList.toggle('active', treeMode === 'recent');
+}
+
+paintTreeModeButtons();
+
+/** @type {ReturnType<typeof setTimeout> | null} */
+let recentRefreshTimer = null;
+
+// A save changes what the recency list is ordered by, and nothing else rebuilds the
+// tree for one — the same reason the git decorations repaint after a save, and
+// debounced for the same reason too. In tree mode a save moves nothing, so this
+// does nothing: the rebuild is not free, and the tree's own view has no need of it.
+export function scheduleRecentRefresh() {
+  if (treeMode !== 'recent') return;
+  if (recentRefreshTimer) clearTimeout(recentRefreshTimer);
+  recentRefreshTimer = setTimeout(() => {
+    recentRefreshTimer = null;
+    if (treeMode === 'recent' && state.baseFolder) refreshTree();
+  }, 600);
+}
+
 export async function refreshTree() {
   const tree = await api.readTree(state.baseFolder);
+  // The sidebar is scrolled by the user, and emptying it collapses its height —
+  // which would send them back to the top on a rebuild they didn't ask for (the
+  // recency list rebuilds itself after a save).
+  const scroll = treeEl.scrollTop;
   treeEl.innerHTML = '';
   if (!tree) {
     treeEl.textContent = 'Folder not found.';
@@ -24,17 +75,22 @@ export async function refreshTree() {
   }
   // Render the base folder's children directly (root is implicit).
   const children = tree.children || [];
-  for (const child of children) {
-    treeEl.appendChild(renderNode(child, 0));
+  if (treeMode === 'recent') {
+    const files = flattenFiles(children);
+    files.sort(byRecency);
+    for (const file of files) treeEl.appendChild(renderRecentNode(file));
+    if (files.length === 0) treeEl.appendChild(emptyNote('No files yet. Use ＋ to create one.'));
+  } else {
+    for (const child of children) {
+      treeEl.appendChild(renderNode(child, 0));
+    }
+    if (children.length === 0) {
+      treeEl.appendChild(emptyNote('Empty folder. Use ＋ to create a file.'));
+    }
   }
-  if (children.length === 0) {
-    const empty = document.createElement('div');
-    empty.style.padding = '8px';
-    empty.style.color = 'var(--text-dim)';
-    empty.style.fontSize = '12px';
-    empty.textContent = 'Empty folder. Use ＋ to create a file.';
-    treeEl.appendChild(empty);
-  }
+  treeEl.scrollTop = scroll;
+  // The rows are new elements, so the class the click put on the old one is gone.
+  markActiveRow();
   // Repaint from the status we already have so the rebuild doesn't flash undecorated,
   // then re-read it in the background — the change that prompted this refresh is
   // usually one git needs to hear about too.
@@ -42,14 +98,103 @@ export async function refreshTree() {
   refreshGit();
 }
 
-// Build a DOM node for a tree entry.
-function renderNode(node, depth) {
+function emptyNote(message) {
+  const empty = document.createElement('div');
+  empty.style.padding = '8px';
+  empty.style.color = 'var(--text-dim)';
+  empty.style.fontSize = '12px';
+  empty.textContent = message;
+  return empty;
+}
+
+// Highlight the open file's row, if it has one. `editorEl`'s click handler does
+// this on the way in; a rebuild has to redo it.
+function markActiveRow() {
+  const open = state.currentFile;
+  if (!open) return;
+  const row = treeEl.querySelector(`.node-row[data-path="${cssEscape(open)}"]`);
+  if (row) row.classList.add('active');
+}
+
+// Every file under `nodes`, folders flattened away. Folders are dropped rather
+// than listed: "what changed" is a question about notes, and a folder's own mtime
+// answers a different one (something was added to it, or removed).
+/** @param {import('../types/ipc').TreeNode[]} nodes */
+function flattenFiles(nodes) {
+  /** @type {import('../types/ipc').TreeNode[]} */
+  const files = [];
+  for (const node of nodes) {
+    if (node.type === 'dir') files.push(...flattenFiles(node.children || []));
+    else files.push(node);
+  }
+  return files;
+}
+
+// Newest first, name as the tie-break so the order is stable between refreshes —
+// two files written in the same millisecond (a checkout, a copied folder) would
+// otherwise swap places on every rebuild.
+function byRecency(a, b) {
+  const bySeen = (b.mtime || 0) - (a.mtime || 0);
+  return bySeen || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+}
+
+// How long ago, in the shortest form that still says it: minutes within the hour,
+// then hours, then days, then the date. A list ordered by time is read for its
+// order first, so the exact stamp goes in the tooltip rather than the row.
+function relativeTime(ms) {
+  if (!ms) return '';
+  const secs = Math.max(0, (Date.now() - ms) / 1000);
+  if (secs < 60) return 'now';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm';
+  if (secs < 86400) return Math.floor(secs / 3600) + 'h';
+  if (secs < 7 * 86400) return Math.floor(secs / 86400) + 'd';
+  const then = new Date(ms);
+  const sameYear = then.getFullYear() === new Date().getFullYear();
+  return then.toLocaleDateString(
+    undefined,
+    sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short' }
+  );
+}
+
+// One row of the recency list. The row itself is the tree's, so a file can be
+// dragged, right-clicked and decorated here exactly as it can there; what this
+// adds is the two things a flat list has to say for itself — which folder the file
+// is in, and when it changed.
+function renderRecentNode(node) {
   const wrapper = document.createElement('div');
   wrapper.className = 'tree-node';
 
+  const { row, arrow, icon } = makeRow(node);
+  row.style.paddingLeft = '6px';
+  arrow.remove(); // nothing to expand, and no depth to line up with
+  icon.textContent = isImage(node.path) ? '🖼' : '📄';
+
+  // Always appended, empty for a file at the vault root: it is the element that
+  // takes the row's free space, so the time stays pinned right either way.
+  const dir = document.createElement('span');
+  dir.className = 'node-dir';
+  const parent = parentDir(relativePath(node.path));
+  dir.textContent = parent ? parent + '/' : '';
+  row.appendChild(dir);
+
+  const when = document.createElement('span');
+  when.className = 'node-time';
+  when.textContent = relativeTime(node.mtime);
+  if (node.mtime) when.title = new Date(node.mtime).toLocaleString();
+  row.appendChild(when);
+
+  row.addEventListener('click', () => openFile(node.path, row));
+  wrapper.appendChild(row);
+  return wrapper;
+}
+
+// The row an entry gets in either view: the label, the drag & drop wiring and the
+// context menu. Everything keyed off `.node-row[data-path]` elsewhere in the app —
+// the git decorations, the active-file highlight, every `querySelector` by path —
+// is satisfied by this alone, which is what lets the recency list reuse it.
+function makeRow(node) {
   const row = document.createElement('div');
   row.className = 'node-row';
-  row.style.paddingLeft = depth * 12 + 6 + 'px';
   row.dataset.path = node.path;
 
   const arrow = document.createElement('span');
@@ -65,12 +210,23 @@ function renderNode(node, depth) {
   row.appendChild(arrow);
   row.appendChild(icon);
   row.appendChild(label);
-  wrapper.appendChild(row);
   attachDragSource(row, node);
   // A folder takes a drop itself; a file hands it on to the folder it sits in, so
   // dropping onto a note means "into that note's folder" rather than nothing (or,
   // worse, falling through to the background and landing in the vault root).
   attachDropTarget(row, () => (node.type === 'dir' ? node.path : parentDir(node.path)));
+  attachRowMenu(row, node);
+  return { row, arrow, icon, label };
+}
+
+// Build a DOM node for a tree entry.
+function renderNode(node, depth) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'tree-node';
+
+  const { row, arrow, icon } = makeRow(node);
+  row.style.paddingLeft = depth * 12 + 6 + 'px';
+  wrapper.appendChild(row);
 
   if (node.type === 'dir') {
     const isOpen = expanded.has(node.path);
@@ -99,6 +255,10 @@ function renderNode(node, depth) {
     row.addEventListener('click', () => openFile(node.path, row));
   }
 
+  return wrapper;
+}
+
+function attachRowMenu(row, node) {
   row.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const items = [];
@@ -131,8 +291,6 @@ function renderNode(node, depth) {
     );
     showContextMenu(e, items);
   });
-
-  return wrapper;
 }
 
 // ---- Drag & drop moves ----

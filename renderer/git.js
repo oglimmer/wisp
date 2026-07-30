@@ -33,9 +33,9 @@ const GIT_KIND_LABEL = {
   conflict: 'Conflicted',
 };
 
-// The LCS table is O(n×m); past this many cells the visual diff is refused and the
-// viewer falls back to git's own patch, which costs nothing to display.
-export const DIFF_MAX_CELLS = 1500000;
+// The word-level LCS table is O(n×m) in the two versions of one line; past this many
+// cells the row renders as a whole-line change instead, which is still correct. (The
+// *line* diff has no such ceiling — see diffOps in lcs.js.)
 export const WORD_DIFF_MAX_CELLS = 40000;
 
 /** @type {import('../types/ipc').GitRepoInfo | null} */

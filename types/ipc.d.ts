@@ -37,6 +37,11 @@ export interface TreeNode {
   type: 'dir' | 'file';
   /** Present on directories only. */
   children?: TreeNode[];
+  /**
+   * Last-modified time, epoch ms. Present on files only; 0 when it couldn't be
+   * read. What the sidebar's recency list is ordered by.
+   */
+  mtime?: number;
 }
 
 export type RepeatRule = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';

@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { chooseFolder, init } from './app.js';
 import { dialogOpen } from './dialogs.js';
 import { showChangedFiles } from './diff.js';
-import { byId, diffRawBtn, diffVisualBtn, editorEl, gitDiffBtn, gitPullBtn, gitPushBtn, newReminderBtn, renderedEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, viewDiffBtn, viewMdBtn, viewRawBtn, viewWysBtn } from './dom.js';
+import { byId, diffRawBtn, diffVisualBtn, editorEl, gitDiffBtn, gitPullBtn, gitPushBtn, newReminderBtn, renderedEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, treeModeRecentBtn, treeModeTreeBtn, viewDiffBtn, viewMdBtn, viewRawBtn, viewWysBtn } from './dom.js';
 import { cancelPendingSave, flushSave } from './editor.js';
 import { closeFind, findOpen, findStep, openFind } from './find.js';
 import { formatOpFor, runFormatOp } from './format.js';
@@ -23,7 +23,7 @@ import { invalidateSmartPlan, smartAdd, smartCheck, smartLookup } from './smart.
 import { state } from './state.js';
 import { runTableOp, tableOpFor } from './tables.js';
 import { terminalFocused, toggleTerminal } from './terminal.js';
-import { newFile, newFolder, refreshTree } from './tree.js';
+import { newFile, newFolder, refreshTree, setTreeMode } from './tree.js';
 import { setDiffMode, setViewMode, syncWysiwygToEditor } from './views.js';
 
 // ---- Wire up buttons & shortcuts ----
@@ -32,6 +32,8 @@ byId('change-folder-btn').addEventListener('click', chooseFolder);
 byId('refresh-btn').addEventListener('click', refreshTree);
 byId('new-file-btn').addEventListener('click', newFile);
 byId('new-folder-btn').addEventListener('click', newFolder);
+treeModeTreeBtn.addEventListener('click', () => setTreeMode('tree'));
+treeModeRecentBtn.addEventListener('click', () => setTreeMode('recent'));
 smartCheckBtn.addEventListener('click', smartCheck);
 smartAddBtn.addEventListener('click', smartAdd);
 smartLookupBtn.addEventListener('click', smartLookup);

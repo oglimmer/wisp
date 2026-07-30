@@ -133,11 +133,22 @@ drives the actual app against a throwaway vault and asserts the things only a ru
 show: the vault reopens from `config.json`, the tree renders, Preview renders marked's GFM through
 DOMPurify, the Editor pane is live and turndown loaded, a Raw edit reaches disk through the autosave,
 frontmatter is shown verbatim instead of as a heading, the git bar hides itself for a plain folder,
-and node-pty spawns a pty that streams `claude`'s output back over the bridge. **The fold has three
+the sidebar's recency list comes back flat with the note this run just edited at the top, and node-pty
+spawns a pty that streams `claude`'s output back over the bridge. **The fold has four
 checks of its own** — after typing into the Editor pane, the table must come back with its original
-padding, `snake_case` must not have grown a backslash, and the heading must be untouched — because
-"only the edited block is rewritten" is exactly what no static check can see. It screenshots each
-pane on the way through.
+padding, `snake_case` must not have grown a backslash, and the heading must be untouched; then a second
+edit *inside* a bullet list must leave every other line of it byte-for-byte, which is the one case where
+turndown does run over lines nobody edited — because "only the edited block is rewritten" is exactly what
+no static check can see. It screenshots each pane on the way through.
+
+**The reading position has five checks of its own**, for the same reason: whether a view switch lands in
+the right place is a question about laid-out geometry, which nothing static can answer. Against a note
+longer than the pane, Raw → Preview → Raw must come back to the same scroll offset *and* caret, Raw ↔
+Editor must put the caret in the paragraph it was in (by line, checked both ways against the fixture),
+and Preview → Editor must keep the same block at the top. The **diff** pane's half is not covered there —
+the smoke vault is deliberately not a repository — so it is worth driving by hand after touching
+`positions.js`: with a repo vault, Raw at the top opens the diff at the top, and scrolling the diff to a
+row then leaving for Preview lands on the paragraph that row's line belongs to.
 
 Playwright is deliberately **not** a dependency: its postinstall downloads browser engines that
 every `npm install` on a dev machine would pay for, and `_electron.launch()` uses the app's own
@@ -213,7 +224,7 @@ little or nothing; `index` depends on everything:
 | `markdown` | marked + DOMPurify one way, turndown + the GFM inverse rules + the block-level fold the other; the pipe-table syntax both panes share |
 | `views` / `editor` / `tables` / `format` / `find` | the editor pane, its buffer, tables, block formatting, find & replace |
 | `positions` | the per-file caret and per-pane scroll offsets |
-| `tree` / `app` / `layout` | the file tree + context menu; opening a vault; the dividers |
+| `tree` / `app` / `layout` | the file tree + the recency list + context menu; opening a vault; the dividers |
 | `git` / `git-commit` / `diff` | status and pull; commit and discard; the diff view |
 | `reminders` / `reminders-ui` | the model and repeat maths; the list, editor and alert |
 | `smart` / `images` / `shortcuts` | Claude-backed filing and lookup; image import; the help list |
@@ -284,10 +295,44 @@ else; change a tag in `index.html`, change the helper there.
   written and then accidentally ignored on the success path. It takes relative and absolute targets
   alike. `isInside()` underneath is still used directly where the question is a test rather than a
   guard (which files a discard covers, whether a path is worth showing relative).
-- **The tree is rebuilt, not mutated.** After any change, the renderer calls `refreshTree()` which re-reads the whole tree from `main.js` and re-renders from scratch. Expanded-folder state is preserved separately in the `expanded` Set (keyed by absolute path), not in the DOM.
+- **The tree is rebuilt, not mutated.** After any change, the renderer calls `refreshTree()` which re-reads the whole tree from `main.js` and re-renders from scratch. Expanded-folder state is preserved separately in the `expanded` Set (keyed by absolute path), not in the DOM. Two things a rebuild would otherwise throw away are put back explicitly: the sidebar's scroll offset (emptying it collapses its height, so the reader would be sent to the top) and the open file's `active` row, whose class went with the element the click put it on.
 - **Persistence.** The last-opened base folder and the window's last geometry (`window`: bounds + `maximized`/`fullScreen`) are stored in `config.json` under Electron's `userData` dir (not in the vault). Geometry is saved debounced on move/resize and flushed on `close`; on restore the size is always reused but the *position* only if the frame still overlaps a live display, so unplugging a monitor can't strand the window off-screen. The window is created with `show: false` and maximized/fullscreened before `show()` so it doesn't visibly jump. Note contents are plain files in the user's chosen folder — there is no database or index.
-- **Reading positions are captured continuously, not on close.** `renderer/positions.js` remembers each file's caret (Raw only) and a *separate* scroll offset per pane — the three panes lay the same file out differently — under `rawNotes.positions:<vault>`, LRU-capped, keyed by vault-relative path. It records off the panes' own `scroll`/`selectionchange` events rather than at the moment a file closes, which is what lets **`applyView()` restore too**: a view switch re-renders the Preview/Editor panes from scratch (and a hidden pane loses its scroll anyway), so without it every toggle would bounce the reader to the top. **A file with no remembered position is explicitly put back at the top**, not left alone: assigning `editorEl.value` parks Chromium's caret at the *end* of the text, so doing nothing opens every new file at its bottom. `restorePosition()` runs *after* `focus()` in `openFile()` (focusing scrolls the caret into view) and *before* `refreshFind()` in `applyView()` (an open find bar's match should win). Since `hydrateImages()` resolves pictures asynchronously, a pane holding them lays out short and clamps the restore — so the requested offset is re-applied on each image `load` (capture phase; `load` doesn't bubble) until it fits or the user scrolls somewhere themselves.
+- **Reading positions are captured continuously, not on close.** `renderer/positions.js` remembers where the reader is in each file under `rawNotes.positions:<vault>`, LRU-capped, keyed by vault-relative path. It records off the panes' own `scroll`/`selectionchange` events rather than at the moment a file closes, which is what lets **`applyView()` restore too**: a view switch re-renders the Preview/Editor panes from scratch (and a hidden pane loses its scroll anyway), so without it every toggle would bounce the reader to the top. **A file with no remembered position is explicitly put back at the top**, not left alone: assigning `editorEl.value` parks Chromium's caret at the *end* of the text, so doing nothing opens every new file at its bottom. `restorePosition()` runs *after* `focus()` in `openFile()` and `setViewMode()` (focusing scrolls the caret into view, undoing a restore that ran before it) and *before* `refreshFind()` in `applyView()` (an open find bar's match should win). Since `hydrateImages()` resolves pictures asynchronously, a pane holding them lays out short and clamps the restore — so the requested offset is re-applied on each image `load` (capture phase; `load` doesn't bubble) until it fits or the user scrolls somewhere themselves.
+- **What is remembered is a place in the *source*, not a scroll offset.** The four panes lay the same file out completely differently, so one offset would be four different places in it and a per-pane offset means switching views lands wherever that pane was left — which for a pane you have not opened yet is the top. So the position is a **fractional source line** for the top of the viewport plus a **line/column caret**, and each pane maps into and out of its own geometry: the textarea through a measured mirror (it soft-wraps, so a line's position cannot be derived from a line height — hence `.text-metrics`, which shares the textarea's typography rule), the rendered panes through `blockLineRanges()` (marked's tokens carry their `raw`, so counting newlines while walking them says which lines each top-level child came from — no rendering, unlike the fold), and the diff through the working-tree line each row carries in `data-line`. A pane whose children don't line up with the ranges (WYSIWYG edits not yet folded back, an `html` block that rendered as several elements) is mapped by proportion instead.
+  - **Each pane's exact offset is kept alongside the anchor**, stamped with the anchor it was recorded against (`seq`). A pane still matching the anchor is restored to its own offset byte-for-byte; only a pane the reader has since moved away from is mapped. That is what makes Raw → Preview → Raw come back to the same pixel *and* caret while Raw → Preview lands on the paragraph being read — mapping in both directions would drift, since a rendered block is coarser than a line. A restore that *cannot* map (the diff's rows don't exist until git answers) deliberately leaves the pane stale, so `renderDiffPane()` restoring again once they do still maps.
+  - **Working the line out is deferred to `syncAnchor()`**, called from `setViewMode`, `openFile`, `openFolder` and `flushPositions` — measuring a pane needs it on screen (a hidden textarea has no width to wrap at), so it has to happen *before* the switch, not when the position is captured. It runs after the WYSIWYG fold, so the lines are the buffer's.
+  - **A restore's own scroll and selection events are suppressed** (`appliedTop` / `appliedSelection` / `appliedCaret`, compared against the live values, since the events arrive a frame later). Treating them as the reader moving would bump the anchor's stamp on every view switch, and every pane would then be mapped rather than restored exactly.
+  - **The caret is the lossy part, and only across panes.** A rendered block carries neither the markers nor the markup of its source lines, so the *line* crosses reliably and the column only as far as the line's own marker allows. Exact in Raw. Scrolling the Preview or the diff moves the reader, not the cursor, so those carry the caret through unchanged rather than dragging it to wherever the scroll ended up.
 - **Ignored entries.** `isIgnored()` in `main.js` hides every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`) plus the explicit `IGNORED` set (`node_modules`) during tree building — and, because `gatherFiles` calls the same helper, keeps them out of the smart-insert prompt too.
+
+### The sidebar's two views (tree / recent)
+
+The same files, two ways: the **folder tree**, or a **flat list of every file, most recently changed
+first**. A two-button toggle above the tree switches them (`rawNotes.treeMode` in `localStorage`, so
+the choice survives a restart). The tree answers "what is in this folder"; the recency list answers
+"what have I been working on", which the tree cannot show at all — the note changed a minute ago is
+wherever it happens to live, quite possibly inside a folder that is collapsed.
+
+- **One tree read feeds both.** `buildTree()` in `main.js` puts an `mtime` (epoch ms, `0` if it
+  couldn't be stat'd) on every **file** node, read during the walk it is already doing rather than in
+  a second pass. `refreshTree()` then either renders the nested tree or flattens the same children,
+  sorts by `mtime` descending, and renders rows — so there is no second channel and no second model.
+  The name is the sort's tie-break, because two files written in the same millisecond (a checkout, a
+  copied folder) would otherwise swap places on every rebuild.
+- **Folders are flattened away, not listed.** A folder's own mtime answers a different question —
+  something was added to it, or removed — and "what did I change" is a question about notes.
+- **Both views render the same `.node-row[data-path]` row** (`makeRow()`), which is what makes the
+  recency list a *view* rather than a second widget: the git decorations, the drag & drop, the context
+  menu, the active-file highlight and every `querySelector` by path elsewhere in the app all key off
+  that row and work unchanged in either. What the flat row adds is the two things it has to say for
+  itself — the folder the file sits in (there is no indentation to say it) and how long ago it changed.
+  The folder span is the element that *grows*, always present even when empty, which is what keeps the
+  time (and the git badge after it) pinned to the right edge.
+- **A save re-sorts the list, in recent mode only.** Nothing else rebuilds the tree for a save — and in
+  tree mode nothing needs to, since a save moves nothing — but the recency list is ordered by exactly
+  what a save changes, so `scheduleRecentRefresh()` hangs off `saveCurrent()` beside
+  `scheduleGitRefresh()`, debounced for the same reason. It is also why the rebuild restores the
+  sidebar's scroll and the active row: in this mode it happens while the user is typing.
 
 ### View modes / WYSIWYG editor
 
@@ -307,7 +352,7 @@ matches it, by canonicalised HTML, against the blocks now in the pane (`lcsOps` 
 same LCS core the diff view uses). A block that still renders to what the pane holds is emitted as **its
 original bytes**; only genuinely edited or new blocks go through turndown.
 
-Four things make that safe to run over a whole note:
+Five things make that safe to run over a whole note:
 
 - **Every byte of the source is in exactly one block, and it's asserted.** Blocks come from
   `marked.lexer`, whose tokens carry `raw` — so `prefix` plus every `raw` must equal the body, or the
@@ -318,14 +363,21 @@ Four things make that safe to run over a whole note:
   pending separation, so deleting a block doesn't leave the separators from both its sides behind.
   Definitions are also in scope when each block is rendered, which is what keeps `[text][ref]` matching
   instead of being rewritten inline.
+- **A new block is only separated where it has to be.** An edited block is emitted as an addition, so
+  where the source had no blank line before it (a list right under its heading) the fold used to insert
+  one — a change to a line nobody edited. `stillSeparate()` asks marked instead: the blank line goes in
+  only if the previous block would otherwise swallow the new one as a lazy continuation. No marked, a
+  lexer error or a `prev` that isn't one block all answer "not separate", which keeps the blank line.
 - **Nothing inline is skipped.** `paneBlocks()` groups stray top-level text and inline elements — what a
   contenteditable can leave behind — into one paragraph. A skipped node is an edit thrown away.
 - **Every uncertainty falls back to turning the whole pane down**: no marked, an unparseable buffer, an
   LCS table over `FOLD_MAX_CELLS`, a pane that folded to nothing. That is the old behaviour — reformatted
   but complete. The fallback may never be "drop the edit".
 
-**A block that *does* go through turndown is written the way this app writes Markdown.** Three narrowings,
-because "only the edited block is reformatted" is worth little if that block comes back mangled:
+**A block that *does* go through turndown is written the way this app writes Markdown.** Four narrowings,
+because "only the edited block is reformatted" is worth little if that block comes back mangled — and a
+block can be a whole list or a whole table, so what turndown does to the lines *around* the edit is
+exactly as visible as what it does to the edited one:
 
 - **`narrowEscape` replaces turndown's escape table.** Stock turndown escapes every `*`, `_`, `[` and `]`
   in a text node unconditionally, so it answers with `5 \* 3`, `snake\_case`, `\[\[WikiLink\]\]` — none of
@@ -336,6 +388,13 @@ because "only the edited block is reformatted" is worth little if that block com
   the opening bracket has one. The line-anchored rules are turndown's own.
 - **A bare URL stays bare.** It is a link only because marked speaks GFM; turndown answered `[url](url)`,
   growing a link out of text nobody wrote as one. The `bareLink` rule re-emits it as itself.
+- **A list item opens with one space after its marker.** Stock turndown writes `-   item` (marker plus
+  *three* spaces, `1.  ` for ordered), which nothing writes by hand — so editing one bullet rewrote the
+  marker of every bullet in the list, since a whole list is one block. The `listItem` rule is turndown's
+  own with the prefix narrowed to `- ` / `1. `, the continuation indent following the marker's width (so a
+  nested list or a wrapped paragraph stays attached to its item), and blank lines left un-indented rather
+  than padded out with trailing spaces. What it can't recover is *which* marker the source used: an edited
+  `*` list still comes back as `-`.
 - **Tables are re-padded through `formatTable`**, the Raw pane's own formatter — turndown emits
   `| a | b |` with no padding, so without it a one-cell edit rewrote every line of the table. This is why
   the pipe syntax (`splitRow`, `isDelimiterRow`, `parseTable`, `formatTable`) lives in `markdown.js` and
@@ -674,18 +733,31 @@ discarding its parent folder's changes.
 
 The same change is offered two ways:
 
-- **Visual** — side-by-side, HEAD left / working tree right. Built from `lineOps()` (the LCS
+- **Visual** — side-by-side, HEAD left / working tree right. Built from `diffOps()` (the LCS
   core `lineDiff` already used for smart insert, factored out as `lcsOps` so it works on lines
   *and* words), then `pairRows()` zips each changed block's deletions against its additions so a
   rewritten line sits opposite the line it replaced, then `condenseRows()` collapses distant
   context. `wordSegments()` runs the same LCS over words to pick out what actually changed
-  inside a paired line. The LCS table is O(n×m), so both have explicit size caps
-  (`DIFF_MAX_CELLS` / `WORD_DIFF_MAX_CELLS`) past which the view degrades — to Raw for a whole
-  file, to plain line highlighting for one long line — rather than freezing the renderer.
+  inside a paired line — an O(n×m) table in the two versions of *one line*, so it keeps a size
+  cap (`WORD_DIFF_MAX_CELLS`) past which the row renders as a plain whole-line change.
   Lines come from `splitLines()`, not a bare `split('\n')`: a trailing newline *terminates* the
   last line rather than starting an empty one, and empty text is no lines at all. Without both,
   every file grows a phantom blank line and a deleted file shows one empty line opposite its
   former contents.
+- **The line diff is `diffOps`, not `lcsOps`, and the difference is the whole reason the view
+  no longer refuses a large file.** A plain LCS table is O(n×m) in the *file*, so a ceiling on it
+  (the old `DIFF_MAX_CELLS`) meant "This file is too large to diff side by side" for any note past
+  ~1200 lines — a refusal about the file's size when the change in it was one paragraph. `diffOps`
+  in `renderer/lcs.js` cuts the file into regions the exact table can afford instead: the common
+  prefix and suffix are matched off first (which alone answers the ordinary case, exactly), a
+  region still too big is split on the lines appearing exactly **once on each side** — patience
+  diff's anchors, which can only correspond to their twin — and a region with no anchor at all is
+  halved by proportion. Anchoring is deliberately *second*: committing to a fixed point can match
+  a line or two fewer than the optimal LCS, so anything the table can still afford is diffed
+  exactly, as it always was. **Nothing is refused for being large.** What is left is a rendering
+  ceiling, `MAX_DIFF_ROWS` in `diff.js` — a cap on how much *changed*, since unchanged runs are
+  already one row — and it cuts the rows off with a count of what it left rather than dropping the
+  view.
 - **Raw** — git's own unified patch, coloured by line kind. An untracked file is invisible to
   `git diff`, so main falls back to `git diff --no-index -- /dev/null <file>`.
 

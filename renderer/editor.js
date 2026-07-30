@@ -6,14 +6,18 @@ import { currentFileEl, editorEl, wysiwygEl } from './dom.js';
 import { scheduleFindRefresh } from './find.js';
 import { bulletInputRule } from './format.js';
 import { scheduleGitRefresh } from './git.js';
-import { restorePosition } from './positions.js';
+import { restorePosition, syncAnchor } from './positions.js';
 import { AUTOSAVE_MS, state } from './state.js';
+import { scheduleRecentRefresh } from './tree.js';
 import { relativePath, setStatus } from './util.js';
 import { applyView, isImage, isMarkdown, showImageView, syncWysiwygToEditor } from './views.js';
 
 /** @type {ReturnType<typeof setTimeout> | null} */
 let saveTimer = null; // pending debounced autosave
 export async function openFile(filePath, rowEl) {
+  // The file on screen is about to lose its buffer (and with it the lines its
+  // position is expressed in), so settle that position while it still stands.
+  syncAnchor();
   // Autosave means there's nothing to discard — just flush the current file first.
   await flushSave();
 
@@ -67,8 +71,10 @@ async function saveCurrent() {
   if (res.ok) {
     if (state.currentFile === target) state.dirty = false;
     setStatus('Saved');
-    // The tree isn't rebuilt on save, but the file's git status just changed.
+    // The tree isn't rebuilt on save, but the file's git status just changed —
+    // and so has its place in the sidebar's recency list, if that is what's up.
     scheduleGitRefresh();
+    scheduleRecentRefresh();
   } else {
     setStatus('Error: ' + res.error, true);
   }

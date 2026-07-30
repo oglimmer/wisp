@@ -8,7 +8,7 @@ import { flushSave } from './editor.js';
 import { refreshFind } from './find.js';
 import { gitState } from './git.js';
 import { foldToMarkdown, frontmatterNode, safeMarkdownHtml, splitFrontmatter } from './markdown.js';
-import { restorePosition } from './positions.js';
+import { restorePosition, syncAnchor } from './positions.js';
 import { STORED_VIEW_MODES, VIEW_MODES, state } from './state.js';
 
 export function isMarkdown(filePath) {
@@ -187,6 +187,10 @@ export function setViewMode(mode) {
   // Leaving the diff of a deleted file: there is no file to fall back to, so drop
   // the diff-only state and the editor goes empty rather than showing a ghost.
   if (mode !== 'diff' && state.diffOnlyFile) closeDiffOnly();
+  // Read the place the reader is at off the pane that is about to be swapped out,
+  // while it is still on screen and measurable — that is what the next pane is put
+  // back at. After the fold, so the lines it is expressed in are the buffer's.
+  syncAnchor();
   state.viewMode = mode;
   // Diff is deliberately not remembered across sessions (see VIEW_MODES).
   if (STORED_VIEW_MODES.includes(state.viewMode)) localStorage.setItem('rawNotes.viewMode', state.viewMode);
@@ -194,13 +198,20 @@ export function setViewMode(mode) {
   if (state.viewMode === 'diff') flushSave();
   applyView();
   if (!state.currentFile) return;
-  if (state.viewMode === 'raw') editorEl.focus();
-  else if (state.viewMode === 'wysiwyg') wysiwygEl.focus();
+  // Only the two editing panes take the keyboard; Preview and Diff are read-only.
+  const focusEl = state.viewMode === 'raw' ? editorEl : state.viewMode === 'wysiwyg' ? wysiwygEl : null;
+  if (!focusEl) return;
+  focusEl.focus();
+  // Then the position once more: focusing a pane scrolls its caret into view, which
+  // would otherwise undo the restore applyView just did (the same reason openFile
+  // restores last).
+  restorePosition();
 }
 
 // Switch between the side-by-side and unified-patch renderings of the same diff.
 export function setDiffMode(mode) {
   if (state.diffMode === mode) return;
+  syncAnchor(); // the rendering about to be replaced is the one that can be read
   state.diffMode = mode;
   localStorage.setItem('rawNotes.diffMode', mode);
   applyView();

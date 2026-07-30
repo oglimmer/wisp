@@ -4,8 +4,9 @@ import { api } from './api.js';
 import { currentFileEl, diffViewEl, editorEl, treeEl } from './dom.js';
 import { cancelPendingSave, flushSave, openFile } from './editor.js';
 import { refreshFind } from './find.js';
-import { DIFF_MAX_CELLS, GIT_LETTER, WORD_DIFF_MAX_CELLS, gitFileStatus, gitState } from './git.js';
-import { lcsOps } from './lcs.js';
+import { GIT_LETTER, WORD_DIFF_MAX_CELLS, gitFileStatus, gitState } from './git.js';
+import { diffOps, lcsOps } from './lcs.js';
+import { restorePosition } from './positions.js';
 import { state } from './state.js';
 import { showContextMenu } from './tree.js';
 import { cssEscape, relativePath, setStatus } from './util.js';
@@ -82,6 +83,10 @@ export async function renderDiffPane() {
     return;
   }
   diffViewEl.replaceChildren(state.diffMode === 'raw' ? renderRawDiff(res) : renderVisualDiff(res));
+  // The rows only exist now, so this is the first moment the pane can be put on the
+  // line the reader was on — before refreshFind, which scrolls to a match when the
+  // find bar is open and should win.
+  restorePosition();
   // The diff is a real pane, so ⌘F searches it like any other.
   refreshFind();
 }
@@ -136,6 +141,13 @@ function renderRawDiff(res) {
   return pre;
 }
 
+// A changed line is a row, and unchanged runs are already collapsed to one — so this is
+// a ceiling on how much *changed*, not on how big the file is (which is what the old
+// LCS-table ceiling amounted to, and why a note with one edited paragraph could be
+// refused). Past it the rows are cut off rather than the view: they are in file order,
+// so what is kept is the start of the change, and the count of what isn't is said.
+const MAX_DIFF_ROWS = 20000;
+
 // Side-by-side: HEAD on the left, the working tree on the right, with the words that
 // actually changed picked out inside a modified line.
 function renderVisualDiff(res) {
@@ -146,9 +158,6 @@ function renderVisualDiff(res) {
 
   const headLines = splitLines(head);
   const workLines = splitLines(work);
-  if ((headLines.length + 1) * (workLines.length + 1) > DIFF_MAX_CELLS) {
-    return diffMessage('This file is too large to diff side by side — use the Raw view.');
-  }
 
   const wrap = document.createElement('div');
   wrap.className = 'diff-visual';
@@ -164,10 +173,17 @@ function renderVisualDiff(res) {
 
   const grid = document.createElement('div');
   grid.className = 'diff-grid';
-  for (const row of condenseRows(pairRows(lcsOps(headLines, workLines)))) {
-    grid.appendChild(diffRowEl(row));
-  }
+  // diffOps, not lcsOps: this runs over whole files, and a table over one of those is
+  // what used to make the view refuse anything past a few thousand lines.
+  const rows = condenseRows(pairRows(diffOps(headLines, workLines)));
+  for (const row of rows.slice(0, MAX_DIFF_ROWS)) grid.appendChild(diffRowEl(row));
   wrap.appendChild(grid);
+  if (rows.length > MAX_DIFF_ROWS) {
+    const more = rows.length - MAX_DIFF_ROWS;
+    wrap.appendChild(
+      diffMessage(`⋯ ${more} further row${more === 1 ? '' : 's'} not shown — the Raw view has the whole patch.`)
+    );
+  }
   return wrap;
 }
 
@@ -251,6 +267,10 @@ function diffRowEl(row) {
     el.textContent = `⋯ ${row.count} unchanged line${row.count === 1 ? '' : 's'}`;
     return el;
   }
+
+  // The working-tree line this row shows, which is what lets the view be put back
+  // on the line the reader was on in another pane (see renderer/positions.js).
+  if (row.rn !== null && row.rn !== undefined) el.dataset.line = String(row.rn);
 
   // Only a replaced line has two versions to compare word by word.
   const words = row.type === 'mod' ? wordSegments(row.left, row.right) : null;

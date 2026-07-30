@@ -129,6 +129,17 @@ const IMAGE_MIME = {
 // rather than having Claude read e.g. an .svg as source text and describe markup.
 const ANALYZABLE_IMAGE = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
+// Last-modified time in epoch ms, or 0 for anything that can't be stat'd (a
+// symlink to nowhere, an entry deleted between the readdir and here). The
+// recency list sorts on this, and 0 sorts to the bottom rather than the top.
+async function mtimeOf(filePath) {
+  try {
+    return (await fsp.stat(filePath)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 // Recursively build a folder/file tree rooted at dirPath.
 async function buildTree(dirPath) {
   let entries;
@@ -150,7 +161,11 @@ async function buildTree(dirPath) {
         children: await buildTree(full),
       });
     } else if (entry.isFile()) {
-      nodes.push({ name: entry.name, path: full, type: 'file' });
+      // `mtime` is what the sidebar's recency list sorts by. It is read here,
+      // during the walk, rather than in a second pass: the tree is rebuilt whole
+      // on every change anyway, so a stat per file is the cheapest place to get it
+      // and both views then come out of one call.
+      nodes.push({ name: entry.name, path: full, type: 'file', mtime: await mtimeOf(full) });
     }
   }
 

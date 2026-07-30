@@ -42,6 +42,21 @@
           </div>
         </div>
 
+        <!-- Two ways to see the same files: the folder tree, or every file flat
+             and most-recently-changed first -->
+        <div id="tree-mode-toggle" class="view-toggle tree-mode-toggle">
+          <button id="tree-mode-tree-btn" class="view-btn active" title="Folders and files">
+            Tree
+          </button>
+          <button
+            id="tree-mode-recent-btn"
+            class="view-btn"
+            title="Every file, most recently changed first"
+          >
+            Recent
+          </button>
+        </div>
+
         <div id="tree" class="tree"></div>
 
         <!-- Drag handle: resize the reminder list below -->

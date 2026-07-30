@@ -26,6 +26,8 @@ const img = (id) => /** @type {any} */ (el(id));
 export const welcomeEl = el('welcome');
 export const workspaceEl = el('workspace');
 export const treeEl = el('tree');
+export const treeModeTreeBtn = btn('tree-mode-tree-btn');
+export const treeModeRecentBtn = btn('tree-mode-recent-btn');
 export const editorEl = textarea('editor');
 export const currentFileEl = el('current-file');
 export const statusEl = el('status');

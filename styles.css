@@ -226,6 +226,40 @@ button:hover {
   margin-left: 12px;
 }
 
+/* ---- Recency list ---- */
+/* Which of the two views the sidebar is showing. The same segmented control as the
+   editor's view toggle, spanning the sidebar's width. */
+.tree-mode-toggle {
+  margin: 6px 8px 0;
+}
+
+.tree-mode-toggle .view-btn {
+  flex: 1;
+  padding: 3px 0;
+}
+
+/* A flat list has no indentation to say where a file lives, so the row spells the
+   containing folder out beside the name, and how long ago it changed at the right.
+   The folder is the element that grows: it takes the row's free space, which is
+   what pins the time (and the git badge after it) to the right edge. */
+.node-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.node-time {
+  flex-shrink: 0;
+  padding-left: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- Git ---- */
 /* One palette for every place a status is shown — the tree and the commit dialog's
    file list both read from the same data-git values. */
@@ -1203,10 +1237,24 @@ button:hover {
   color: var(--text-dim);
 }
 
-/* Typography shared by the textarea and its highlight mirror. Both must lay text
-   out identically — keep these in one rule so they can't drift apart. */
+/* Off-screen copy of the textarea's text, laid out to measure where a source line
+   sits — the textarea soft-wraps, so that can't be derived from a line height (see
+   renderer/positions.js). Built and removed within one call, so it never paints;
+   absolute rather than hidden, so it has no effect on the layout around it. */
+.text-metrics {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Typography shared by the textarea, its highlight mirror and the line-metrics
+   copy. All three must lay text out identically — keep these in one rule so they
+   can't drift apart. */
 .editor,
-.find-highlights {
+.find-highlights,
+.text-metrics {
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.6;

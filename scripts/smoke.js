@@ -104,8 +104,10 @@ function skip(name, why) {
 
 // A note per thing worth checking: inline markup and a table for the renderers,
 // a padded table for the fold (turndown emits `| a | b |` unpadded, so a rewrite
-// is visible byte-for-byte), frontmatter because marked reads it as a heading,
-// and a nested folder so the tree has something to expand.
+// is visible byte-for-byte), a bullet list right under a heading (turndown writes
+// `-   item` and a new block after a heading grew a blank line, so an edit to one
+// item was visible on every other line of the list), frontmatter because marked
+// reads it as a heading, and a nested folder so the tree has something to expand.
 const HELLO = `# Hello
 
 A **linux** smoke test with a [link](https://example.com) and some snake_case text.
@@ -113,6 +115,11 @@ A **linux** smoke test with a [link](https://example.com) and some snake_case te
 | left  | right |
 | ----- | ----- |
 | one   | two   |
+
+## List
+- alpha
+- beta
+- gamma
 `;
 
 const FRONTMATTER = `---
@@ -123,13 +130,52 @@ tags: [smoke, linux]
 Body text under the frontmatter.
 `;
 
+// Longer than any pane, so a scroll offset means something, and numbered so a block
+// can be identified from either side: paragraph N is the only text saying so, in the
+// source and in each rendering of it. Paragraph N starts on line 2N.
+const PARAGRAPHS = 40;
+const LONG =
+  '# Long note\n\n'
+  + Array.from(
+    { length: PARAGRAPHS },
+    (_, i) =>
+      `Paragraph ${i + 1} of the long note, with enough words in it to wrap in the raw pane and take a line of its own in the rendered ones.`,
+  ).join('\n\n')
+  + '\n';
+
 function writeVault(vault) {
   fs.rmSync(vault, { recursive: true, force: true });
   fs.mkdirSync(path.join(vault, 'nested'), { recursive: true });
   fs.writeFileSync(path.join(vault, 'hello.md'), HELLO);
   fs.writeFileSync(path.join(vault, 'meta.md'), FRONTMATTER);
+  fs.writeFileSync(path.join(vault, 'long.md'), LONG);
   fs.writeFileSync(path.join(vault, 'nested', 'deep.md'), '# Deep\n\nInside a folder.\n');
 }
+
+// Where paragraph N sits in the source: the offset of its first character, and the
+// line it is on. Both are read out of the fixture rather than assumed, so the checks
+// stay true if the note above is edited.
+function paragraphAt(n) {
+  const offset = LONG.indexOf(`Paragraph ${n} of`);
+  return { offset, line: LONG.slice(0, offset).split('\n').length - 1 };
+}
+
+// The pane child at the top of the viewport, and the block the caret is in — the two
+// questions every one of the position checks below asks of a rendered pane.
+const PANE_PROBE = (id) => {
+  const pane = document.getElementById(id);
+  const kids = [...pane.children];
+  const edge = pane.getBoundingClientRect().top;
+  const first = kids.find((el) => el.getBoundingClientRect().bottom > edge + 1);
+  const sel = window.getSelection();
+  let node = sel && sel.focusNode;
+  while (node && node.parentNode !== pane) node = node.parentNode;
+  return {
+    top: first ? first.textContent.slice(0, 24) : null,
+    caret: node ? node.textContent.slice(0, 24) : null,
+    offset: sel ? sel.focusOffset : null,
+  };
+};
 
 const read = (vault, rel) => fs.readFileSync(path.join(vault, rel), 'utf8');
 
@@ -283,6 +329,27 @@ async function main() {
   check('snake_case is not escaped', folded.includes('snake_case') && !folded.includes('snake\\_case'));
   checkEqual('the heading is untouched', folded.split('\n')[0], '# Hello');
 
+  // --- the fold: editing one list item leaves the rest of the list alone ----
+  // A whole list is one block, so an edit inside it *is* re-emitted by turndown —
+  // which writes `-   item` and, as a new block after a heading, used to gain a
+  // blank line. Both showed up as a rewrite of every line of a list nobody edited.
+  await win.evaluate(() => {
+    const li = document.querySelectorAll('#wysiwyg li')[1];
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(li);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await win.keyboard.type(' two');
+  const list = await waitForDisk(vault, 'hello.md', (c) => c.includes('beta two'));
+  checkEqual(
+    'only the edited list item is rewritten',
+    list.slice(list.indexOf('## List')),
+    '## List\n- alpha\n- beta two\n- gamma\n',
+  );
+
   // --- Raw: input → autosave → write-file ---------------------------------
   await setView(win, 'view-raw-btn');
   await win.click('#editor');
@@ -301,10 +368,134 @@ async function main() {
   });
   check('frontmatter is shown verbatim, not as a heading', fm.pre && fm.h2 === null, JSON.stringify(fm));
 
+  // --- positions: the same place in the file in every view ------------------
+  // The panes lay the same note out completely differently, so a view switch has to
+  // *map* the place the reader is at rather than reuse an offset. Two things only a
+  // running window can show: that a round trip comes back to the exact pixel and
+  // caret it left, and that a one-way switch lands on the block the reader was on.
+  await setView(win, 'view-raw-btn');
+  await openNote(win, vault, 'long.md');
+
+  const twenty = paragraphAt(20);
+  const rawBefore = await win.evaluate((at) => {
+    const e = /** @type {HTMLTextAreaElement} */ (document.getElementById('editor'));
+    e.focus();
+    e.setSelectionRange(at, at); // scrolls the caret into view, so scroll after it
+    e.scrollTop = Math.round((e.scrollHeight - e.clientHeight) * 0.4);
+    return { top: e.scrollTop, start: e.selectionStart };
+  }, twenty.offset);
+  await win.waitForTimeout(200);
+  check('the raw pane has something to scroll', rawBefore.top > 0, `scrollTop is ${rawBefore.top}`);
+
+  await setView(win, 'view-md-btn');
+  await setView(win, 'view-raw-btn');
+  const rawAfter = await win.evaluate(() => {
+    const e = /** @type {HTMLTextAreaElement} */ (document.getElementById('editor'));
+    return { top: e.scrollTop, start: e.selectionStart };
+  });
+  check(
+    'Raw → Preview → Raw comes back to the same scroll offset',
+    Math.abs(rawAfter.top - rawBefore.top) <= 2,
+    `was ${rawBefore.top}, came back ${rawAfter.top}`,
+  );
+  checkEqual('Raw → Preview → Raw keeps the caret', rawAfter.start, rawBefore.start);
+
+  // Raw → Editor: the caret is carried by line, so it must land in the block that
+  // line renders to rather than at the top of the pane.
+  await setView(win, 'view-wys-btn');
+  const intoEditor = await win.evaluate(PANE_PROBE, 'wysiwyg');
+  check(
+    'Raw → Editor puts the caret in the same paragraph',
+    (intoEditor.caret || '').startsWith('Paragraph 20'),
+    `the caret landed in ${JSON.stringify(intoEditor.caret)}`,
+  );
+
+  // Editor → Raw, the same thing backwards: a caret in the pane's own DOM becomes a
+  // line and column in the source.
+  const thirty = paragraphAt(30);
+  await win.evaluate(() => {
+    const pane = document.getElementById('wysiwyg');
+    const p = [...pane.children].find((el) => el.textContent.startsWith('Paragraph 30'));
+    const range = document.createRange();
+    range.setStart(p.firstChild, 5);
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await win.waitForTimeout(200);
+  await setView(win, 'view-raw-btn');
+  const backToRaw = await win.evaluate(() => {
+    const e = /** @type {HTMLTextAreaElement} */ (document.getElementById('editor'));
+    const at = e.selectionStart;
+    return { at, line: e.value.slice(0, at).split('\n').length - 1 };
+  });
+  checkEqual('Editor → Raw puts the caret on the same line', backToRaw.line, thirty.line);
+  check(
+    'Editor → Raw puts the caret at the same column',
+    Math.abs(backToRaw.at - (thirty.offset + 5)) <= 2,
+    `expected offset ${thirty.offset + 5}, got ${backToRaw.at}`,
+  );
+
+  // Preview → Editor: two rendered panes, so the block at the top of one has to be
+  // the block at the top of the other.
+  await setView(win, 'view-md-btn');
+  await win.evaluate(() => {
+    const pane = document.getElementById('rendered');
+    const p = [...pane.children].find((el) => el.textContent.startsWith('Paragraph 25'));
+    pane.scrollTop += p.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+  });
+  await win.waitForTimeout(200);
+  await setView(win, 'view-wys-btn');
+  const intoWys = await win.evaluate(PANE_PROBE, 'wysiwyg');
+  check(
+    'Preview → Editor keeps the same block at the top',
+    (intoWys.top || '').startsWith('Paragraph 25'),
+    `the pane opens on ${JSON.stringify(intoWys.top)}`,
+  );
+  await win.screenshot({ path: path.join(out, '5-position.png') });
+
   // --- a nested folder expands ---------------------------------------------
   await setView(win, 'view-raw-btn');
   await openNote(win, vault, 'nested/deep.md');
   checkEqual('a note inside a folder opens', await win.inputValue('#editor'), '# Deep\n\nInside a folder.\n');
+
+  // --- the recency list: the same files, flat and newest first --------------
+  // The sidebar's second view. hello.md is the only note this run has edited, so it
+  // must be at the top whatever order the fixture was written in — which is also
+  // what shows the list is ordered by the mtime read on each refresh rather than by
+  // anything the tree already had. The other three checks are what the flat list
+  // has to add for itself: no folders, the folder a file sits in, and how long ago.
+  await win.click('#tree-mode-recent-btn');
+  await win.waitForTimeout(300);
+  const recent = await win.evaluate(() => {
+    const rows = [...document.querySelectorAll('#tree .node-row')];
+    return {
+      names: rows.map((r) => r.querySelector('.node-label')?.textContent ?? null),
+      arrows: rows.filter((r) => r.querySelector('.node-arrow')).length,
+      dirs: rows.map((r) => r.querySelector('.node-dir')?.textContent ?? null),
+      when: rows[0]?.querySelector('.node-time')?.textContent ?? null,
+      active: document.querySelector('#tree .node-row.active')?.dataset.path ?? null,
+    };
+  });
+  checkEqual('recency list holds every file, flat', recent.names.length, 4);
+  checkEqual('recency list is newest first', recent.names[0], 'hello.md');
+  check(
+    'recency list holds no folder rows',
+    recent.arrows === 0 && !recent.names.includes('nested'),
+    JSON.stringify(recent.names),
+  );
+  check('a nested file says which folder it is in', recent.dirs.includes('nested/'), JSON.stringify(recent.dirs));
+  check('the newest row says how long ago it changed', !!recent.when, 'no relative time', recent.when);
+  checkEqual(
+    'the open file stays highlighted across the rebuild',
+    recent.active,
+    path.join(vault, 'nested', 'deep.md'),
+  );
+  await win.screenshot({ path: path.join(out, '4-recent.png') });
+  // Back to the tree: the mode is persisted, and a smoke run should not decide
+  // which view an interactive one opens in.
+  await win.click('#tree-mode-tree-btn');
 
   // --- the terminal pane: node-pty under Electron --------------------------
   // The one native module. Skipped rather than failed when the CLI it spawns is
@@ -340,7 +531,7 @@ async function main() {
       header.running && header.text.startsWith('claude ·'),
       JSON.stringify(header),
     );
-    await win.screenshot({ path: path.join(out, '4-terminal.png') });
+    await win.screenshot({ path: path.join(out, '5-terminal.png') });
   }
 
   // --- nothing threw along the way ----------------------------------------

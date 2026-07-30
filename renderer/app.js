@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { currentFileEl, editorEl, vaultNameEl, welcomeEl, workspaceEl } from './dom.js';
 import { resetGitState } from './git.js';
 import { restoreRowDividers } from './layout.js';
-import { loadPositions } from './positions.js';
+import { loadPositions, syncAnchor } from './positions.js';
 import { loadReminders } from './reminders.js';
 import { resetSmartPanel } from './smart.js';
 import { state } from './state.js';
@@ -28,6 +28,9 @@ function showWelcome() {
 }
 
 async function openFolder(folder) {
+  // Whatever is open belongs to the vault being left: settle its reading position
+  // while its pane (and the buffer the position is expressed in) is still there.
+  syncAnchor();
   state.baseFolder = folder;
   state.currentFile = null;
   // Before anything can open a file: caret/scroll positions are per vault.

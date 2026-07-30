@@ -72,6 +72,68 @@ function isFrontmatterNode(node) {
     && /** @type {Element} */ (node).classList.contains(FRONTMATTER_CLASS);
 }
 
+// ---- Which lines a rendered block came from ----
+// The panes lay the same file out completely differently, so putting the reader
+// back on the line they were on means knowing which source lines each rendered
+// block came from. That is a lexer question rather than a rendering one: marked's
+// tokens carry their `raw`, so counting newlines while walking them gives every
+// block a line range without rendering anything (which is what keeps a view switch
+// off the marked + DOMPurify pass per block that the fold pays for).
+//
+// Only the blocks a pane can *show* get a range, in the pane's own order: blank
+// lines, a link definition and a comment DOMPurify strips are not children of the
+// pane at all, and counting them would put every later block one out of step. Their
+// lines are absorbed into the range of the block before them, so the ranges still
+// cover the whole file.
+
+const newlines = (text) => (text ? text.split('\n').length - 1 : 0);
+
+/**
+ * The source lines behind each top-level child of a rendered pane, in order.
+ * @param {string} text the whole buffer, frontmatter included
+ * @returns {{start: number, end: number}[] | null} half-open, 0-based line ranges;
+ *   null when marked can't be asked or there is nothing to show
+ */
+export function blockLineRanges(text) {
+  if (!window.marked || !window.marked.lexer) return null;
+  const { fm, body } = splitFrontmatter(text || '');
+  let tokens;
+  try {
+    tokens = window.marked.lexer(body);
+  } catch {
+    return null; // an unparseable buffer has no blocks to line up with
+  }
+  /** @type {{start: number, end: number}[]} */
+  const ranges = [];
+  // Frontmatter is a block of its own in the pane (shown verbatim), and the body
+  // starts on the line after it.
+  let at = newlines(fm);
+  if (fm) ranges.push({ start: 0, end: at });
+  for (const t of tokens) {
+    const raw = t.raw || '';
+    if (!raw) continue;
+    if (rendersVisibly(t)) ranges.push({ start: at, end: at });
+    at += newlines(raw);
+  }
+  if (!ranges.length) return null;
+  // Each range runs to the start of the next — that is what absorbs the blank lines
+  // and hidden blocks between them — and the last one to the end of the file.
+  const total = Math.max(newlines(text) + 1, at + 1);
+  for (let i = 0; i < ranges.length; i++) {
+    const next = i + 1 < ranges.length ? ranges[i + 1].start : total;
+    ranges[i].end = Math.max(next, ranges[i].start + 1);
+  }
+  return ranges;
+}
+
+// Whether a token reaches the pane as a child of its own.
+function rendersVisibly(t) {
+  if (t.type === 'space' || t.type === 'def') return false;
+  const raw = (t.raw || '').trim();
+  if (!raw) return false;
+  return !/^<!--[\s\S]*-->$/.test(raw); // DOMPurify strips comments
+}
+
 // ---- HTML -> Markdown ----
 
 /** @type {import('turndown') | null} */
@@ -130,6 +192,35 @@ function getTurndown() {
       && !node.getAttribute('title')
       && node.getAttribute('href') === node.textContent,
     replacement: (content) => content,
+  });
+  // turndown writes a bullet as its marker plus *three* spaces (`-   item`, and
+  // `1.  ` for an ordered list), which nothing writes by hand — so editing one
+  // item of a list rewrote the marker of every item in it, since the whole list is
+  // one block. One space is what this app's own source uses, and what the note
+  // being edited almost certainly already had; the continuation indent follows the
+  // marker's width, which is what keeps a nested list or a wrapped paragraph
+  // attached to its item. Otherwise this is turndown's own rule.
+  td.addRule('listItem', {
+    filter: 'li',
+    replacement: (content, node, options) => {
+      const parent = node.parentNode;
+      let prefix = `${options.bulletListMarker} `;
+      if (parent && parent.nodeName === 'OL') {
+        const start = parent.getAttribute('start');
+        const index = Array.prototype.indexOf.call(parent.children, node);
+        prefix = `${start ? Number(start) + index : index + 1}. `;
+      }
+      // A paragraph inside the item ends with a newline, which has to survive the
+      // trim so the next line of the item is still separated from it.
+      const isParagraph = /\n$/.test(content);
+      const body = content.replace(/^\n+/, '').replace(/\n+$/, '') + (isParagraph ? '\n' : '');
+      // Only lines with something on them are indented — indenting a blank one
+      // (which is how a loose list, or a second paragraph in an item, is written)
+      // would leave the separator carrying trailing spaces.
+      return prefix
+        + body.replace(/\n(?=[^\n])/g, `\n${' '.repeat(prefix.length)}`)
+        + (node.nextSibling ? '\n' : '');
+    },
   });
   addGfmRules(td);
   turndown = td;
@@ -464,6 +555,7 @@ function reconcile(body, paneEl, td) {
   // are passed: whatever the source put between the blocks either side of a
   // deleted one is one separation, not two.
   let sep = '';
+  let last = ''; // the block emitted last, to test a new block's adjacency against
   const emit = (chunk, isAdd) => {
     if (!chunk) return;
     if (out) {
@@ -472,12 +564,16 @@ function reconcile(body, paneEl, td) {
       } else {
         // No separator in the source — either the blocks genuinely sat on adjacent
         // lines (a heading and its first paragraph), or one of them is new. A new
-        // block needs a blank line or it would be read as part of its neighbour.
+        // block needs a blank line wherever the block before it would otherwise
+        // swallow it as a lazy continuation — but not where the syntax already ends
+        // that block, or an edit beside a heading would insert a blank line into a
+        // note nobody touched there.
         if (!out.endsWith('\n')) out += '\n';
-        if (isAdd && !out.endsWith('\n\n')) out += '\n';
+        if (isAdd && !out.endsWith('\n\n') && !stillSeparate(last, chunk)) out += '\n';
       }
     }
     sep = '';
+    last = chunk;
     out += chunk;
   };
   // The hidden blocks before the next visible one. The pane never showed them, so
@@ -515,6 +611,27 @@ function reconcile(body, paneEl, td) {
   // drop the trailing newline.
   if (out.trim()) out = out.replace(/[ \t\r\n]*$/, endOf(body));
   return out;
+}
+
+/**
+ * Whether `next`, written on the line straight after `prev`, still opens a block
+ * of its own instead of being read as a continuation of `prev`. marked is asked
+ * rather than guessed at, since it is what reads the file back: the boundary holds
+ * if `prev` still lexes as the whole of the first token. Anything unclear — no
+ * marked, a `prev` that isn't one block, a lexer error — answers false, which
+ * keeps the blank line that has always been written there.
+ * @param {string} prev @param {string} next
+ */
+function stillSeparate(prev, next) {
+  if (!prev) return true;
+  if (!window.marked || !window.marked.lexer) return false;
+  const head = prev.replace(/[ \t\r\n]*$/, '') + '\n';
+  try {
+    const tokens = window.marked.lexer(head + next);
+    return tokens.length > 1 && tokens[0].raw === head;
+  } catch {
+    return false;
+  }
 }
 
 // The whitespace a body ends with — a new file (no body yet) gets the one
