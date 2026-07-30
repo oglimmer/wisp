@@ -23,10 +23,11 @@ clicks through it — see **Testing on Linux**. It is deliberately not part of `
 
 ## Packaging & release
 
-Two published targets, from one `build` field in `package.json`: **macOS arm64** — signed, notarized,
-and the only one the Homebrew cask serves — and **Linux x86_64** as an AppImage + tar.gz, unsigned
-because Gatekeeper has no Linux equivalent. `build/entitlements.mac.plist` (+ `.inherit.`) carry the
-hardened-runtime entitlements Electron needs (JIT, unsigned executable memory, library validation off).
+Two published platforms, from one `build` field in `package.json`: **macOS arm64** — signed, notarized,
+and the only one the Homebrew cask serves — and **Linux x86_64** as AppImage, tar.gz, deb and a
+single-file Flatpak bundle, unsigned because Gatekeeper has no Linux equivalent.
+`build/entitlements.mac.plist` (+ `.inherit.`) carry the hardened-runtime entitlements Electron needs
+(JIT, unsigned executable memory, library validation off).
 
 **The linux target is x86_64 and nothing else, deliberately.** `linux.target` pins the arch rather
 than leaving it to the host, because building for another one is a cross build and node-pty has to be
@@ -34,8 +35,8 @@ than leaving it to the host, because building for another one is a cross build a
 is the honest outcome but not a thing to hit on a release tag. It is also why a local
 `./oglimmer.sh linux build` overrides the arch to the host's — see **Testing on Linux**. `desktopName`
 (top level, read as package metadata) plus `linux.syncDesktopName` is what makes the `.desktop` entry
-`wisp.desktop` with a matching `StartupWMClass`, which is how a desktop environment associates the
-running window with its launcher.
+`com.oglimmer.wisp.desktop` with a matching `StartupWMClass`, which is how a desktop environment
+associates the running window with its launcher. The reverse-DNS name is also required by Flatpak.
 
 **App icon.** `build/` is `buildResources`, so the icon lives there. **`build/icon.icns` is the source
 of truth** — `mac.icon` points at it, and electron-builder copies a supplied `.icns` into the bundle
@@ -48,9 +49,10 @@ carries the rounded-squircle mask and a transparent margin, so nothing masks or 
 should come pre-masked the same way.
 
 `.github/workflows/release.yml` runs on `v*` tags, as **two jobs, linux first**. The `linux` job
-installs the system libraries (`./scripts/linux-sandbox.sh libs`), drops node-pty's foreign prebuilds,
-builds x86_64, and then **runs what it built** — `scripts/smoke.js --app dist` drives the packaged
-binary — before uploading it as a workflow artifact. The `build` job needs it, does the mac half
+installs the system libraries (`./scripts/linux-sandbox.sh libs`) and pinned Flatpak 25.08 runtimes,
+drops node-pty's foreign prebuilds, builds x86_64, and then **runs what it built** —
+`scripts/smoke.js --app dist` drives the packaged binary, then a second run installs and drives the
+Flatpak with host git and Claude stubs — before uploading it as a workflow artifact. The `build` job needs it, does the mac half
 (checks the tag matches `package.json`'s version, builds signed + notarized from repo secrets),
 downloads the linux artifact and publishes **everything in one `gh release create`**, then rewrites
 `version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the tap users install from.
@@ -67,7 +69,7 @@ uploads both platforms as CI artifacts, a tag publishes them as a prerelease. Bo
 so `brew install` only ever serves a signed, notarized build. The linux artifact is unaffected either
 way, and the prerelease notes say so.
 
-Three packaging-specific gotchas worth remembering:
+Four packaging-specific gotchas worth remembering:
 
 - **The renderer loads `marked`/`turndown`/DOMPurify/xterm by relative `node_modules/...` path** from
   `index.html`. That works inside `app.asar`, and electron-builder always bundles production
@@ -88,6 +90,12 @@ Three packaging-specific gotchas worth remembering:
   would make `spawn('claude', …)` fail with `ENOENT` even for users who have the CLI. `claudeEnv()` in
   `main.js` appends the usual install locations before spawning; extend that list rather than assuming
   the inherited environment.
+- **The Flatpak is self-distributed as a single-file bundle, not published to Flathub.** It uses the
+  Freedesktop Platform/SDK and Electron BaseApp pinned to 25.08. Wisp needs arbitrary vault access and
+  its defining git/Claude integrations, so it deliberately has `--filesystem=host` and permission to
+  call `org.freedesktop.Flatpak`; `hostCommand()` then runs only the fixed `git` and `claude` programs
+  through `flatpak-spawn --host`. Keep the installed-Flatpak smoke run when changing this boundary — a
+  bundle can launch perfectly while all three host-process paths are broken.
 
 ## Testing on Linux (the sandbox mirror)
 

@@ -32,6 +32,8 @@
 #   ./oglimmer.sh linux verify   package, then drive the packaged build
 #   ./oglimmer.sh linux build    package a linux artifact into the mirror's dist/
 #   ./oglimmer.sh linux libs     install the system libraries Electron needs
+#   ./oglimmer.sh linux flatpak-deps
+#                                install Flatpak's builder + pinned runtimes
 #   ./oglimmer.sh linux prebuilds [dir]
 #                                drop node-pty's darwin/win32 prebuilds, which a
 #                                linux artifact must not carry
@@ -161,6 +163,36 @@ ensure_system_libs() {
     die "install these first (needs root): ${pkgs[*]}"
   fi
   ok "system libraries installed"
+}
+
+# electron-builder produces a single-file bundle, but flatpak-builder still
+# needs the target runtime, SDK and Electron BaseApp installed while assembling
+# it. Pin all three together so a runtime update cannot make the build drift.
+ensure_flatpak_deps() {
+  local missing=()
+  command -v flatpak >/dev/null 2>&1 || missing+=(flatpak)
+  command -v flatpak-builder >/dev/null 2>&1 || missing+=(flatpak-builder)
+  command -v dbus-run-session >/dev/null 2>&1 || missing+=(dbus-daemon)
+  if [ ${#missing[@]} -gt 0 ]; then
+    command -v apt-get >/dev/null 2>&1 || die "install these first: ${missing[*]}"
+    say "installing Flatpak build tools: ${missing[*]}"
+    if [ "$(id -u)" = 0 ]; then
+      apt-get update -qq && apt-get install -y -qq "${missing[@]}"
+    elif sudo -n true 2>/dev/null; then
+      sudo apt-get update -qq && sudo apt-get install -y -qq "${missing[@]}"
+    else
+      die "install these first (needs root): ${missing[*]}"
+    fi
+  fi
+
+  flatpak remote-add --user --if-not-exists \
+    flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+  say "installing Flatpak 25.08 build runtimes"
+  flatpak install --user --noninteractive -y flathub \
+    org.freedesktop.Platform//25.08 \
+    org.freedesktop.Sdk//25.08 \
+    org.electronjs.Electron2.BaseApp//25.08
+  ok "Flatpak build tools and 25.08 runtimes are ready"
 }
 
 # --- foreign prebuilds ------------------------------------------------------
@@ -353,6 +385,7 @@ cmd_build() {
   require_linux
   ensure_deps
   local target="${1:-dir}" arch
+  if [ "$target" = flatpak ]; then ensure_flatpak_deps; fi
   arch=$(host_arch_flag)
   say "packaging for linux ($target, ${arch#--}) into $TREE/dist"
   if [ "$arch" != "--x64" ]; then
@@ -403,6 +436,7 @@ main() {
     sync) require_linux; sync_sources ;;
     deps) require_linux; ensure_deps ;;
     libs) require_linux; ensure_system_libs ;;
+    flatpak-deps) require_linux; ensure_flatpak_deps ;;
     # Takes a directory so CI can point it at its own checkout rather than a mirror.
     prebuilds) require_linux; drop_foreign_prebuilds "${1:-$TREE}" ;;
     run) cmd_run "$@" ;;
