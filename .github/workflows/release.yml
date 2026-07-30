@@ -88,7 +88,13 @@ jobs:
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: |
-          flatpak install --user --noninteractive -y --reinstall dist/*.flatpak
+          # Uninstall first rather than --reinstall: for a single-file bundle
+          # that flag does nothing, and installing over an existing app fails
+          # with "already installed". An ephemeral runner never hits it, but a
+          # re-run, a self-hosted runner and every local repeat of these same
+          # steps do — and the local repeat is the documented way to check this.
+          flatpak uninstall --user --noninteractive -y com.oglimmer.wisp || true
+          flatpak install --user --noninteractive -y dist/*.flatpak
           mkdir -p "$HOME/.local/bin"
           cat > "$HOME/.local/bin/claude" <<'EOF'
           #!/bin/sh
