@@ -99,11 +99,14 @@ electron_bin() { printf '%s\n' "$TREE/node_modules/electron/dist/electron"; }
 # Ubuntu 24.04 renamed the 64-bit-time_t libraries (libasound2 → libasound2t64,
 # libgtk-3-0 → libgtk-3-0t64) and the old names are not installable there, so a
 # hard-coded list works on Debian or on the CI runner but not both. Ask apt which
-# name has a candidate.
+# name has a candidate. LC_ALL=C because apt-cache translates its field labels —
+# on a German desktop the candidate line reads "Installationskandidat:", so
+# without it the t64 rename is never detected and the un-installable name is the
+# one reported to the user.
 apt_package() {
-  if apt-cache policy "$1" 2>/dev/null | grep -q '^  Candidate: [^(]'; then
+  if LC_ALL=C apt-cache policy "$1" 2>/dev/null | grep -q '^  Candidate: [^(]'; then
     printf '%s\n' "$1"
-  elif apt-cache policy "${1}t64" 2>/dev/null | grep -q '^  Candidate: [^(]'; then
+  elif LC_ALL=C apt-cache policy "${1}t64" 2>/dev/null | grep -q '^  Candidate: [^(]'; then
     printf '%s\n' "${1}t64"
   else
     printf '%s\n' "$1" # let apt report it rather than guessing further
@@ -139,8 +142,14 @@ ensure_system_libs() {
   else
     die "ldconfig not found — cannot tell which libraries are installed"
   fi
+  # A herestring rather than a pipe: `grep -q` exits at the first match and
+  # closes the pipe, `printf` then dies of SIGPIPE, and `set -o pipefail` reads
+  # that 141 as the pipeline's status — so a library that *is* installed gets
+  # counted as missing, racily, depending on whether printf had finished writing.
+  # Only visible where the libraries are already present (a desktop); on a CI
+  # runner they really are absent, so the wrong answer was the right one.
   for so in "${!libs[@]}"; do
-    printf '%s\n' "$cache" | grep -qF "$so" || missing+=("${libs[$so]}")
+    grep -qF "$so" <<<"$cache" || missing+=("${libs[$so]}")
   done
   # Two binaries rather than libraries: a file manager for shell.showItemInFolder(),
   # and the X server everything here runs under.
