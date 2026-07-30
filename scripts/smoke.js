@@ -621,6 +621,37 @@ async function main() {
       header.running && header.text.startsWith('claude ·'),
       JSON.stringify(header),
     );
+
+    // Resizing the window fits the pane, which is what reaches `term-resize`.
+    // What is asserted is that the session *survives* it, not that the TUI
+    // reflows: under Flatpak it does not, and cannot — node-pty's TIOCSWINSZ
+    // signals the foreground process group of the pty's session, and the
+    // program on the other end was started by flatpak-session-helper in the
+    // host's PID namespace, so it is not that group. Measured, with an
+    // in-sandbox control that does receive the signal. The size itself is read
+    // correctly (TIOCGWINSZ works on the forwarded fd), so a session opens at
+    // the right size and only later resizes go unnoticed. flatpak-spawn has no
+    // signal forwarding, and neither --share-pids nor --expose-pids applies to
+    // --host, so there is nothing to fix on this side.
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      const [width, height] = w.getSize();
+      w.setSize(width, Math.max(600, height - 160));
+    });
+    await win.waitForTimeout(1500);
+    const afterResize = await win.evaluate(() => {
+      const el = document.getElementById('terminal-status');
+      return {
+        running: el.classList.contains('running'),
+        drawn: (document.querySelector('.xterm-rows')?.innerText || '').trim().length,
+      };
+    });
+    check(
+      'the pty survives a resize',
+      afterResize.running && afterResize.drawn > 0,
+      JSON.stringify(afterResize),
+      `still live, ${afterResize.drawn} chars`,
+    );
     await win.screenshot({ path: path.join(out, '5-terminal.png') });
   }
 

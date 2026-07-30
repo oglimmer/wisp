@@ -94,8 +94,12 @@ Four packaging-specific gotchas worth remembering:
 - **The Flatpak is self-distributed as a single-file bundle, not published to Flathub.** It uses the
   Freedesktop Platform/SDK and Electron BaseApp pinned to 25.08. Wisp needs arbitrary vault access and
   its defining git/Claude integrations, so it deliberately has `--filesystem=host` and permission to
-  call `org.freedesktop.Flatpak`; `hostCommand()` then runs only the fixed `git` and `claude` programs
-  through `flatpak-spawn --host`. Keep the installed-Flatpak smoke run when changing this boundary — a
+  call `org.freedesktop.Flatpak`. **Together those are a full escape hatch: the app can read the whole
+  home directory and run any host program, so the Flatpak is a packaging format here, not a sandbox.**
+  `hostCommand()` running only the fixed `git` and `claude` programs is the same convention as git being
+  driven only through `spawn('git', …)` — an app-level rule, not a boundary the runtime enforces. It is
+  also why this is self-distributed: Flathub would not accept these permissions. Keep the
+  installed-Flatpak smoke run when changing this boundary — a
   bundle can launch perfectly while all three host-process paths are broken. **`PATH` is the one
   variable that cannot be forwarded across it**: inside the sandbox it describes the sandbox
   (`/app/bin:/usr/bin`), so passing it on *replaces* the host session's own — `git` still resolves from
@@ -165,6 +169,16 @@ and Preview → Editor must keep the same block at the top. The **diff** pane's 
 the smoke vault is deliberately not a repository — so it is worth driving by hand after touching
 `positions.js`: with a repo vault, Raw at the top opens the diff at the top, and scrolling the diff to a
 row then leaving for Preview lands on the paragraph that row's line belongs to.
+
+**The terminal's resize behaviour differs between the two Linux artifacts, and only the weaker half is
+asserted.** The smoke run checks that the pty survives a resize, because under Flatpak the TUI does not
+reflow and cannot: `term-resize`'s TIOCSWINSZ signals the foreground process group of the pty's session,
+and `flatpak-spawn --host` started `claude` in the host's PID namespace, so it is not that group.
+Measured, against an in-sandbox control that does receive the signal — flatpak-spawn has no signal
+forwarding and `--share-pids`/`--expose-pids` do not apply to `--host`. The size itself is read correctly
+through the forwarded fd, so a session opens at the right size; only later resizes go unnoticed. In the
+AppImage, tar.gz and deb builds `claude` is spawned directly and reflows normally, so this is a
+Flatpak-only caveat to state rather than a bug to chase.
 
 Playwright is deliberately **not** a dependency: its postinstall downloads browser engines that
 every `npm install` on a dev machine would pay for, and `_electron.launch()` uses the app's own

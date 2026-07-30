@@ -1081,6 +1081,15 @@ handle('term-input', async (data) => {
 
 // The pane was resized: tell the tty, so the TUI reflows instead of drawing to a
 // width that no longer exists.
+// Under Flatpak this resizes the pty but the TUI does not reflow, and cannot:
+// TIOCSWINSZ signals the foreground process group of the pty's session, and
+// `flatpak-spawn --host` started the program in the host's PID namespace, so it
+// is not that group. Measured against an in-sandbox control that does receive
+// the signal; flatpak-spawn has no signal forwarding, and --share-pids /
+// --expose-pids do not apply to --host. The *size* still reads correctly through
+// the forwarded fd, so a session opens at the right size and only later resizes
+// go unnoticed. The smoke run asserts the session survives a resize, not that it
+// reflows.
 handle('term-resize', async (cols, rows) => {
   if (!ptyProcess) return { ok: false, error: 'No session is running.' };
   ptyProcess.resize(ptyDimension(cols, 80), ptyDimension(rows, 24));
@@ -1860,6 +1869,13 @@ function cliPathExtras() {
     path.join(home, '.claude', 'local'),
     path.join(home, '.bun', 'bin'),
     path.join(home, '.npm-global', 'bin'),
+    // Version managers, which put the CLI behind a shim directory that a bare
+    // PATH never has: normal for a Node tool, and the case a hard-coded host
+    // PATH would miss even where hostSearchPath() cannot reach the host's own.
+    path.join(home, '.volta', 'bin'),
+    path.join(home, '.nix-profile', 'bin'),
+    path.join(home, '.local', 'share', 'mise', 'shims'),
+    path.join(home, '.asdf', 'shims'),
   ];
 }
 
