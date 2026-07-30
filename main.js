@@ -2,7 +2,7 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, protocol, shell, screen } = r
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 // Flatpak cannot see programs installed on the host. Keep the command itself
 // fixed in each caller, but cross the sandbox boundary when this build is
@@ -16,7 +16,8 @@ const { spawn } = require('child_process');
  */
 function hostCommand(command, args, cwd, env = {}, unset = []) {
   if (!process.env.FLATPAK_ID) return { command, args, cwd };
-  const envArgs = Object.entries(env)
+  const search = hostSearchPath();
+  const envArgs = Object.entries(search ? { ...env, PATH: search } : env)
     .filter((entry) => typeof entry[1] === 'string')
     .map(([name, value]) => `--env=${name}=${value}`);
   return {
@@ -34,16 +35,50 @@ function hostCommand(command, args, cwd, env = {}, unset = []) {
   };
 }
 
+// **PATH is the one variable that must not simply be forwarded.** Inside the
+// sandbox it describes the sandbox (`/app/bin:/usr/bin`), so passing it on
+// replaces the host session's own PATH with one that means nothing there — and
+// a `claude` installed through nvm, mise, asdf or pnpm stops resolving, while
+// the AppImage finds it. So ask the host what its PATH is and append the usual
+// install locations to *that*. No answer means no `--env=PATH` at all, which
+// leaves flatpak-spawn resolving against the host's PATH unaided: less than the
+// augmentation, but still the right search path rather than the wrong one.
+//
+// Memoized, because runGit runs on every tree refresh and this is a spawn.
+/** @type {string | null | undefined} */
+let hostSearchPathCache;
+function hostSearchPath() {
+  if (hostSearchPathCache !== undefined) return hostSearchPathCache;
+  hostSearchPathCache = null;
+  let base = '';
+  try {
+    base = execFileSync('flatpak-spawn', ['--host', 'printenv', 'PATH'], {
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim();
+  } catch (err) {
+    console.error('could not read the host PATH:', err);
+  }
+  if (base) {
+    const current = base.split(path.delimiter).filter(Boolean);
+    hostSearchPathCache = current
+      .concat(cliPathExtras().filter((p) => !current.includes(p)))
+      .join(path.delimiter);
+  }
+  return hostSearchPathCache;
+}
+
 // Preserve only the caller-controlled CLI settings when crossing to the host.
 // In particular, forwarding Flatpak's XDG_* variables would make host Claude
 // read configuration from the app sandbox instead of the user's normal config.
+// PATH is deliberately not among them — hostCommand() sets it from the host's,
+// see hostSearchPath().
 function hostCliEnv(env) {
   /** @type {NodeJS.ProcessEnv} */
   const out = {};
   for (const [name, value] of Object.entries(env)) {
     if (
-      name === 'PATH'
-      || name === 'TERM'
+      name === 'TERM'
       || name === 'COLORTERM'
       || name.startsWith('ANTHROPIC_')
       || name.startsWith('CLAUDE_')
@@ -1180,7 +1215,6 @@ function runGit(cwd, args, opts = {}) {
         args,
         cwd,
         {
-          PATH: env.PATH,
           GIT_TERMINAL_PROMPT: env.GIT_TERMINAL_PROMPT,
           GIT_OPTIONAL_LOCKS: env.GIT_OPTIONAL_LOCKS,
         },
@@ -1814,13 +1848,12 @@ function sanitizeReminder(raw) {
   };
 }
 
-// A bundled .app launched from Finder/Dock inherits a bare PATH
-// (/usr/bin:/bin:/usr/sbin:/sbin) rather than the login shell's, so `claude`
-// would be ENOENT even when it works fine from a terminal. Append the usual
-// install locations instead of shelling out to the user's shell for its PATH.
-function claudeEnv() {
+// The usual places an npm/bun/brew-installed CLI ends up. Shared with
+// hostSearchPath(), which appends this same list to the *host's* PATH when the
+// build is running inside Flatpak — one list, so the two cannot drift.
+function cliPathExtras() {
   const home = app.getPath('home');
-  const extra = [
+  return [
     '/opt/homebrew/bin',
     '/usr/local/bin',
     path.join(home, '.local', 'bin'),
@@ -1828,8 +1861,15 @@ function claudeEnv() {
     path.join(home, '.bun', 'bin'),
     path.join(home, '.npm-global', 'bin'),
   ];
+}
+
+// A bundled .app launched from Finder/Dock inherits a bare PATH
+// (/usr/bin:/bin:/usr/sbin:/sbin) rather than the login shell's, so `claude`
+// would be ENOENT even when it works fine from a terminal. Append the usual
+// install locations instead of shelling out to the user's shell for its PATH.
+function claudeEnv() {
   const current = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const merged = current.concat(extra.filter((p) => !current.includes(p)));
+  const merged = current.concat(cliPathExtras().filter((p) => !current.includes(p)));
   return { ...process.env, PATH: merged.join(path.delimiter) };
 }
 

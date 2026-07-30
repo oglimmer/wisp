@@ -221,7 +221,7 @@ cmd_test() {
   fi
 
   say "checking every Linux release target is published"
-  local target ext
+  local target pattern
   for target in AppImage tar.gz deb flatpak; do
     if node -e '
       const want = process.argv[1];
@@ -234,11 +234,17 @@ cmd_test() {
         "$RED" "$OFF" "$target" >&2
       failed=1
     fi
-    ext=$target
-    if ! grep -Fq "dist/*.$ext" .github/workflows/release.yml \
-      || ! grep -Fq -- "-name '*.$ext'" .github/workflows/release.yml; then
+    # Anchored to a line that is *only* the glob, which is the upload step's
+    # path list. An unanchored match is also satisfied by the smoke step's
+    # `flatpak install … dist/*.flatpak`, so dropping the artifact from the
+    # upload would still pass the check that exists to prevent exactly that.
+    pattern="^[[:space:]]+dist/\*\.${target//./\\.}$"
+    if grep -Eq "$pattern" .github/workflows/release.yml \
+      && grep -Fq -- "-name '*.$target'" .github/workflows/release.yml; then
+      ok "$target is uploaded and published"
+    else
       printf '%serror:%s release.yml does not upload and publish *.%s\n' \
-        "$RED" "$OFF" "$ext" >&2
+        "$RED" "$OFF" "$target" >&2
       failed=1
     fi
   done
