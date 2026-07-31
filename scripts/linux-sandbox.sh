@@ -291,6 +291,14 @@ ensure_deps() {
     head -c 4 "$pty" 2>/dev/null | grep -qa ELF || die "node-pty did not build a linux binary"
     ok "node-pty built for linux"
   fi
+
+  # The app is TypeScript compiled in place, and the emitted .js/.mjs is gitignored
+  # — so sync_sources, which mirrors what git lists, copies the sources and none of
+  # the output. Without this the mirror would hold .ts files and no app at all.
+  # Every command here goes through ensure_deps, so this is the one place it needs
+  # doing. It is a no-op on a tree with no .ts sources yet.
+  say "compiling the TypeScript sources in the mirror"
+  (cd "$TREE" && npm run --silent build) || die "build failed in the mirror"
 }
 
 # Playwright drives the smoke test and is deliberately not a dependency of the

@@ -1,18 +1,29 @@
 {
-  // Type-checking only — `noEmit` is the whole point. The app still ships the
-  // .js files the browser and Electron already load, there is no build step and
-  // no bundler, and nothing here changes how the window is served. Types are
-  // written as JSDoc in the .js sources, against the declarations in `types/`.
+  // The base config, and the checker for what is still JavaScript.
+  //
+  // The app itself is TypeScript, compiled in place by tsconfig.build.json (which
+  // extends this file and turns emit on). What is left here is `scripts/`, which
+  // stays JavaScript deliberately: scripts/pty-permissions.js runs from
+  // `postinstall`, before a build could have happened, and scripts/build.js is
+  // what *runs* the build. Both must be directly runnable by node.
+  //
+  // The app trees are excluded below rather than absent from `include`, because
+  // what sits at those paths is emitted output — the same module compiled from the
+  // .ts beside it, which the build config already checks as it emits. Reading both
+  // would be checking the same code twice, once with its types and once without.
   //
   // Run it with `./oglimmer.sh test` (or `npx tsc --noEmit`).
   "compilerOptions": {
+    // For scripts/*.js, which have no .ts to be compiled from.
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
 
-    // `preserve` is what lets one project hold both worlds: preload.js is
-    // CommonJS (a sandboxed preload can't be ESM), main/ and renderer/ are ES
-    // modules — main.mjs by extension, renderer by <script type="module">.
+    // `preserve` is what lets one project hold three module kinds: it keeps each
+    // file's import/export (or require) exactly as written, so the source
+    // extension alone decides. preload.ts emits CommonJS — a sandboxed preload
+    // cannot be ESM — while main/*.mts and renderer/*.ts both emit ES modules,
+    // main by extension and the renderer for <script type="module">.
     "module": "preserve",
     "moduleResolution": "bundler",
     "target": "ES2022",
@@ -23,9 +34,13 @@
     // Not `strict` wholesale, but strictNullChecks is not optional: without it
     // TypeScript does not narrow `if (!res.ok) …`, and narrowing the `{ ok }`
     // envelope is the whole point of typing the bridge — a failure result must
-    // not be readable as a successful one. `noImplicitAny` stays off so the
-    // existing un-annotated code is checked where it can be rather than
-    // reported line by line; turn it on one file at a time.
+    // not be readable as a successful one.
+    //
+    // `noImplicitAny` is off, which is what the migration from JSDoc landed at:
+    // an un-annotated parameter is checked where inference reaches it and is
+    // `any` where it doesn't, rather than failing the build. Turning it on is the
+    // next step, and it is worth doing a file at a time — see the note in
+    // CLAUDE.md's **Types** section for where the real defects are.
     "strict": false,
     "strictNullChecks": true,
     "noImplicitAny": false,
@@ -35,11 +50,23 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["main.mjs", "main/**/*.mjs", "preload.js", "renderer/**/*.js", "scripts/**/*.js", "types/**/*.d.ts"],
+  "include": ["scripts/**/*.js", "types/**/*.d.ts"],
 
   // scripts/smoke.js is the one source that is not checked, because it `require`s
   // playwright — which is deliberately not a dependency of this package (its
   // postinstall downloads browser engines nothing else here needs) and is
   // installed only into the linux mirror. `./oglimmer.sh test` still parses it.
-  "exclude": ["node_modules", "dist", "scripts/smoke.js"]
+  //
+  // The rest is compiled output. It is gitignored, so a clean checkout has none of
+  // it — but a working tree always does, and without these a `tsc --noEmit` here
+  // would read every module twice.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "scripts/smoke.js",
+    "preload.js",
+    "main.mjs",
+    "main/**/*.mjs",
+    "renderer/**/*.js"
+  ]
 }

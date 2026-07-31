@@ -7,16 +7,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm install` — install dependencies (Electron, `node-pty` and typescript 7 all ship platform-specific native binaries; **never copy `node_modules` between machines/OSes** — reinstall on the target, or you'll get `spawn ENOEXEC`). The `postinstall` hook is load-bearing, see **Packaging & release**.
 
 **Installing from the wrong OS is the one mistake here that escapes the machine you make it on**, so `deps` refuses to. When this repo is mounted into a Linux container from a mac, an install on the Linux side replaces the *host's* Electron bundle and `node-pty` binary, and the damage outlives the container. It is not hypothetical, and the trap is `test` rather than `deps`: **typescript 7's compiler is a native binary** delivered as one optional dependency per platform, so on Linux a mac-installed tree's `tsc` cannot run — which is exactly the "tsc is not runnable, reinstall" case `cmd_test` handles by installing. One `./oglimmer.sh test` in a container was enough. `assert_native_node_modules()` now reads the platform off `electron/path.txt` and node-pty's binary magic and refuses the install with a pointer to `./oglimmer.sh linux`; `./oglimmer.sh linux checks` runs this same static suite inside the mirror, where the tree is the right platform's.
-- `npm start` — launch the app (`electron .`).
-- `npm run dist` — package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
+- `npm run build` — compile the TypeScript sources in place (`scripts/build.js` → `tsc -p tsconfig.build.json`). Everything below runs it first; it is a no-op when the output is current. See **Types, and the build**.
+- `npm start` — build, then launch the app (`electron .`).
+- `npm run dist` — build, then package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
 
 There is no unit-test suite. `./oglimmer.sh test` (also run before `release`)
-does the static checks: `node --check` on main.mjs/main/*/preload/renderer/*/scripts/*, an Acorn
+**compiles first**, then does the static checks against what it just emitted: `node --check` on
+main.mjs/main/*/preload/renderer/*/scripts/*, an Acorn
 unbound-name scan of renderer and main modules (`scripts/check-unbound.js` — catches
 missing imports after the module splits, and any module that has dropped out
 of the graph reachable from its tree's entry, which never runs at all),
-`tsc --noEmit` (see **Types**),
+`tsc --noEmit` over what is still JavaScript (see **Types, and the build**),
 packaging/HTML/cask consistency, yamllint, and shellcheck on `oglimmer.sh` + `scripts/*.sh`.
+
+**Compiling first is what makes those checks true**, and it is why they read emitted output rather
+than sources: `node --check` and Acorn both see exactly what ships. The compile is also the app's
+own type check — `tsc` reports as it emits — so the separate `--noEmit` pass is only `scripts/`.
 
 The *dynamic* half is `./oglimmer.sh linux smoke`, which launches the real app and
 clicks through it — see **Testing on Linux**. It is deliberately not part of `test`.
@@ -106,7 +112,7 @@ Four packaging-specific gotchas worth remembering:
   removes `prebuilds/` outright before packaging, in both CI and a local build.
 - **A bundled `.app` launched from Finder gets a bare `PATH`** (`/usr/bin:/bin:/usr/sbin:/sbin`), which
   would make `spawn('claude', …)` fail with `ENOENT` even for users who have the CLI. `claudeEnv()` in
-  `main/host.mjs` appends the usual install locations before spawning; extend that list rather than assuming
+  `main/host.mts` appends the usual install locations before spawning; extend that list rather than assuming
   the inherited environment.
 - **The Flatpak is self-distributed as a single-file bundle, not published to Flathub.** It uses the
   Freedesktop Platform/SDK and Electron BaseApp pinned to 25.08. Wisp needs arbitrary vault access and
@@ -153,6 +159,11 @@ prints both.
   module that hasn't been added yet is still tested, and the gitignored `node_modules`/`dist` can
   never be swept in. The mirror's own `node_modules` and `dist` survive a sync — they're the
   expensive part.
+- **Which means the mirror gets `.ts` sources and no app**, since the compiled `.mjs`/`.js` is
+  gitignored too. So `ensure_deps` runs `npm run build` *in the mirror* after the sync — one place,
+  because every `linux` subcommand goes through it. The mirror installs its own devDependencies, so
+  the `tsc` that runs there is the linux binary, which is the whole reason `./oglimmer.sh linux
+  checks` can type-check a tree a mac-installed `tsc` cannot.
 - **Four things the sandbox needs that a desktop doesn't.** Electron links GTK, which an image
   built for headless Chromium doesn't carry (`ensure_system_libs` installs the eight libraries, or
   says which are missing); there is no display, so everything runs under `xvfb-run -a`;
@@ -230,24 +241,25 @@ The whole app is built around Electron's **three-context security model**, and u
   (`term-start`, `term-input`, `term-resize`, `term-stop` — the only place a *process* is spawned
   interactively), watching the vault (`watch-vault`), folder picking (`choose-folder`), revealing an entry in the
   OS file manager (`reveal-path`) and config. The renderer has **no direct fs access** — anything touching disk must be added as a handler here.
-- **`preload.js`** — the only bridge between the two worlds. Runs with `contextIsolation: true` / `nodeIntegration: false` and exposes a minimal, hand-listed API on `window.api` via `contextBridge`. A new main-process handler is invisible to the UI until a corresponding method is added here.
+- **`preload.ts`** — the only bridge between the two worlds. Runs with `contextIsolation: true` / `nodeIntegration: false` and exposes a minimal, hand-listed API on `window.api` via `contextBridge`. A new main-process handler is invisible to the UI until a corresponding method is added here.
 - **`renderer/` (renderer, browser context)** — all UI logic and state, split into ES modules with
-  `renderer/index.js` as the entry point (see **The renderer's modules**). Talks to disk **only**
-  through `window.api.*`, which it gets from `renderer/api.js`. It never `require`s Node modules.
+  `renderer/index.ts` as the entry point (see **The renderer's modules**). Talks to disk **only**
+  through `window.api.*`, which it gets from `renderer/api.ts`. It never `require`s Node modules.
 
-So adding any file operation is always a three-file change: handler in a `main/` module → method in `preload.js` → call in a `renderer/` module.
+So adding any file operation is always a three-file change: handler in a `main/` module → method in `preload.ts` → call in a `renderer/` module.
 
 ### The main process's modules
 
 The main process grew past the point where one file was reviewable, so it is split the same way
-the renderer is: plain ES modules (`main/*.mjs`), no build step, one graph from `main/index.mjs`.
-The root `main.mjs` is only the entry package.json points at — it forwards to `main/index.mjs`.
-The `.mjs` extension, not `"type": "module"`, carries the module kind: preload.js and scripts/
-stay CommonJS (a sandboxed preload cannot be ESM), and `.mjs` also marks "Node context" against
-the renderer's browser-context `.js`. Handlers register at module load, exactly as they did when
-they were sections of the old main.js — `main/index.mjs` imports each module once for that side
-effect, and `scripts/check-unbound.js` fails the build on any module nothing imports (an
-un-required module means missing IPC handlers — exactly what used to be impossible in one file).
+the renderer is: ES modules (`main/*.mts`), one graph from `main/index.mts`. The root `main.mts` is
+only the entry package.json points at — it forwards to `main/index.mts` (the *emitted* name, since
+that is what Node resolves at runtime). The `.mts` extension, not `"type": "module"`, carries the
+module kind: `preload.ts` and `scripts/` stay CommonJS (a sandboxed preload cannot be ESM), and
+`.mts` also marks "Node context" against the renderer's browser-context `.ts` — see **Types, and
+the build**. Handlers register at module load, exactly as they did when they were sections of the
+old main.js — `main/index.mts` imports each module once for that side effect, and
+`scripts/check-unbound.js` fails the build on any module nothing imports (an un-required module
+means missing IPC handlers — exactly what used to be impossible in one file).
 
 | | |
 |---|---|
@@ -276,12 +288,13 @@ passes the payload on but never the event object, which carries a handle on the 
 
 ### The renderer's modules
 
-`renderer/` is plain ES modules — no bundler, no build step. `index.html` loads
-`renderer/index.js` with `type="module"` and the browser fetches the graph.
+`renderer/` is ES modules — no bundler. `index.html` loads the compiled `renderer/index.ts` with
+`type="module"` and the browser fetches the graph; the sources are `renderer/*.ts` beside it, and
+their import specifiers already name the emitted `.js` (see **Types, and the build**).
 
 **This is why the window is served from a custom `app://` scheme rather than `loadFile()`.**
 Chromium refuses a `<script type="module">` on a `file://` page: module fetches go through CORS
-and a `file://` origin is opaque. So `main/protocol.mjs` registers `app` as a **standard, secure** scheme
+and a `file://` origin is opaque. So `main/protocol.mts` registers `app` as a **standard, secure** scheme
 (`standard` is what gives it real origin semantics — relative URLs resolve, and `localStorage`
 works) and `protocol.handle` serves the app's own directory, refusing anything that resolves
 outside it. Content types are stated rather than guessed, because a module script that doesn't
@@ -327,38 +340,92 @@ Two things about module state are load-bearing:
   top of the startup section. Under the old classic script hoisting made that work; under modules
   it would run before the other modules had wired themselves up.
 
-### Types
+### Types, and the build
 
-The app is plain JavaScript and stays that way — there is no build step, and the `.js` files
-Electron and the browser load are the files in the repo. Types are **JSDoc annotations checked by
-`tsc --noEmit`**: `tsconfig.json` is `allowJs` + `checkJs` + `noEmit`, so TypeScript reads the same
-sources and emits nothing. `./oglimmer.sh test` runs it; `npx tsc --noEmit` runs it alone.
+**The app is TypeScript, compiled in place.** `npm run build` (→ `scripts/build.js` → `tsc -p
+tsconfig.build.json`) writes each module's JavaScript *beside its source*: `main/git.mts` →
+`main/git.mjs`, `renderer/diff.ts` → `renderer/diff.js`, `preload.ts` → `preload.js`. The output is
+gitignored and derived; `npm start`, both `dist` scripts, `./oglimmer.sh test` and the linux mirror
+all run the build first.
+
+**In place, rather than into an output directory, because the runtime pins the layout.**
+`main/protocol.mts` computes `APP_ROOT` as one level above `main/`, `main/window.mts` resolves the
+preload as `../preload.js`, and `index.html` loads marked/turndown/DOMPurify/xterm by relative
+`node_modules/...` path — so `index.html`, `styles.css`, `renderer/`, `main/` and `node_modules/`
+have to sit together at a fixed depth. Emitting beside the sources satisfies that by construction,
+which is why `package.json`'s `main`, its `build.files` allowlist, the `app://` handler and
+`scripts/smoke.js` are all exactly what they were when this was a plain-JavaScript app.
+
+**The extensions are chosen so every emitted filename is byte-identical to the one it replaced**, and
+two things fall out of that. `scripts/check-unbound.js` still parses `main/*.mjs` and
+`renderer/*.js` — Acorn has no TypeScript grammar, and the emitted tree is the one whose
+reachability actually decides whether a handler registers. And **not one import specifier changed**:
+all 193 already said `./state.js` / `./index.mjs`, and TypeScript resolves those to `state.ts` and
+`index.mts` on its own.
+
+| Source (committed) | Emitted (gitignored) | Module kind |
+|---|---|---|
+| `main.mts`, `main/*.mts` | `main.mjs`, `main/*.mjs` | ESM (Node) |
+| `renderer/*.ts` | `renderer/*.js` | ESM (browser, `<script type="module">`) |
+| `preload.ts` | `preload.js` | CommonJS — a sandboxed preload cannot be ESM |
+| `types/ipc.d.ts` | — | declarations only |
+| `scripts/*.js` | — | **stays JavaScript** |
+
+`scripts/` stays JavaScript deliberately: `pty-permissions.js` runs from `postinstall`, before a
+build could have happened, and `build.js` is what runs the build. Both must be directly runnable by
+node. They keep their JSDoc types, which is all `tsconfig.json` still checks.
+
+**One `module: "preserve"` config serves all three module kinds**, because it keeps each file's
+`import`/`export`/`require` exactly as written — so the source extension alone decides what the
+output is, and `preload.ts`'s `require('electron')` survives as CommonJS while `main/` and
+`renderer/` emit ES modules.
+
+**Two configs, and the split is load-bearing.** `tsconfig.build.json` emits and has `allowJs: false`;
+`tsconfig.json` checks `scripts/` and emits nothing. `allowJs` is off in the build config because
+**tsc refuses to write a file it also read** (TS5055), so the moment a `.js` becomes a program input,
+emitting beside it is an error. A useful consequence: a `.ts` file may still import a
+not-yet-converted `.js` sibling — the specifier resolves, the import emits verbatim, and the module
+is typed `any` — which is what lets a tree be migrated a piece at a time without the config changing
+shape. Each converted tree has a row in `scripts/build.js`'s `TREES` table, an entry in
+`tsconfig.build.json`'s `include`, an `exclude` in `tsconfig.json` and a `.gitignore` rule; the four
+move together.
 
 **`types/ipc.d.ts` is the IPC contract, and it is the point of the exercise.** Adding a filesystem
-operation is a three-file change — handler in a `main/` module, method in `preload.js`, call in a
+operation is a three-file change — handler in a `main/` module, method in `preload.ts`, call in a
 `renderer/` module — and nothing else checks that the three agree. Each channel's signature is
 declared there once and referred to from all three sides:
 
-- `handle()` in `main/ipc.mjs` is **generic over `IpcHandlers`**, so the channel name types the callback's
-  parameters *and* its return value. A handler that answers with a shape the renderer isn't expecting
-  fails at its own registration.
-- the object `preload.js` exposes is annotated `@type {WispApi}`, so a method that is missing,
-  misspelled or wired to the wrong channel is an error there rather than an `undefined` the renderer
-  trips over at runtime.
+- `handle()` in `main/ipc.mts` is **generic over `IpcHandlers`**
+  (`handle<C extends keyof IpcHandlers>(channel: C, fn: IpcHandlers[C])`), so the channel name types
+  the callback's parameters *and* its return value. A handler that answers with a shape the renderer
+  isn't expecting fails at its own registration.
+- the object `preload.ts` exposes is `const api: WispApi`, so a method that is missing, misspelled or
+  wired to the wrong channel is an error there rather than an `undefined` the renderer trips over at
+  runtime.
 - `window.api` is declared as `WispApi`, so every renderer call site is checked — including the
   `{ ok }` **narrowing**: reading `res.content` without first checking `res.ok` doesn't compile.
 
 Two settings are deliberate. **`strictNullChecks` is on and not optional** — without it TypeScript
 doesn't narrow `if (!res.ok)`, which is the whole reason for typing the bridge. **`noImplicitAny` is
-off**, so un-annotated parameters are checked where they can be rather than reported line by line;
-turn it on a file at a time if it ever earns its keep. `strict` as a whole is not on.
+off**, which is where the migration from JSDoc landed: an un-annotated parameter is checked where
+inference reaches it and is `any` where it doesn't. `strict` as a whole is not on.
 
-Two conventions follow from the boundary itself. `baseFolder` is `VaultRoot` (`string | null`)
+**Turning `noImplicitAny` on is the next step, and it is worth doing a file at a time** — that is
+where the remaining defects are. `renderer/markdown.ts` is the case in point: turndown's rule
+callbacks take a `node` that is still implicitly `any`, and under it `summary.textContent.trim()` and
+`stale.parentNode.removeChild(stale)` are both unguarded null-derefs that nothing currently reports.
+
+Three conventions follow from the boundary itself. `baseFolder` is `VaultRoot` (`string | null`)
 throughout, because the renderer passes `state.baseFolder` straight through and every handler is
 already written for the null case — typing it `string` would only push a guard main already has into
-25 call sites. And **`renderer/dom.js` states what each id actually is** (`btn`/`input`/`textarea`/
-`img` helpers), which is what makes `editorEl.value` and `viewRawBtn.disabled` checkable everywhere
-else; change a tag in `index.html`, change the helper there.
+25 call sites; where a handler has *already* proved it non-null (through `vaultPath`, or a
+`fs.existsSync` the checker can't follow) the call site says `baseFolder as string` rather than
+adding a second check. **`renderer/dom.ts` states what each id actually is** — one generic
+`byTag<T>` behind the `btn`/`input`/`textarea`/`img` helpers — which is what makes `editorEl.value`
+and `viewRawBtn.disabled` checkable everywhere else; change a tag in `index.html`, change the helper
+there. And **a two-shape result is declared, never inferred**: TypeScript widens `ok: false` in an
+object literal to `boolean`, so a union like `DecodedImage` in `main/images.mts` or `ClaudeRun` in
+`main/claude.mts` has to be written out or there is nothing left to narrow on.
 
 ### Conventions that matter
 
@@ -377,13 +444,13 @@ else; change a tag in `index.html`, change the helper there.
   guard (which files a discard covers, whether a path is worth showing relative).
 - **The tree is rebuilt, not mutated.** After any change, the renderer calls `refreshTree()` which re-reads the whole tree from the main process and re-renders from scratch. Expanded-folder state is preserved separately in the `expanded` Set (keyed by absolute path), not in the DOM. Two things a rebuild would otherwise throw away are put back explicitly: the sidebar's scroll offset (emptying it collapses its height, so the reader would be sent to the top) and the open file's `active` row, whose class went with the element the click put it on.
 - **Persistence.** The last-opened base folder and the window's last geometry (`window`: bounds + `maximized`/`fullScreen`) are stored in `config.json` under Electron's `userData` dir (not in the vault). Geometry is saved debounced on move/resize and flushed on `close`; on restore the size is always reused but the *position* only if the frame still overlaps a live display, so unplugging a monitor can't strand the window off-screen. The window is created with `show: false` and maximized/fullscreened before `show()` so it doesn't visibly jump. Note contents are plain files in the user's chosen folder — there is no database or index.
-- **Reading positions are captured continuously, not on close.** `renderer/positions.js` remembers where the reader is in each file under `rawNotes.positions:<vault>`, LRU-capped, keyed by vault-relative path. It records off the panes' own `scroll`/`selectionchange` events rather than at the moment a file closes, which is what lets **`applyView()` restore too**: a view switch re-renders the Preview/Editor panes from scratch (and a hidden pane loses its scroll anyway), so without it every toggle would bounce the reader to the top. **A file with no remembered position is explicitly put back at the top**, not left alone: assigning `editorEl.value` parks Chromium's caret at the *end* of the text, so doing nothing opens every new file at its bottom. `restorePosition()` runs *after* `focus()` in `openFile()` and `setViewMode()` (focusing scrolls the caret into view, undoing a restore that ran before it) and *before* `refreshFind()` in `applyView()` (an open find bar's match should win). Since `hydrateImages()` resolves pictures asynchronously, a pane holding them lays out short and clamps the restore — so the requested offset is re-applied on each image `load` (capture phase; `load` doesn't bubble) until it fits or the user scrolls somewhere themselves.
+- **Reading positions are captured continuously, not on close.** `renderer/positions.ts` remembers where the reader is in each file under `rawNotes.positions:<vault>`, LRU-capped, keyed by vault-relative path. It records off the panes' own `scroll`/`selectionchange` events rather than at the moment a file closes, which is what lets **`applyView()` restore too**: a view switch re-renders the Preview/Editor panes from scratch (and a hidden pane loses its scroll anyway), so without it every toggle would bounce the reader to the top. **A file with no remembered position is explicitly put back at the top**, not left alone: assigning `editorEl.value` parks Chromium's caret at the *end* of the text, so doing nothing opens every new file at its bottom. `restorePosition()` runs *after* `focus()` in `openFile()` and `setViewMode()` (focusing scrolls the caret into view, undoing a restore that ran before it) and *before* `refreshFind()` in `applyView()` (an open find bar's match should win). Since `hydrateImages()` resolves pictures asynchronously, a pane holding them lays out short and clamps the restore — so the requested offset is re-applied on each image `load` (capture phase; `load` doesn't bubble) until it fits or the user scrolls somewhere themselves.
 - **What is remembered is a place in the *source*, not a scroll offset.** The four panes lay the same file out completely differently, so one offset would be four different places in it and a per-pane offset means switching views lands wherever that pane was left — which for a pane you have not opened yet is the top. So the position is a **fractional source line** for the top of the viewport plus a **line/column caret**, and each pane maps into and out of its own geometry: the textarea through a measured mirror (it soft-wraps, so a line's position cannot be derived from a line height — hence `.text-metrics`, which shares the textarea's typography rule), the rendered panes through `blockLineRanges()` (marked's tokens carry their `raw`, so counting newlines while walking them says which lines each top-level child came from — no rendering, unlike the fold), and the diff through the working-tree line each row carries in `data-line`. A pane whose children don't line up with the ranges (WYSIWYG edits not yet folded back, an `html` block that rendered as several elements) is mapped by proportion instead.
   - **Each pane's exact offset is kept alongside the anchor**, stamped with the anchor it was recorded against (`seq`). A pane still matching the anchor is restored to its own offset byte-for-byte; only a pane the reader has since moved away from is mapped. That is what makes Raw → Preview → Raw come back to the same pixel *and* caret while Raw → Preview lands on the paragraph being read — mapping in both directions would drift, since a rendered block is coarser than a line. A restore that *cannot* map (the diff's rows don't exist until git answers) deliberately leaves the pane stale, so `renderDiffPane()` restoring again once they do still maps.
   - **Working the line out is deferred to `syncAnchor()`**, called from `setViewMode`, `openFile`, `openFolder` and `flushPositions` — measuring a pane needs it on screen (a hidden textarea has no width to wrap at), so it has to happen *before* the switch, not when the position is captured. It runs after the WYSIWYG fold, so the lines are the buffer's.
   - **A restore's own scroll and selection events are suppressed** (`appliedTop` / `appliedSelection` / `appliedCaret`, compared against the live values, since the events arrive a frame later). Treating them as the reader moving would bump the anchor's stamp on every view switch, and every pane would then be mapped rather than restored exactly.
   - **The caret is the lossy part, and only across panes.** A rendered block carries neither the markers nor the markup of its source lines, so the *line* crosses reliably and the column only as far as the line's own marker allows. Exact in Raw. Scrolling the Preview or the diff moves the reader, not the cursor, so those carry the caret through unchanged rather than dragging it to wherever the scroll ended up.
-- **Ignored entries.** `isIgnored()` in `main/tree.mjs` hides every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`) plus the explicit `IGNORED` set (`node_modules`) during tree building — and, because `gatherFiles` calls the same helper, keeps them out of the smart-insert prompt too.
+- **Ignored entries.** `isIgnored()` in `main/tree.mts` hides every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`) plus the explicit `IGNORED` set (`node_modules`) during tree building — and, because `gatherFiles` calls the same helper, keeps them out of the smart-insert prompt too.
 
 ### The sidebar's two views (tree / recent)
 
@@ -393,7 +460,7 @@ the choice survives a restart). The tree answers "what is in this folder"; the r
 "what have I been working on", which the tree cannot show at all — the note changed a minute ago is
 wherever it happens to live, quite possibly inside a folder that is collapsed.
 
-- **One tree read feeds both.** `buildTree()` in `main/tree.mjs` puts an `mtime` (epoch ms, `0` if it
+- **One tree read feeds both.** `buildTree()` in `main/tree.mts` puts an `mtime` (epoch ms, `0` if it
   couldn't be stat'd) on every **file** node, read during the walk it is already doing rather than in
   a second pass. `refreshTree()` then either renders the nested tree or flattens the same children,
   sorts by `mtime` descending, and renders rows — so there is no second channel and no second model.
@@ -554,7 +621,7 @@ block on exactly the same terms a table does.
 ### Block formatting
 
 What *kind* of block the cursor is in, from the keyboard: `⌘⌥1`…`⌘⌥6` make it a heading, `⌘⌥0` plain
-text again, `⌘⌥C` a fenced code block. `runFormatOp()` in `renderer/format.js` is shaped exactly like
+text again, `⌘⌥C` a fenced code block. `runFormatOp()` in `renderer/format.ts` is shaped exactly like
 `runTableOp()` — dispatched on `effectiveViewMode()`, carried out in each pane's own terms (Raw
 rewrites the source's line markers, the Editor replaces the live block element), refused with a status
 message in Preview/diff/image, and left alone while another text field has focus.
@@ -599,12 +666,12 @@ message in Preview/diff/image, and left alone while another text field has focus
 ### Keyboard shortcuts help
 
 `Help ▸ Keyboard Shortcuts` (`⌘/` / `Ctrl+/`) opens a modal listing every shortcut, grouped. The list
-(`SHORTCUT_GROUPS` in `renderer/shortcuts.js`) lives beside the handlers it documents rather than in the menu
+(`SHORTCUT_GROUPS` in `renderer/shortcuts.ts`) lives beside the handlers it documents rather than in the menu
 that opens it — a shortcut and its help are one change, not two. `chord()` writes each combination the
 way the host OS does: glyphs run together on macOS (`⌘⇧T`), spelled out with pluses elsewhere
 (`Ctrl+Shift+T`). **Add a shortcut, add its row.**
 
-**`buildMenu()` in `main/window.mjs` exists for that one item, but it has to rebuild the standard menu roles
+**`buildMenu()` in `main/window.mts` exists for that one item, but it has to rebuild the standard menu roles
 around it.** Setting any application menu replaces Electron's default one, and on macOS ⌘C/⌘V/⌘Q are
 menu accelerators rather than browser behaviour — a template without an Edit menu silently takes them
 away. The dialog is a plain `.modal-overlay` like every other (see **Dialogs**), so the window-level
@@ -658,7 +725,7 @@ Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two thin
   to the note that holds it — what this app writes — or relative to the **vault
   root**, which is what Obsidian's "relative to vault root" setting produces:
   a note in `hiring/` refers to its own picture as `./hiring/images/x.png`, which
-  resolves nowhere note-relative. `resolveVaultRef()` in `main/refs.mjs` tries the note
+  resolves nowhere note-relative. `resolveVaultRef()` in `main/refs.mts` tries the note
   first and the vault root second, and the fallback is only taken when the
   candidate **is** an image that exists — so the second convention can never
   claim a ref the first one already answered. It reports which one hit (`style`),
@@ -698,7 +765,7 @@ Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two thin
   replacing the alt and appending a collapsed `<details>` block, which is what makes the picture's
   content findable via `⌘F` later. Anything that moved on in the meantime is dropped rather than
   forced: a different file open, or the `![…](ref)` reference no longer in the buffer. Only the types
-  Claude can actually look at are sent (`ANALYZABLE_IMAGE` in `main/smart.mjs`); `.svg`/`.bmp`/`.ico`/`.avif`
+  Claude can actually look at are sent (`ANALYZABLE_IMAGE` in `main/smart.mts`); `.svg`/`.bmp`/`.ico`/`.avif`
   import as before, silently unanalysed. A failure (no `claude` on PATH, say) is a status-line
   message, never a lost image.
 
@@ -723,7 +790,7 @@ the folder it is already in) are simply not offered as drop targets — main ref
 too, but a highlight that can only end in an error message is worse than no highlight.
 
 **A move is a rename plus a ref rewrite, and the rewrite is the hard half.**
-`updateRefsAfterMove()` in `main/refs.mjs` walks every text file in the vault and fixes both
+`updateRefsAfterMove()` in `main/refs.mts` walks every text file in the vault and fixes both
 directions, because a move breaks refs both ways: a note that moved has to re-aim its
 own refs, and every note that pointed *at* something moved has to follow it. A moved
 folder is both at once. `rename-path` goes through the same helper — renaming an image
@@ -845,7 +912,7 @@ The same change is offered two ways:
   no longer refuses a large file.** A plain LCS table is O(n×m) in the *file*, so a ceiling on it
   (the old `DIFF_MAX_CELLS`) meant "This file is too large to diff side by side" for any note past
   ~1200 lines — a refusal about the file's size when the change in it was one paragraph. `diffOps`
-  in `renderer/lcs.js` cuts the file into regions the exact table can afford instead: the common
+  in `renderer/lcs.ts` cuts the file into regions the exact table can afford instead: the common
   prefix and suffix are matched off first (which alone answers the ordinary case, exactly), a
   region still too big is split on the lines appearing exactly **once on each side** — patience
   diff's anchors, which can only correspond to their twin — and a region with no anchor at all is
@@ -914,7 +981,7 @@ narrowings of an earlier design, and each removed a whole mechanism:
 
 The panel at the top of the editor pane lets the user jot a note and have Claude file it into the right place. It shells out to the **`claude` CLI** from the main process (`spawn('claude', ['-p', prompt, '--output-format', 'json', '--allowedTools', 'Read,Glob,Grep'])`, cwd = vault root). Two handlers back it: `smart-check` runs Claude and returns a *plan* (`targetFile`, `isNew`, `reason`, `newContent`, `oldContent`) without writing anything; `smart-apply` writes an approved plan (path-traversal-guarded, creates parent dirs).
 
-- **Check previews, Add applies.** `renderer/smart.js` caches the plan in `smartPlan`/`smartPlanFor`; editing the note invalidates it so **Add** re-checks automatically rather than filing stale content. The preview shows the target file, a NEW/EXISTING badge, Claude's reason, and a collapsed line-diff (`lineDiff`/`condenseDiff`).
+- **Check previews, Add applies.** `renderer/smart.ts` caches the plan in `smartPlan`/`smartPlanFor`; editing the note invalidates it so **Add** re-checks automatically rather than filing stale content. The preview shows the target file, a NEW/EXISTING badge, Claude's reason, and a collapsed line-diff (`lineDiff`/`condenseDiff`).
 - **Every check also asks for a reminder.** The same single call returns an optional `reminder` alongside the filing plan (the prompt includes `describeNow()` so relative dates like "next Tuesday" resolve). *Checked* always, *created* only for a genuine time-bound commitment — a plain fact returns `null`. `sanitizeReminder()` in main drops anything malformed rather than surfacing a bogus reminder, and takes the proposed date **as written** — trimming a time off if the model added one — because `new Date('2026-08-03')` is UTC midnight, which is the day before west of Greenwich. The preview renders it as an opt-out card (`renderReminderProposal`) with an **Edit…** button into the normal reminder editor; **Add** writes the file and only then creates the reminder, linked to the file it filed into.
 - **Prompt inlines small files.** `gatherFiles` embeds the contents of files under the size/total budget directly in the prompt so Claude usually decides in **one turn without `Read` round-trips** (large files are listed by name and read on demand). This is the difference between ~7s and Claude crawling the vault.
 - **Flush before check/apply.** Both flows call `flushSave()` first so Claude reads the latest on-disk content and the post-apply `openFile()` can't clobber the AI's write with a stale editor buffer.
@@ -976,7 +1043,7 @@ The terminal makes something new possible: **the vault changing while the app is
 screen is read from disk once and rebuilt on demand, so without this a file claude just wrote is
 invisible until the user hits refresh — and worse, the open buffer is a version behind, so the next
 autosave writes it back over claude's work. `watch-vault` (main) watches the open folder with
-`fs.watch(…, { recursive: true })` and sends one debounced `vault-changed`; `renderer/watch.js`
+`fs.watch(…, { recursive: true })` and sends one debounced `vault-changed`; `renderer/watch.ts`
 re-reads the tree, git status, the reminder list and the open file. `openFolder()` starts it, and each
 call replaces the previous vault's watch.
 

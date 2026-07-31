@@ -5,10 +5,11 @@
   "main": "main.mjs",
   "desktopName": "com.oglimmer.wisp.desktop",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --mac --arm64",
-    "dist:linux": "electron-builder --linux AppImage tar.gz deb --x64",
-    "dist:linux:flatpak": "electron-builder --linux flatpak --x64",
+    "build": "node scripts/build.js",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --mac --arm64",
+    "dist:linux": "npm run build && electron-builder --linux AppImage tar.gz deb --x64",
+    "dist:linux:flatpak": "npm run build && electron-builder --linux flatpak --x64",
     "postinstall": "node scripts/pty-permissions.js"
   },
   "author": {
@@ -47,6 +48,8 @@
       "renderer/**",
       "index.html",
       "styles.css",
+      "!**/*.ts",
+      "!**/*.mts",
       "!node_modules/node-pty/prebuilds/win32-*",
       "!node_modules/node-pty/prebuilds/darwin-x64"
     ],

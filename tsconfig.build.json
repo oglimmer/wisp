@@ -1,0 +1,38 @@
+{
+  // The emitting half of the type setup. tsconfig.json stays what it always was —
+  // the checker — and this one compiles the TypeScript sources in place, driven by
+  // scripts/build.js (`npm run build`).
+  //
+  // Two settings here are not preferences, they are what makes in-place emit legal:
+  //
+  //   allowJs: false — tsc refuses to write a file it also read (TS5055), so the
+  //     moment a .js file becomes a program input, emitting beside it is an error.
+  //     With allowJs off the not-yet-converted .js modules are simply not inputs.
+  //     A .ts file may still import one: the specifier resolves, the import emits
+  //     verbatim, and the module is typed `any` because noImplicitAny is off. That
+  //     is what lets a tree be migrated a piece at a time without the config
+  //     changing shape.
+  //
+  //   checkJs: false — follows from the above; there is no .js in the program to
+  //     check. The remaining hand-written JavaScript is still checked, by
+  //     tsconfig.json.
+  //
+  // `module: preserve` is inherited and is what keeps each file's module kind as
+  // written: main/*.mts emit as ESM .mjs (import.meta and all), renderer/*.ts emit
+  // as ESM .js for the browser's <script type="module">, and preload.ts emits as
+  // CommonJS .js — a sandboxed preload cannot be ESM. One config, three module
+  // kinds, because the source extension carries the kind.
+  "extends": "./tsconfig.json",
+
+  "compilerOptions": {
+    "allowJs": false,
+    "checkJs": false,
+    "noEmit": false
+  },
+
+  // Grows one tree at a time, in step with the .gitignore rules for emitted output
+  // and the TREES table in scripts/build.js. An include matching nothing is an
+  // error (TS18003), which is why scripts/build.js skips tsc entirely until there
+  // is something to compile.
+  "include": ["main.mts", "main/**/*.mts", "preload.ts", "renderer/**/*.ts", "types/**/*.d.ts"]
+}

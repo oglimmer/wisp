@@ -72,6 +72,13 @@ jobs:
       - name: Drop the foreign prebuilds
         run: ./scripts/linux-sandbox.sh prebuilds .
 
+      # The app is TypeScript compiled in place and the emitted .js/.mjs is
+      # gitignored, so a fresh checkout has sources and no runnable app. Every
+      # electron-builder call needs this first; it is a no-op on a tree with no
+      # .ts sources yet.
+      - name: Compile the TypeScript sources
+        run: npm run build
+
       - name: Build (x86_64)
         run: npx electron-builder --linux --x64
 
@@ -261,6 +268,11 @@ jobs:
             echo "::error::MACOS_CERTIFICATE holds no 'Developer ID Application' identity — see docs/SIGNING.md step 2. An Apple Development certificate cannot notarize."
             exit 1
           fi
+
+      # As in the linux job: the checkout holds .ts sources, not the app. Both
+      # build variants below depend on this having run.
+      - name: Compile the TypeScript sources
+        run: npm run build
 
       - name: Build (signed + notarized)
         if: steps.signing.outputs.signed == 'true'

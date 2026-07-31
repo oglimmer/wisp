@@ -149,6 +149,28 @@ cmd_test() {
   local version
   version=$(pkg_version)
 
+  # The app is TypeScript compiled in place, so every check below this line reads
+  # emitted output — which is the point: node --check and the reachability scan see
+  # exactly what ships, not what it was written as. Compiling first is what makes
+  # them true. It is a no-op on a tree with no .ts sources yet.
+  #
+  # tsc is a native binary delivered as a platform-specific optional dependency,
+  # the same trap as Electron's — a node_modules predating this dependency, or
+  # carried over from another OS, has the wrapper but not the binary. Probe for a
+  # runnable tsc first, so that reads as "reinstall" rather than a Node stack
+  # trace: ensure_deps can't see it, since node_modules/typescript is present.
+  say "compiling the TypeScript sources"
+  ensure_deps
+  if ! npx --no-install tsc --version >/dev/null 2>&1; then
+    warn "tsc is not runnable here — reinstalling dependencies"
+    cmd_deps
+  fi
+  if npm run --silent build; then
+    ok "build up to date"
+  else
+    die "build failed — nothing below this would be meaningful"
+  fi
+
   say "syntax-checking the app sources"
   local f
   for f in main.mjs main/*.mjs preload.js renderer/*.js scripts/*.js; do
@@ -164,28 +186,23 @@ cmd_test() {
   # that only throws on the code path that hits it — and a module nobody imports,
   # which is quieter still: it is never fetched, so whatever it registers at load
   # time (listeners, IPC handlers) simply never happens.
-  ensure_deps
+  #
+  # It parses the emitted .js/.mjs, not the .ts sources — Acorn has no TypeScript
+  # grammar, and the emitted tree is the one whose reachability actually decides
+  # whether a handler registers at runtime.
   if node scripts/check-unbound.js; then
     ok "renderer/ and main/ bind and every module is reachable"
   else
     failed=1
   fi
 
-  say "type-checking (tsc --noEmit against the JSDoc types)"
-  # No build step and no .ts sources: tsconfig.json is checkJs + noEmit, so this
-  # only reads the .js files the app already ships, plus the declarations in
-  # types/. It is what keeps main/, preload.js and the renderer agreeing about
-  # the IPC contract — a three-file change nothing else verifies.
-  #
-  # tsc is a native binary delivered as a platform-specific optional dependency,
-  # the same trap as Electron's — a node_modules predating this dependency, or
-  # carried over from another OS, has the wrapper but not the binary. Probe for a
-  # runnable tsc first, so that reads as "reinstall" rather than a Node stack
-  # trace: ensure_deps can't see it, since node_modules/typescript is present.
-  if ! npx --no-install tsc --version >/dev/null 2>&1; then
-    warn "tsc is not runnable here — reinstalling dependencies"
-    cmd_deps
-  fi
+  say "type-checking what is still JavaScript (tsc --noEmit)"
+  # The .ts sources were type-checked by the compile above — tsc reports as it
+  # emits. This is the other half: tsconfig.json is checkJs + noEmit over the
+  # modules not yet converted, still typed by JSDoc, plus scripts/. It is what
+  # keeps main/, the preload and the renderer agreeing about the IPC contract —
+  # a three-file change nothing else verifies. It ends up a no-op over the app
+  # once the migration finishes, and goes on covering scripts/.
   if npx --no-install tsc --noEmit; then
     ok "no type errors"
   else
@@ -337,6 +354,9 @@ cmd_build() {
   ensure_deps
 
   say "packaging Wisp $(pkg_version) for macOS arm64"
+  # `npm run dist` compiles first; the --unsigned path calls electron-builder
+  # directly, so it needs the build doing here. A no-op when it is already current.
+  npm run --silent build || die "build failed"
   if [ "$unsigned" -eq 1 ]; then
     # Same flags CI uses when no signing secrets are present. Produces a build
     # that only opens locally after stripping the quarantine attribute.

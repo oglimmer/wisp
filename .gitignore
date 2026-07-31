@@ -9,6 +9,20 @@ npm-debug.log*
 dist/
 out/
 
+# Compiled TypeScript. The app is compiled in place — main/foo.mts -> main/foo.mjs,
+# renderer/foo.ts -> renderer/foo.js, preload.ts -> preload.js — because the runtime
+# pins the layout (see the header of scripts/build.js). The output is derived, so it
+# is not committed; `npm run build` makes it, and npm start / the packaging scripts /
+# oglimmer.sh test all run it first.
+#
+# A rule lands here when its tree is converted, together with that tree's entry in
+# tsconfig.build.json, its exclude in tsconfig.json and its TREES row in
+# scripts/build.js. Until then the tree's .js is hand-written and tracked.
+/preload.js
+/main.mjs
+main/*.mjs
+renderer/*.js
+
 # scripts/smoke.js screenshots, when it is run from the repo rather than the mirror
 smoke/
 
