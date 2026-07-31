@@ -48,22 +48,30 @@ for non-mac use, so regenerate them from it rather than editing them separately.
 carries the rounded-squircle mask and a transparent margin, so nothing masks or pads it; replacements
 should come pre-masked the same way.
 
-`.github/workflows/release.yml` runs on `v*` tags, as **two jobs, linux first**. The `linux` job
-installs the system libraries (`./scripts/linux-sandbox.sh libs`) and pinned Flatpak 25.08 runtimes,
-drops node-pty's foreign prebuilds, builds x86_64, and then **runs what it built** —
-`scripts/smoke.js --app dist` drives the packaged binary, then a second run installs and drives the
-Flatpak with host git and Claude stubs — before uploading it as a workflow artifact. The `build` job
-needs it, does the mac half
-(checks the tag matches `package.json`'s version, builds signed + notarized from repo secrets),
-downloads the linux artifact and publishes **everything in one `gh release create`**, then rewrites
-`version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is the tap users install from.
+`.github/workflows/release.yml` runs on `v*` tags, as **three jobs: `linux` and `mac` in parallel,
+`publish` after both**. The `linux` job installs the system libraries (`./scripts/linux-sandbox.sh
+libs`) and pinned Flatpak 25.08 runtimes, drops node-pty's foreign prebuilds, builds x86_64, and then
+**runs what it built** — `scripts/smoke.js --app dist` drives the packaged binary, then a second run
+installs and drives the Flatpak with host git and Claude stubs — before uploading it as a workflow
+artifact. The `mac` job does the mac half in parallel (checks the tag matches `package.json`'s
+version, builds signed + notarized from repo secrets, verifies the result with `codesign`/`spctl`/
+`stapler`) and uploads it. `publish` downloads both and publishes **everything in one `gh release
+create`**, then rewrites `version`/`sha256` in `Casks/wisp.rb` on the default branch — that cask is
+the tap users install from.
 
-Three things about that order are deliberate. **Linux gates the release**: it is the only job that
-launches the app, it takes ~6 minutes against notarization's 15–50, and a Linux build nobody started
-is exactly the kind of artifact that ships broken. **One `gh release create`** means the release never
-appears half-populated, and the linux assets are collected with `find` rather than by name because
-electron-builder spells x64 differently per target (`x86_64` for AppImage). **The cask is untouched by
-any of it** — it is macOS-only, and Linux has no signing to fail.
+Four things about that shape are deliberate. **Publication is its own job** precisely so the two
+builds need not wait for each other: a job that needs a failed job is skipped, so nothing is
+published unless both halves built *and* the Linux one launched what it built — which is the gate
+`needs: linux` on the mac job used to provide, minus the serialization. Overlapping the two saves
+roughly linux's ~6 minutes against notarization's 15–50; what it costs is an artifact round-trip for
+the `.dmg`/`.zip`, which no longer stay on the runner that produced them. **One `gh release create`**
+means the release never appears half-populated, and **both platforms' assets are located with `find`
+rather than by name** — electron-builder spells x64 differently per target (`x86_64` for AppImage),
+and the mac assets now arrive through an artifact whose layout is `upload-artifact`'s to decide, so a
+hardcoded path would fail at the one moment it must not. **The cask is untouched by any of it** — it
+is macOS-only, and Linux has no signing to fail. `publish` runs on Linux (it is only `gh` and a
+regex); the mac-only verification already ran in the job that produced the `.dmg`, and the bytes
+hashed for the cask are the ones downloaded back and published, not a second copy.
 
 Without signing secrets the mac build still happens, ad-hoc signed instead: a `workflow_dispatch` run
 uploads both platforms as CI artifacts, a tag publishes them as a prerelease. Both skip the cask bump,

@@ -133,7 +133,7 @@ cross-compiling `node-pty` needs a toolchain a sandbox doesn't have.
 | `scripts/linux-sandbox.sh` | Runs the app on Linux from a mirrored tree, so a Linux install never overwrites the mac binaries in `node_modules` |
 | `scripts/smoke.js` | Drives the running app with Playwright — the one test that is not static |
 | `Casks/wisp.rb` | Homebrew cask (version + sha256 bumped by CI on each tag) |
-| `.github/workflows/release.yml` | Builds and smoke-tests Linux x86_64, then builds, signs and notarizes macOS arm64 and publishes both |
+| `.github/workflows/release.yml` | Builds and smoke-tests Linux x86_64 alongside a signed, notarized macOS arm64 build, then publishes both in one release |
 
 ## Releasing
 

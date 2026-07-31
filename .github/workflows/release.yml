@@ -8,6 +8,11 @@ name: Release
 #
 # Two published platforms, and only the mac one is signed: Gatekeeper has no Linux
 # equivalent, and the cask is macOS-only, so the linux job touches neither.
+#
+# Three jobs: `linux` and `mac` build in parallel, `publish` waits for both. Making
+# publication its own job is what lets the two builds overlap while still producing
+# one `gh release create` — and a job that needs a failed job is skipped, so nothing
+# is published unless both halves built *and* the Linux one launched what it built.
 on:
   push:
     tags:
@@ -18,11 +23,10 @@ permissions:
   contents: write
 
 jobs:
-  # Runs first and gates the release. It is quick (~6 min against the mac job's
-  # notarization wait) and, unlike the mac job, it *runs* what it built — so a tag
-  # can never publish a Linux artifact nobody launched. The mac job collects its
-  # output and publishes everything in one `gh release create`, which is also what
-  # keeps the release from appearing half-populated.
+  # Runs alongside the mac job, and unlike it *runs* what it built — so a tag can
+  # never publish a Linux artifact nobody launched. It is quick (~6 min against
+  # notarization's 15–50), so overlapping the two costs the release only the
+  # artifact round-trip `publish` now pays for the mac assets as well.
   linux:
     name: Build and verify (Linux x86_64)
     runs-on: ubuntu-latest
@@ -37,8 +41,9 @@ jobs:
 
       - run: npm ci
 
-      # Repeated from the mac job on purpose: this job runs first, and finding out
-      # about a mismatched tag after a six-minute build is six minutes wasted.
+      # Repeated from the mac job on purpose: the two run independently, and
+      # finding out about a mismatched tag after a six-minute build is six
+      # minutes wasted.
       - name: Check the tag matches package.json
         if: github.ref_type == 'tag'
         run: |
@@ -137,7 +142,8 @@ jobs:
             smoke-flatpak/
           if-no-files-found: ignore
 
-      # Consumed by the mac job on a tag; on a manual run it is the dry-run download.
+      # Consumed by the publish job on a tag; on a manual run it is the dry-run
+      # download.
       - name: Upload the linux build
         uses: actions/upload-artifact@v4
         with:
@@ -148,15 +154,20 @@ jobs:
             dist/*.deb
             dist/*.flatpak
 
-  build:
-    name: Build and publish (macOS arm64)
-    needs: linux
+  mac:
+    name: Build and sign (macOS arm64)
     runs-on: macos-15
     # `notarytool --wait` blocks until Apple answers, with no timeout of its own, so a
     # stuck submission would otherwise hold the runner for GitHub's 6-hour default.
     # Apple's own guidance is 15 minutes typical, up to an hour — and run 30223651206
     # genuinely took 53. Anything under 90 risks killing a submission that was fine.
     timeout-minutes: 90
+    # Read by `publish`, which runs on Linux and so can determine neither on its own:
+    # the version comes from the tag check below, and whether the build was signed
+    # decides between a release and a labelled prerelease.
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      signed: ${{ steps.signing.outputs.signed }}
     steps:
       - uses: actions/checkout@v5
 
@@ -285,32 +296,78 @@ jobs:
             xcrun stapler validate "$app"
           fi
 
-      - name: Upload dry-run artifact
-        if: steps.signing.outputs.signed != 'true' && github.ref_type != 'tag'
+      # Unconditional now that publication is a separate job: on a tag `publish`
+      # downloads this, on a manual run it is the dry-run download. The artifact
+      # carries no signing status in its name — read the `signed` output for that,
+      # since `publish` has to know the name before the job it comes from has run.
+      - name: Upload the mac build
         uses: actions/upload-artifact@v4
         with:
-          name: wisp-macos-arm64-unsigned
+          name: wisp-macos-arm64
           path: |
             dist/*.dmg
             dist/*.zip
 
-      # electron-builder spells x64 differently per target (`x86_64` for AppImage),
-      # so the linux assets are collected by find rather than named — a hardcoded
-      # name would publish a mac-only release the day that spelling changes.
+  # The only job that writes anything outside the run, and it needs both builds —
+  # so a failure in either skips it and the release is never half-populated. It
+  # runs on Linux because everything here is `gh` and a regex: the mac-only checks
+  # (codesign, spctl, stapler) already ran in the job that produced the .dmg, and
+  # the bytes published are the ones that were verified there.
+  publish:
+    name: Publish release
+    needs: [linux, mac]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      # For the cask rewrite below only — this job installs no dependencies, so
+      # pinning the version beats inheriting whatever the runner image ships.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Collect the mac build
+        uses: actions/download-artifact@v4
+        with:
+          name: wisp-macos-arm64
+          path: dist-mac
+
       - name: Collect the linux build
-        if: github.ref_type == 'tag'
         uses: actions/download-artifact@v4
         with:
           name: wisp-linux-x64
           path: dist-linux
 
+      # Found rather than named, for the same reason the linux assets are: the mac
+      # build no longer sits in the directory electron-builder wrote it to, so its
+      # layout here is upload-artifact's to decide. Resolving it once, up front,
+      # also turns a wrong guess into an error before anything is published rather
+      # than a release that went out with only half its assets.
+      - name: Locate the mac assets
+        run: |
+          dmg=$(find dist-mac -type f -name '*.dmg' -print -quit)
+          zip=$(find dist-mac -type f -name '*.zip' -print -quit)
+          if [ -z "$dmg" ] || [ -z "$zip" ]; then
+            echo "::error::the mac artifact holds no .dmg and/or no .zip"
+            find dist-mac -type f
+            exit 1
+          fi
+          echo "found: $dmg $zip"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+
+      # electron-builder spells x64 differently per target (`x86_64` for AppImage),
+      # so the linux assets are collected by find rather than named — a hardcoded
+      # name would publish a mac-only release the day that spelling changes.
       - name: Publish release
-        if: github.ref_type == 'tag' && steps.signing.outputs.signed == 'true'
+        if: needs.mac.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.v.outputs.version }}
+          VERSION: ${{ needs.mac.outputs.version }}
         run: |
-          set -- "dist/Wisp-$VERSION-arm64.dmg" "dist/Wisp-$VERSION-arm64.zip"
+          set -- "$DMG" "$ZIP"
           while IFS= read -r f; do set -- "$@" "$f"; done \
             < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \
               -o -name '*.deb' -o -name '*.flatpak' \))
@@ -324,12 +381,12 @@ jobs:
       # labelled prerelease — and the cask is deliberately NOT bumped, so
       # `brew install` never serves a build Gatekeeper will block.
       - name: Publish unsigned prerelease
-        if: github.ref_type == 'tag' && steps.signing.outputs.signed != 'true'
+        if: needs.mac.outputs.signed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.v.outputs.version }}
+          VERSION: ${{ needs.mac.outputs.version }}
         run: |
-          set -- "dist/Wisp-$VERSION-arm64.dmg" "dist/Wisp-$VERSION-arm64.zip"
+          set -- "$DMG" "$ZIP"
           while IFS= read -r f; do set -- "$@" "$f"; done \
             < <(find dist-linux -type f \( -name '*.AppImage' -o -name '*.tar.gz' \
               -o -name '*.deb' -o -name '*.flatpak' \))
@@ -352,14 +409,16 @@ jobs:
             "$@"
 
       # The tag was built from a detached HEAD, so land the cask bump on the
-      # default branch — that is the ref `brew tap` actually reads.
+      # default branch — that is the ref `brew tap` actually reads. The sha is
+      # taken from the downloaded .dmg, which is the same file just uploaded to
+      # the release — hash whatever was published, not whatever was built.
       - name: Bump Homebrew cask
-        if: github.ref_type == 'tag' && steps.signing.outputs.signed == 'true'
+        if: needs.mac.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.v.outputs.version }}
+          VERSION: ${{ needs.mac.outputs.version }}
         run: |
-          SHA=$(shasum -a 256 "dist/Wisp-$VERSION-arm64.dmg" | cut -d' ' -f1)
+          SHA=$(sha256sum "$DMG" | cut -d' ' -f1)
           export SHA
           branch=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)
           git fetch origin "$branch"
