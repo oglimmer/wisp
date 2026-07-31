@@ -1,6 +1,6 @@
 {
   "name": "wisp",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "A minimal folder-backed Markdown note editor. Shows a folder tree on the left and a raw-text editor on the right.",
   "main": "main.js",
   "desktopName": "com.oglimmer.wisp.desktop",
