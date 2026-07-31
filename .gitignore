@@ -23,6 +23,13 @@ out/
 main/*.mjs
 renderer/*.js
 
+# The source maps that go with them. Needed as rules of their own: `renderer/*.js`
+# does not match `renderer/diff.js.map`.
+/preload.js.map
+/main.mjs.map
+main/*.mjs.map
+renderer/*.js.map
+
 # scripts/smoke.js screenshots, when it is run from the repo rather than the mirror
 smoke/
 

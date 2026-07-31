@@ -375,6 +375,32 @@ all 193 already said `./state.js` / `./index.mjs`, and TypeScript resolves those
 build could have happened, and `build.js` is what runs the build. Both must be directly runnable by
 node. They keep their JSDoc types, which is all `tsconfig.json` still checks.
 
+**Source maps are what buy back the one thing compiling in place would otherwise cost**: without
+them a stack trace or a DevTools breakpoint lands in emitted output rather than in the file you
+wrote, which is exactly the property the plain-JavaScript layout had for free. Four things make
+them work, and none of them is the `sourceMap` flag on its own:
+
+- **`inlineSources` puts the original text in the map.** The renderer's maps are fetched through
+  the `app://` scheme, so without it DevTools would go back for each `.ts` as well — a second
+  content type to serve, and a request for a file a packaged build deliberately does not contain.
+- **`main/protocol.mts` serves `.map`** (as `application/json`). Anything not in its `CONTENT_TYPE`
+  table arrives as `application/octet-stream`, which DevTools ignores.
+- **`.gitignore` needs rules of its own for them**, because `renderer/*.js` does not match
+  `renderer/diff.js.map` — without those the maps would be committed.
+- **`scripts/build.js` removes a module's map with the module.** A stale map is worse than a stale
+  module: it is still served, and it points DevTools at a version of the file that no longer exists.
+
+The main process needs one more thing: Node has source-map support off by default and an Electron
+app has no practical way to pass `--enable-source-maps`, so `main.mts` calls
+`process.setSourceMapsEnabled(true)`. It runs *after* the import of `main/index.mjs` — an ES
+module's imports are hoisted — so an error thrown while the graph is still evaluating is not
+mapped. That gap is deliberate: the alternative is a module imported ahead of `index.mjs`, which
+`check-unbound.js` would report as unreachable from the main tree's entry.
+
+**The maps do not ship.** `build.files` drops them alongside the sources, so a packaged build has
+neither; a `sourceMappingURL` there 404s and DevTools falls back to the emitted source, which is
+the ordinary trade for not shipping a debug artifact.
+
 **One `module: "preserve"` config serves all three module kinds**, because it keeps each file's
 `import`/`export`/`require` exactly as written — so the source extension alone decides what the
 output is, and `preload.ts`'s `require('electron')` survives as CommonJS while `main/` and

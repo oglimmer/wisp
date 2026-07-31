@@ -27,7 +27,19 @@
   "compilerOptions": {
     "allowJs": false,
     "checkJs": false,
-    "noEmit": false
+    "noEmit": false,
+
+    // Without these, "compiled in place" costs the one property the plain-JS
+    // layout had for free: a stack trace or a DevTools breakpoint would land in
+    // emitted output rather than in the file you wrote.
+    //
+    // `inlineSources` embeds the original text *in the map*, which is what makes
+    // this work over the `app://` scheme: the renderer's maps are fetched through
+    // main/protocol.mts, and without the sources inline DevTools would have to go
+    // back for each .ts as well — a second content type to serve, and a request
+    // for a file a packaged build deliberately does not contain.
+    "sourceMap": true,
+    "inlineSources": true
   },
 
   // Grows one tree at a time, in step with the .gitignore rules for emitted output

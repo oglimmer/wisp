@@ -50,6 +50,7 @@
       "styles.css",
       "!**/*.ts",
       "!**/*.mts",
+      "!**/*.map",
       "!node_modules/node-pty/prebuilds/win32-*",
       "!node_modules/node-pty/prebuilds/darwin-x64"
     ],

@@ -28,6 +28,10 @@ const CONTENT_TYPE: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'text/javascript',
   '.mjs': 'text/javascript',
+  // Source maps, which DevTools fetches through this scheme like anything else.
+  // Absent from a packaged build (see package.json's `files`), where the request
+  // 404s and DevTools simply shows the emitted source instead.
+  '.map': 'application/json',
   '.css': 'text/css',
   '.json': 'application/json',
   '.svg': 'image/svg+xml',

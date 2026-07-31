@@ -80,22 +80,31 @@ function rm(rel) {
   }
 }
 
+// Everything emitted for one source: the JavaScript and its source map. Both are
+// removed together, because a stale map is worse than a stale module — it is still
+// served over `app://`, and it points DevTools at a version of the file that no
+// longer exists.
+function outputsFor(tree, source) {
+  const out = outputFor(tree, source);
+  return [out, `${out}.map`];
+}
+
 function clean() {
   let removed = 0;
   for (const tree of TREES) {
     const sources = sourcesOf(tree);
     // Output whose source is still here: remove it so a failed or partial compile
     // can never leave yesterday's version behind looking current.
-    for (const source of sources) if (rm(outputFor(tree, source))) removed++;
+    for (const source of sources) for (const out of outputsFor(tree, source)) if (rm(out)) removed++;
 
     // Output whose source has gone. Only safe once the tree holds no hand-written
     // JavaScript at all — see the note on `converted` above.
     if (!tree.converted) continue;
-    const expected = new Set(sources.map((s) => outputFor(tree, s)));
+    const expected = new Set(sources.flatMap((s) => outputsFor(tree, s)));
     const candidates = tree.only
-      ? tree.only.map((f) => path.join(tree.dir, f.slice(0, -tree.src.length) + tree.out))
+      ? tree.only.flatMap((f) => outputsFor(tree, f))
       : listDir(tree.dir)
-          .filter((f) => f.endsWith(tree.out))
+          .filter((f) => f.endsWith(tree.out) || f.endsWith(`${tree.out}.map`))
           .map((f) => path.join(tree.dir, f));
     for (const out of candidates) {
       if (expected.has(out)) continue;
