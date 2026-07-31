@@ -227,7 +227,7 @@ The whole app is built around Electron's **three-context security model**, and u
 
 - **`main/` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as a handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `move-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), the terminal pane's pty
   (`term-start`, `term-input`, `term-resize`, `term-stop` — the only place a *process* is spawned
-  interactively), watching the vault (`watch-vault`), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
+  interactively), watching the vault (`watch-vault`), folder picking (`choose-folder`), revealing an entry in the
   OS file manager (`reveal-path`) and config. The renderer has **no direct fs access** — anything touching disk must be added as a handler here.
 - **`preload.js`** — the only bridge between the two worlds. Runs with `contextIsolation: true` / `nodeIntegration: false` and exposes a minimal, hand-listed API on `window.api` via `contextBridge`. A new main-process handler is invisible to the UI until a corresponding method is added here.
 - **`renderer/` (renderer, browser context)** — all UI logic and state, split into ES modules with
@@ -258,7 +258,7 @@ un-required module means missing IPC handlers — exactly what used to be imposs
 | `protocol` | the `app://` scheme (registered at load time), serving the app's own directory and nothing else |
 | `tree` | `isIgnored`, `buildTree` (one walk feeds the tree and the recency list), the `read-tree` handler |
 | `refs` | Markdown refs: resolve (note-relative then vault-root) and `updateRefsAfterMove` — keeping every note's refs true across a move |
-| `window` | the one window (geometry persistence, the menu, `sendToWindow`), plus the shell/dialog handlers: `choose-folder`, `get-last-folder`, `alert-window`, `open-external`, `reveal-path` |
+| `window` | the one window (geometry persistence, the menu, `sendToWindow`), plus the shell/dialog handlers: `choose-folder`, `get-last-folder`, `open-external`, `reveal-path` |
 | `vault` | the CRUD handlers: read/write/create/delete/rename/move |
 | `reminders` | the vault-root `.wisp-reminders.json` read/write |
 | `watch` | `fs.watch` the vault, debounced, own writes suppressed via `noteOwnWrite` |
@@ -305,7 +305,7 @@ little or nothing; `index` depends on everything:
 | `positions` | the per-file caret and per-pane scroll offsets |
 | `tree` / `app` / `layout` | the file tree + the recency list + context menu; opening a vault; the dividers |
 | `git` / `git-commit` / `diff` | status and pull; commit and discard; the diff view |
-| `reminders` / `reminders-ui` | the model and repeat maths; the list, editor and alert |
+| `reminders` / `reminders-ui` | the model and the date maths; the grouped list and its editor |
 | `smart` / `images` / `shortcuts` | Claude-backed filing and lookup; image import; the help list |
 | `terminal` / `watch` | the `claude` pane; re-reading the vault when it changes underneath |
 | `index` | wires the UI up, then calls `init()` |
@@ -317,7 +317,7 @@ Two things about module state are load-bearing:
   writes* — `baseFolder`, `currentFile`, `dirty`, `viewMode`, `diffMode`, `diffOnlyFile` — live on
   the mutable object in `state.js` instead: `state.currentFile = x` works from anywhere. Everything
   else stays in the module that owns it. When another module needs to clear owned state, it calls
-  an exported reset (`resetGitState`, `resetSmartPanel`, `resetAlerts`) rather than assigning
+  an exported reset (`resetGitState`, `resetSmartPanel`) rather than assigning
   across the boundary — which would not even compile.
 - **The graph has cycles and that is fine**, because nothing calls across one during module
   *evaluation*: cross-module calls all happen inside functions, and function declarations are
@@ -366,7 +366,7 @@ else; change a tag in `index.html`, change the helper there.
   the try/catch that turns a thrown error into the `{ ok: false, error }` every handler already
   answers with, so the renderer has one way to read a result and no handler can reject. The few that
   return a bare value rather than an `{ ok }` envelope (`get-last-folder`, `choose-folder`,
-  `read-tree`, `open-external`, `alert-window`) stay on `ipcMain.handle`, and the synchronous
+  `read-tree`, `open-external`) stay on `ipcMain.handle`, and the synchronous
   `write-file-sync` is an `ipcMain.on` because it answers via `e.returnValue`.
 - **Path-traversal guard.** Any handler taking a target from the renderer resolves it through
   `vaultPath(baseFolder, target)`, which refuses anything outside the vault. It **throws** rather than
@@ -618,21 +618,19 @@ registered on the **capture** phase (so the window-level shortcuts, which stand 
 `dialogOpen()` is true, never see it) and is removed by the same `close` that removes the overlay,
 **exactly once** however the dialog was dismissed. Escape is the built-in fallback; `onKey(e, close)`
 is consulted first and returns true once it has handled the event. `onClose(value)` runs before the
-promise settles — that's where `commitModal` stashes its draft message and the reminder alert repaints
-the list. Backdrop-click cancels unless `dismissOnBackdrop: false`, which only the reminder alert sets:
-a reminder must not disappear to a stray click.
+promise settles — that's where `commitModal` stashes its draft message. Backdrop-click always cancels.
 
 **A dialog at a time**, because two overlays would both answer the same Escape. `shortcutsModal()`
-refuses to open over one. `drainAlerts()` instead *defers*: a reminder coming due while a dialog is up
-leaves the queue untouched, so the 15s ticker shows it once the dialog closes rather than stacking a
-second overlay on it or dropping the alert (`alerted` would never let it re-fire).
+refuses to open over one, and the reminder list's day ticker skips a repaint while one is up rather
+than rebuilding the list under it (nothing is lost: the day it rendered against is what it compares,
+so the next tick repaints).
 
 ### Find & replace
 
 The find bar (`#find-bar`, between the editor header and the panes) searches the **open file only** —
 `⌘F`/`Ctrl+F` to open, `⌘G`/`F3` (+`⇧`) to step, `⌘⌥F`/`Ctrl+H` for replace, `Esc` to close. The
 shortcuts hang off the same window-level `keydown` listener as `⌘S`, which bails out while a
-`.modal-overlay`/`.alert-overlay` is up so dialogs keep the keyboard.
+`.modal-overlay` is up so dialogs keep the keyboard.
 
 Highlighting takes two routes, because the panes are different beasts:
 
@@ -845,19 +843,59 @@ to the visual diff; `head`/`work` come back `null` so there is no text to lay ou
 
 ### Reminders
 
-The sidebar is split: the tree on top, a **reminder list** underneath, with a draggable `#divider-reminders` between them (height persisted in `localStorage`). Each entry holds its **next** due time — a repeating reminder is *rolled forward* on completion rather than duplicated, so the list only ever contains pending entries.
+The sidebar is split: the tree on top, a **reminder list** underneath, with a draggable `#divider-reminders` between them (height persisted in `localStorage`). **A reminder is one date, one title and one list.** It does not repeat, so the pane only ever contains pending entries and completing one is the end of it.
+
+**A reminder is due on a day, it never repeats, and it is never announced.** All three are
+narrowings of an earlier design, and each removed a whole mechanism:
+
+- **`due` is a plain local calendar date, `YYYY-MM-DD` — not an instant.** Nothing fires at a time,
+  so a time of day was a field to fill in that changed nothing; and storing an instant made the *date*
+  fragile, since one moment is two different days either side of a timezone. As strings these dates
+  compare and sort exactly as dates, so ordering and bucketing are string comparisons with no parsing
+  and no clock in them. `parseDate`/`dateKey` are the only conversions, both local-midnight.
+  **A file written by an older version is migrated on read**: `toDueDate()` takes an ISO instant back
+  to the local day it fell on, and the next `persistReminders()` rewrites the file in the new form.
+- **There is no popup, no window raise, no taskbar flash.** The `.alert-overlay` dialog, the
+  `alerted`/queue machinery and the `alert-window` IPC channel are all gone — a reminder is something
+  you *read* in the sidebar, and the app does not interrupt to say so.
+- **The list a reminder belongs to is free text, not a fixed set** (`list`, defaulting to
+  `DEFAULT_LIST` = `todo`). The editor's field is a `<datalist>` combobox rather than a select
+  precisely so it can be both: it offers the lists already in use *and* takes anything else typed in,
+  which is one control with no "new list…" mode to build or get out of. Nothing declares a list into
+  existence and nothing has to clean one up — `reminderLists()` derives the vocabulary from the
+  entries themselves, so a list stops being offered when its last reminder is completed.
+  Deduplication is case-insensitive ("Work" and "work" are one list, first spelling alphabetically
+  wins), and so is the filter's match, since only one of the two spellings is in the dropdown.
+  `normalizeList()` is the one place an absent or blank list becomes the default, which is also what
+  migrates every entry written before lists existed.
+- **The pane filters by list**, from a `<select>` in its header rebuilt on every render from
+  `reminderLists()`. The choice persists (`rawNotes.reminderList`, like the sidebar's tree/recent
+  mode) — a filter that silently reset would leave entries the user believes they have looked at
+  unseen. A filter pointing at a list with no entries left falls back to *All lists* rather than
+  showing an empty pane with no way to tell why. Two things follow the filter: the header badge
+  counts what is **on screen** (a count of entries the pane isn't showing would be a number with
+  nothing behind it), and a row's meta line names its list only while unfiltered, since with a filter
+  up every visible row has the same one. **A new reminder still defaults to `todo`**, not to the
+  filtered list.
+- **There is no repeat rule.** `RepeatRule`, `REPEAT_LABELS`, `occurrenceAt`/`nextOccurrence`, the
+  editor's Repeat select and the field in the smart-insert prompt are gone with it, and so is
+  `completeReminder()`: with nothing to roll a completed entry forward to, completing and deleting are
+  the same operation, so the ✓ button and the menu's **Done** both call `removeReminder()`. A
+  `repeat` left in a hand-edited (or older) file is ignored by `normalizeReminder()` and dropped on the
+  next write. What survives it is `addMonths()`, still needed for the 1-month extend step.
 
 - **Storage is one plain JSON file**, `.wisp-reminders.json` in the vault root, read and rewritten whole (`read-reminders` / `write-reminders`). Same philosophy as the tree: rebuild, don't mutate. The renderer holds the list in memory and calls `persistReminders()` after every change. `normalizeReminder()` drops malformed entries, so a hand-edited file can't break the app.
-- **Due watching lives in the renderer.** A 15s ticker (`checkDueReminders`) compares each `due` against now; newly-due entries are queued and shown **one at a time** as a full-screen `.alert-overlay` popup. `alerted` (a `Set` of `id@due`) stops an entry re-firing every tick while it sits overdue — but it's in-memory on purpose, so a restart re-alerts anything still outstanding. The popup offers snooze / open-note / done; `alert-window` in main raises and flashes the window so the popup isn't missed behind other apps.
-- **Repeat maths.** `occurrenceAt()` always recomputes from the *original* date and clamps to the month's last day, so a reminder anchored on the 31st doesn't drift forward through February (31 Jan → 28 Feb → 31 Mar, not 3 Mar → 3 Apr). `nextOccurrence()` steps until it lands in the future, which is what makes a long-overdue repeating reminder catch up in one go.
-- **Times are stored as UTC ISO strings**; `toLocalParts`/`fromLocalParts` convert to and from the local `YYYY-MM-DD` + `HH:mm` pair that the `date`/`time` inputs speak.
+- **The list is grouped by how far off each entry is**: overdue / today / this week / next week / later (`dueBucket`, `BUCKET_LABELS`). The list is already sorted by due date, so each bucket is one contiguous run and `renderReminders()` emits a heading wherever it changes; the same class goes on the row, so an entry scrolled away from its heading still says where it sits. **Today's rows are a different object, not a differently-coloured one** — filled, outlined and rounded, where every other row is a flat line of text (overdue is the same treatment in red). With nothing popping up, the row *is* the notification. The header badge counts overdue + today for the same reason.
+- **The day is the only clock.** Everything the list says about *when* derives from today's date, so one `today()` is taken per render and threaded through (a list rendered across midnight would otherwise be grouped against two different days), and the ticker — once every `REMINDER_TICK_MS`, now a minute rather than 15s — repaints when and only when that date changes. It skips a repaint while a dialog is up rather than rebuilding the list under one; it compares the day it rendered against, so the next tick catches up.
+- **Weeks start on Monday.** Chromium can report the locale's own first day (`Intl.Locale.prototype.getWeekInfo`), but a list that regroups itself by where the app is running is harder to reason about, and the boundary only ever moves a row between two adjacent groups.
+- **"Extend due to" replaced snooze, and moves the due date.** `EXTEND_OPTIONS` (1 day / 3 days / 1 week / 1 month — whole days and months, because the due date is a day) is offered on a row's context menu, each entry showing the date it would land on. `extendReminder()` measures the step from **whichever is later, today or the entry's own `due`**: a pending reminder moves by the step asked for, while an overdue one lands the step from today rather than somewhere still in the past. The month step goes through `addMonths()`, which clamps to the target month's last day (31 Jan + 1 month is 28 Feb, not 3 Mar).
 
 ### Smart insert (Claude-powered filing)
 
 The panel at the top of the editor pane lets the user jot a note and have Claude file it into the right place. It shells out to the **`claude` CLI** from the main process (`spawn('claude', ['-p', prompt, '--output-format', 'json', '--allowedTools', 'Read,Glob,Grep'])`, cwd = vault root). Two handlers back it: `smart-check` runs Claude and returns a *plan* (`targetFile`, `isNew`, `reason`, `newContent`, `oldContent`) without writing anything; `smart-apply` writes an approved plan (path-traversal-guarded, creates parent dirs).
 
 - **Check previews, Add applies.** `renderer/smart.js` caches the plan in `smartPlan`/`smartPlanFor`; editing the note invalidates it so **Add** re-checks automatically rather than filing stale content. The preview shows the target file, a NEW/EXISTING badge, Claude's reason, and a collapsed line-diff (`lineDiff`/`condenseDiff`).
-- **Every check also asks for a reminder.** The same single call returns an optional `reminder` alongside the filing plan (the prompt includes `describeNow()` so relative dates like "next Tuesday" resolve). *Checked* always, *created* only for a genuine time-bound commitment — a plain fact returns `null`. `sanitizeReminder()` in main drops anything malformed rather than surfacing a bogus alarm. The preview renders it as an opt-out card (`renderReminderProposal`) with an **Edit…** button into the normal reminder editor; **Add** writes the file and only then creates the reminder, linked to the file it filed into.
+- **Every check also asks for a reminder.** The same single call returns an optional `reminder` alongside the filing plan (the prompt includes `describeNow()` so relative dates like "next Tuesday" resolve). *Checked* always, *created* only for a genuine time-bound commitment — a plain fact returns `null`. `sanitizeReminder()` in main drops anything malformed rather than surfacing a bogus reminder, and takes the proposed date **as written** — trimming a time off if the model added one — because `new Date('2026-08-03')` is UTC midnight, which is the day before west of Greenwich. The preview renders it as an opt-out card (`renderReminderProposal`) with an **Edit…** button into the normal reminder editor; **Add** writes the file and only then creates the reminder, linked to the file it filed into.
 - **Prompt inlines small files.** `gatherFiles` embeds the contents of files under the size/total budget directly in the prompt so Claude usually decides in **one turn without `Read` round-trips** (large files are listed by name and read on demand). This is the difference between ~7s and Claude crawling the vault.
 - **Flush before check/apply.** Both flows call `flushSave()` first so Claude reads the latest on-disk content and the post-apply `openFile()` can't clobber the AI's write with a stale editor buffer.
 - **Reading the reply is `readClaudeJson()`, shared with lookup and image analysis, and the parsing is the fiddly half.** `--output-format json` wraps the model's text in a result envelope that also says how the run ended, so a CLI failure is reported *as itself*: `subtype`/`is_error` carry a usage limit or an exhausted turn budget, `api_error_status` an API error, and `stop_reason: max_tokens` a reply cut off mid-object. Reading only `result` turned all of those into one "could not understand Claude's response", which is the one thing they are not — and a parse failure leaves no other trace, so `logClaudeFailure()` puts the raw reply (head and tail, since the cut is only visible at the end) on the main process's console. **The model's JSON is found by scanning for balanced `{…}` spans that respect string literals** (`jsonSpans`), because `newContent` is a Markdown note and routinely contains braces and code fences: the old first-`{`-to-last-`}` slice broke on any prose brace, and stripping the first ``` fence truncated the JSON of every note that held one — reproducibly, which is what made the failure look intermittent.

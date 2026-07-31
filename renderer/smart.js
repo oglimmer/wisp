@@ -4,7 +4,7 @@ import { api } from './api.js';
 import { dividerPreviewEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, smartPreviewEl, smartStatusEl, treeEl } from './dom.js';
 import { flushSave, openFile } from './editor.js';
 import { lineDiff } from './lcs.js';
-import { REPEAT_LABELS, formatDue, newReminderId, upsertReminder } from './reminders.js';
+import { formatDue, newReminderId, normalizeList, upsertReminder } from './reminders.js';
 import { openVaultNote, reminderModal } from './reminders-ui.js';
 import { state } from './state.js';
 import { expandAncestors, refreshTree } from './tree.js';
@@ -130,7 +130,9 @@ export async function smartAdd() {
       id: plan.reminder.id || newReminderId(),
       title: plan.reminder.title,
       due: plan.reminder.due,
-      repeat: plan.reminder.repeat || 'none',
+      // Claude isn't asked which list to file it under, so a proposal lands in the
+      // default one unless the user picked another through the editor.
+      list: normalizeList(plan.reminder.list),
       note: typeof plan.reminder.note === 'string' ? plan.reminder.note : text,
       file: typeof plan.reminder.file === 'string' ? plan.reminder.file : plan.targetFile,
     });
@@ -279,11 +281,7 @@ function renderReminderProposal(plan) {
 
   const meta = document.createElement('div');
   meta.className = 'sp-rem-meta';
-  const bits = [formatDue(plan.reminder.due)];
-  if (plan.reminder.repeat && plan.reminder.repeat !== 'none') {
-    bits.push(REPEAT_LABELS[plan.reminder.repeat]);
-  }
-  meta.textContent = bits.join(' · ');
+  meta.textContent = formatDue(plan.reminder.due);
 
   body.appendChild(head);
   body.appendChild(meta);
@@ -302,7 +300,7 @@ function renderReminderProposal(plan) {
       id: newReminderId(),
       title: plan.reminder.title,
       due: plan.reminder.due,
-      repeat: plan.reminder.repeat,
+      list: normalizeList(plan.reminder.list),
       note: smartInputEl.value.trim(),
       file: plan.targetFile,
     });

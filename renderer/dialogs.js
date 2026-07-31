@@ -2,34 +2,25 @@
 // section of CLAUDE.md for what openModal owns and why.
 
 // Every dialog in the app is the same thing: a full-screen overlay holding one
-// box, closed by Escape, by its own buttons, and — unless it's a reminder alert,
-// which must not go away to a stray click — by the backdrop. Only the contents
-// differ, so the scaffolding lives here once. That includes the part that is easy
-// to get subtly wrong: the keydown listener is registered on the *capture* phase
-// (so the window-level shortcuts, which stand down while an overlay is up, never
-// see it) and is removed by the same `close` that removes the overlay, exactly
-// once however the dialog was dismissed.
+// box, closed by Escape, by its own buttons, and by the backdrop. Only the
+// contents differ, so the scaffolding lives here once. That includes the part
+// that is easy to get subtly wrong: the keydown listener is registered on the
+// *capture* phase (so the window-level shortcuts, which stand down while an
+// overlay is up, never see it) and is removed by the same `close` that removes
+// the overlay, exactly once however the dialog was dismissed.
 //
 // Returns `{ box, close, promise }`: fill `box`, call `close(value)` to settle.
 // `onKey(e, close)` is consulted first and returns true once it has handled the
 // event; Escape is the fallback. `onClose(value)` runs before the promise settles.
 /**
  * @typedef {(value?: any) => void} CloseModal
- * @param {{ overlayClass?: string, boxClass?: string, cancelValue?: any,
- *           dismissOnBackdrop?: boolean,
+ * @param {{ boxClass?: string, cancelValue?: any,
  *           onKey?: (e: KeyboardEvent, close: CloseModal) => boolean | void,
  *           onClose?: (value: any) => void }} [opts]
  */
-export function openModal({
-  overlayClass = 'modal-overlay',
-  boxClass = 'modal-box',
-  cancelValue = null,
-  dismissOnBackdrop = true,
-  onKey,
-  onClose,
-} = {}) {
+export function openModal({ boxClass = 'modal-box', cancelValue = null, onKey, onClose } = {}) {
   const overlay = document.createElement('div');
-  overlay.className = overlayClass;
+  overlay.className = 'modal-overlay';
   const box = document.createElement('div');
   box.className = boxClass;
   overlay.appendChild(box);
@@ -57,18 +48,16 @@ export function openModal({
     }
   }
   document.addEventListener('keydown', onKeyDown, true);
-  if (dismissOnBackdrop) {
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) close();
-    });
-  }
-  return { overlay, box, close, promise };
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === overlay) close();
+  });
+  return { box, close, promise };
 }
 
 // A dialog at a time: two overlays would both answer the same Escape, and the
-// window-level shortcuts stand down while either is up.
+// window-level shortcuts stand down while one is up.
 export function dialogOpen() {
-  return !!document.querySelector('.modal-overlay, .alert-overlay');
+  return !!document.querySelector('.modal-overlay');
 }
 
 export function promptModal(title, defaultValue = '') {

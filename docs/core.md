@@ -96,7 +96,7 @@ src/shared/
       service.ts
     reminders/
       types.ts
-      recurrence.ts
+      dates.ts
       normalize.ts
       service.ts
     watcher/
@@ -272,15 +272,21 @@ absolute path.
 
 The shared reminder core owns:
 
-- reminder and repeat-rule types;
-- normalization;
-- local date/time conversion;
-- monthly and yearly anchor behavior;
-- next-occurrence calculation;
-- complete, snooze, and remap use cases.
+- the reminder type: one title, one date, one list, no repeat rule;
+- normalization, including the migration of legacy instant `due` values to dates,
+  the dropping of any legacy `repeat` field, and the defaulting of an absent list;
+- the list vocabulary, derived from the entries rather than configured;
+- local calendar-date handling (`due` is `YYYY-MM-DD`, never an instant);
+- month-end clamping for the extend-by-a-month step;
+- extend, remove, and remap use cases;
+- due-bucket grouping (overdue / today / this week / next week / later).
+
+Reminders are read, not announced: the core owns no alerting, and there is no
+notification port to implement. They do not recur, so there is no scheduler and
+no occurrence state.
 
 Persistence is a port. Local uses `.wisp-reminders.json`; server may use
-PostgreSQL when reliable scheduling and per-user reminders are implemented.
+PostgreSQL when per-user reminders are implemented.
 
 ## Watcher Responsibilities
 
@@ -382,7 +388,7 @@ Authorization errors are server errors and do not originate in the shared core.
 | Git operation sequencing | Core | `shared/core/git/service.ts` |
 | `isBinaryBuffer` | Core | `shared/core/git/diff.ts` |
 | MIME and image reference rules | Core | `shared/core/images/*` |
-| reminder recurrence math | Core | `shared/core/reminders/recurrence.ts` |
+| reminder date and bucket math | Core | `shared/core/reminders/dates.ts` |
 | reminder normalization | Core | `shared/core/reminders/normalize.ts` |
 | watcher filtering | Core | `shared/core/watcher/filters.ts` |
 | `renderer/lcs.js` | Shared editor | `shared/editor/editing/lcs.ts` |
@@ -414,7 +420,7 @@ The core requires:
 - property tests for path normalization and containment;
 - contract tests for `VaultRepository`, `GitRunner`, and `EditorHost`;
 - fixture tests for Markdown reference rewrites;
-- recurrence tests across DST, leap years, and month ends;
+- reminder date tests across DST, leap years, month ends and week boundaries;
 - adapter tests against temporary real filesystems;
 - the existing Electron smoke suite as a regression gate.
 

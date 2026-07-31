@@ -1,58 +1,104 @@
-// The reminder list, its editor dialog, and the due-reminder popup.
+// The reminder list and its editor dialog.
 
-import { api } from './api.js';
 import { dialogOpen, openModal } from './dialogs.js';
-import { reminderCountEl, reminderListEl, treeEl } from './dom.js';
+import { reminderCountEl, reminderFilterEl, reminderListEl, treeEl } from './dom.js';
 import { openFile } from './editor.js';
-import { REMINDER_TICK_MS, REPEAT_LABELS, SNOOZE_OPTIONS, completeReminder, defaultDue, formatDue, fromLocalParts, newReminderId, reminders, removeReminder, snoozeReminder, toLocalParts, upsertReminder } from './reminders.js';
-
-// The ticker's own state. It sits here rather than with the model because only
-// the alerting path reads or writes it — and an ES module's exported binding is
-// read-only to importers, so `overdueSig = …` has to happen where it is declared.
-/** @type {ReturnType<typeof setInterval> | null} */
-let reminderTicker = null;
-// Which `id@due` pairs have already popped this session, so a reminder left
-// overdue in the list doesn't re-alert every tick. A restart alerts again on
-// purpose — an unhandled reminder should still be in your face.
-const alerted = new Set();
-const alertQueue = [];
-let alertShowing = false;
-let overdueSig = ''; // last-rendered set of overdue ids; drives re-renders
-
-// Reloading the list invalidates every pending pop-up: the entries behind them
-// may be gone, rescheduled, or already done.
-export function resetAlerts() {
-  alerted.clear();
-  alertQueue.length = 0;
-  overdueSig = '';
-}
+import { BUCKET_LABELS, DEFAULT_LIST, EXTEND_OPTIONS, REMINDER_TICK_MS, defaultDue, dueBucket, extendReminder, extendedDue, formatDue, newReminderId, normalizeList, parseDate, reminderLists, reminders, removeReminder, toDueDate, today, upsertReminder } from './reminders.js';
 import { state } from './state.js';
 import { expandAncestors, refreshTree, showContextMenu } from './tree.js';
 import { cssEscape, relativePath } from './util.js';
 
+// The ticker's own state: the day the list was last rendered against. Everything
+// the list says about *when* — the groups, the row styling, the badge — derives
+// from today's date and nothing else, so a repaint is needed exactly when that
+// date changes, and never otherwise. (An ES module's exported binding is
+// read-only to importers, so it has to live in the module that assigns it.)
+/** @type {ReturnType<typeof setInterval> | null} */
+let reminderTicker = null;
+let renderedDay = '';
+
+// Which list the pane is showing, or ALL_LISTS for every one of them. It survives
+// a restart like the sidebar's tree/recent choice does — a filter that silently
+// reset would leave entries the user thinks they have looked at unseen. It is
+// matched case-insensitively, because `reminderLists()` treats "Work" and "work"
+// as one list and only one of the two spellings is in the dropdown.
+const ALL_LISTS = '\u0000all';
+let listFilter = localStorage.getItem('rawNotes.reminderList') || ALL_LISTS;
+
+function inFilter(rem) {
+  return listFilter === ALL_LISTS || rem.list.toLowerCase() === listFilter.toLowerCase();
+}
+
+// Rebuild the header's filter dropdown from the lists actually in use. A filter
+// pointing at a list that no longer has any entries falls back to all of them
+// rather than showing an empty pane with no way to tell why.
+function renderFilter(lists) {
+  if (listFilter !== ALL_LISTS && !lists.some((n) => n.toLowerCase() === listFilter.toLowerCase())) {
+    setListFilter(ALL_LISTS, false);
+  }
+  reminderFilterEl.innerHTML = '';
+  for (const [value, label] of [[ALL_LISTS, 'All lists'], ...lists.map((n) => [n, n])]) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    reminderFilterEl.appendChild(opt);
+  }
+  reminderFilterEl.value = listFilter;
+}
+
+function setListFilter(value, repaint = true) {
+  listFilter = value;
+  localStorage.setItem('rawNotes.reminderList', value);
+  if (repaint) renderReminders();
+}
+
+reminderFilterEl.addEventListener('change', () => setListFilter(reminderFilterEl.value));
+
 export function renderReminders() {
   reminderListEl.innerHTML = '';
-  const now = Date.now();
-  let overdue = 0;
+  // One day for the whole render: an entry either side of a midnight that passed
+  // mid-loop would otherwise be grouped against two different "today"s.
+  const now = today();
+  renderedDay = now;
+  let pressing = 0; // overdue or due today — what the header badge counts
+  let bucket = '';
 
-  if (!reminders.length) {
+  renderFilter(reminderLists());
+  const shown = reminders.filter(inFilter);
+
+  if (!shown.length) {
     const empty = document.createElement('div');
     empty.className = 'reminder-empty';
-    empty.textContent = 'No reminders. Use ＋ to add one.';
+    empty.textContent =
+      listFilter === ALL_LISTS
+        ? 'No reminders. Use ＋ to add one.'
+        : `Nothing in ${listFilter}.`;
     reminderListEl.appendChild(empty);
   }
 
-  for (const rem of reminders) {
-    const isOverdue = Date.parse(rem.due) <= now;
-    if (isOverdue) overdue++;
+  // The badge counts what is on screen: with a filter up, a count of entries the
+  // pane is not showing would be a number with nothing behind it.
+  for (const rem of shown) {
+    const b = dueBucket(rem.due, now);
+    if (b === 'overdue' || b === 'today') pressing++;
+
+    // The list is sorted by due date, so each bucket is one contiguous run and a
+    // heading goes in wherever it changes.
+    if (b !== bucket) {
+      bucket = b;
+      const head = document.createElement('div');
+      head.className = 'reminder-group group-' + b;
+      head.textContent = BUCKET_LABELS[b];
+      reminderListEl.appendChild(head);
+    }
 
     const row = document.createElement('div');
-    row.className = 'reminder-row' + (isOverdue ? ' overdue' : '');
+    row.className = 'reminder-row group-' + b;
     row.title = rem.note || rem.title;
 
     const icon = document.createElement('span');
     icon.className = 'reminder-icon';
-    icon.textContent = isOverdue ? '🔔' : '⏰';
+    icon.textContent = b === 'overdue' ? '❗' : b === 'today' ? '🔔' : '⏰';
 
     const body = document.createElement('div');
     body.className = 'reminder-body';
@@ -64,7 +110,9 @@ export function renderReminders() {
     const meta = document.createElement('div');
     meta.className = 'reminder-meta';
     const bits = [formatDue(rem.due)];
-    if (rem.repeat && rem.repeat !== 'none') bits.push(REPEAT_LABELS[rem.repeat]);
+    // The list is what every visible row has in common while a filter is up, so
+    // it only earns its place in the meta line when they might differ.
+    if (listFilter === ALL_LISTS) bits.push(rem.list);
     if (rem.file) bits.push(rem.file);
     meta.textContent = bits.join(' · ');
 
@@ -74,10 +122,10 @@ export function renderReminders() {
     const done = document.createElement('button');
     done.className = 'reminder-done';
     done.textContent = '✓';
-    done.title = rem.repeat === 'none' ? 'Complete' : 'Complete this occurrence';
+    done.title = 'Done';
     done.addEventListener('click', (e) => {
       e.stopPropagation();
-      completeReminder(rem.id);
+      removeReminder(rem.id);
     });
 
     row.appendChild(icon);
@@ -88,17 +136,22 @@ export function renderReminders() {
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const items = [{ label: 'Edit…', fn: () => editReminder(rem) }];
+      for (const opt of EXTEND_OPTIONS) {
+        items.push({
+          label: `Extend by ${opt.label} — ${formatDue(extendedDue(rem.due, opt))}`,
+          fn: () => extendReminder(rem.id, opt),
+        });
+      }
       if (rem.file) items.push({ label: 'Open note', fn: () => openVaultNote(rem.file) });
-      items.push({ label: 'Complete', fn: () => completeReminder(rem.id) });
-      items.push({ label: 'Delete', fn: () => removeReminder(rem.id) });
+      items.push({ label: 'Done', fn: () => removeReminder(rem.id) });
       showContextMenu(e, items);
     });
 
     reminderListEl.appendChild(row);
   }
 
-  reminderCountEl.textContent = String(overdue);
-  reminderCountEl.classList.toggle('hidden', overdue === 0);
+  reminderCountEl.textContent = String(pressing);
+  reminderCountEl.classList.toggle('hidden', pressing === 0);
 }
 
 // Open a note by its vault-relative path (reminders and lookup sources both use this).
@@ -145,11 +198,10 @@ export function reminderModal(existing, defaultFile = '') {
     id: newReminderId(),
     title: '',
     due: defaultDue(),
-    repeat: 'none',
+    list: DEFAULT_LIST,
     note: '',
     file: defaultFile,
   };
-  const parts = toLocalParts(base.due);
 
   const heading = document.createElement('div');
   heading.className = 'modal-title';
@@ -176,26 +228,36 @@ export function reminderModal(existing, defaultFile = '') {
   titleInput.placeholder = 'What should you be reminded of?';
   field('Reminder', titleInput);
 
-  // Date / time / repeat share one row.
+  // Date and list share one row. There is no time of day and no repeat: a
+  // reminder is due on a day and happens once (see reminders.js). A proposal
+  // Claude made may still carry an instant, so the date is fed through the same
+  // reduction the store uses.
   const whenRow = document.createElement('div');
   whenRow.className = 'rm-row';
   const dateInput = document.createElement('input');
   dateInput.className = 'modal-input';
   dateInput.type = 'date';
-  dateInput.value = parts.date;
-  const timeInput = document.createElement('input');
-  timeInput.className = 'modal-input';
-  timeInput.type = 'time';
-  timeInput.value = parts.time;
-  const repeatSelect = document.createElement('select');
-  repeatSelect.className = 'modal-input';
-  for (const [value, label] of Object.entries(REPEAT_LABELS)) {
+  dateInput.value = toDueDate(base.due) || defaultDue();
+
+  // A combobox, not a select: the lists already in use are offered, and anything
+  // else typed in makes a new one. `<datalist>` is exactly that — the input keeps
+  // taking free text, so there is no "new list…" mode to build or get out of. The
+  // id is unique per dialog, since two openings would otherwise share one list.
+  const listInput = document.createElement('input');
+  listInput.className = 'modal-input';
+  listInput.type = 'text';
+  listInput.value = normalizeList(base.list);
+  listInput.placeholder = DEFAULT_LIST;
+  listInput.autocomplete = 'off';
+  const listOptions = document.createElement('datalist');
+  listOptions.id = 'rm-lists-' + base.id;
+  for (const name of reminderLists()) {
     const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = label;
-    repeatSelect.appendChild(opt);
+    opt.value = name;
+    listOptions.appendChild(opt);
   }
-  repeatSelect.value = REPEAT_LABELS[base.repeat] ? base.repeat : 'none';
+  listInput.setAttribute('list', listOptions.id);
+  box.appendChild(listOptions);
 
   const cell = (labelText, control) => {
     const wrap = document.createElement('div');
@@ -208,15 +270,14 @@ export function reminderModal(existing, defaultFile = '') {
     whenRow.appendChild(wrap);
   };
   cell('Date', dateInput);
-  cell('Time', timeInput);
-  cell('Repeat', repeatSelect);
+  cell('List', listInput);
   box.appendChild(whenRow);
 
   const noteInput = document.createElement('textarea');
   noteInput.className = 'modal-input rm-note';
   noteInput.rows = 3;
   noteInput.value = base.note;
-  noteInput.placeholder = 'Optional details shown in the popup';
+  noteInput.placeholder = 'Optional details shown in the list';
   field('Details', noteInput);
 
   const fileInput = document.createElement('input');
@@ -260,8 +321,9 @@ export function reminderModal(existing, defaultFile = '') {
       titleInput.focus();
       return;
     }
-    const due = fromLocalParts(dateInput.value, timeInput.value);
-    if (!due) {
+    // An empty date input reads as '', and a browser that lets one be typed can
+    // hand back something that isn't a date at all.
+    if (!parseDate(dateInput.value)) {
       dateInput.classList.add('invalid');
       dateInput.focus();
       return;
@@ -271,8 +333,8 @@ export function reminderModal(existing, defaultFile = '') {
       reminder: {
         id: base.id,
         title,
-        due,
-        repeat: repeatSelect.value,
+        due: dateInput.value,
+        list: normalizeList(listInput.value),
         note: noteInput.value.trim(),
         file: fileInput.value.trim(),
       },
@@ -291,127 +353,19 @@ export function reminderModal(existing, defaultFile = '') {
   return promise;
 }
 
-// ---- Due watching + the alert popup ----
+// ---- The day ticker ----
+// Reminders are read, not announced: nothing pops up, raises the window or
+// interrupts. What the ticker is for is the one thing the list cannot notice by
+// itself — the day rolling over underneath it, which moves entries between
+// groups (and into Today) while the window just sits there.
 export function startReminderTicker() {
   if (reminderTicker) clearInterval(reminderTicker);
-  reminderTicker = setInterval(checkDueReminders, REMINDER_TICK_MS);
-  checkDueReminders();
+  reminderTicker = setInterval(checkDay, REMINDER_TICK_MS);
 }
 
-function checkDueReminders() {
-  const now = Date.now();
-  const due = [];
-  for (const rem of reminders) {
-    const t = Date.parse(rem.due);
-    if (Number.isNaN(t) || t > now) continue;
-    due.push(rem.id);
-    const key = rem.id + '@' + rem.due;
-    if (alerted.has(key)) continue;
-    alerted.add(key);
-    alertQueue.push(rem.id);
-  }
-  // Only repaint when the overdue set actually changed, so the list doesn't
-  // flicker under the cursor every tick.
-  const sig = due.join(',');
-  if (sig !== overdueSig) {
-    overdueSig = sig;
-    renderReminders();
-  }
-  drainAlerts();
-}
-
-// Show queued alerts one at a time — several reminders can come due together.
-// A dialog already up keeps the queue intact rather than stacking a second
-// overlay on it: the ticker retries, so the alert is deferred, never dropped.
-function drainAlerts() {
-  if (alertShowing || dialogOpen()) return;
-  while (alertQueue.length) {
-    const rem = reminders.find((r) => r.id === alertQueue.shift());
-    if (rem) {
-      showReminderAlert(rem);
-      return;
-    }
-  }
-}
-
-function showReminderAlert(rem) {
-  alertShowing = true;
-  api.alertWindow(); // bring the window forward / flash the taskbar
-
-  // No backdrop dismissal: a reminder must not disappear to a stray click.
-  // Escape does dismiss it — the entry stays in the list, overdue.
-  const { box, close } = openModal({
-    overlayClass: 'alert-overlay',
-    boxClass: 'alert-box',
-    dismissOnBackdrop: false,
-    onClose: () => {
-      alertShowing = false;
-      renderReminders(); // the entry is overdue now — repaint it as such
-      drainAlerts();
-    },
-  });
-
-  const bell = document.createElement('div');
-  bell.className = 'alert-bell';
-  bell.textContent = '🔔';
-
-  const kicker = document.createElement('div');
-  kicker.className = 'alert-kicker';
-  kicker.textContent = rem.repeat === 'none' ? 'Reminder' : REPEAT_LABELS[rem.repeat] + ' reminder';
-
-  const title = document.createElement('div');
-  title.className = 'alert-title';
-  title.textContent = rem.title;
-
-  const when = document.createElement('div');
-  when.className = 'alert-when';
-  when.textContent = formatDue(rem.due);
-
-  box.appendChild(bell);
-  box.appendChild(kicker);
-  box.appendChild(title);
-  box.appendChild(when);
-
-  if (rem.note) {
-    const note = document.createElement('div');
-    note.className = 'alert-note';
-    note.textContent = rem.note;
-    box.appendChild(note);
-  }
-
-  const actions = document.createElement('div');
-  actions.className = 'alert-actions';
-
-  const mkBtn = (label, className, fn) => {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (className) b.className = className;
-    b.addEventListener('click', fn);
-    actions.appendChild(b);
-    return b;
-  };
-
-  for (const opt of SNOOZE_OPTIONS) {
-    mkBtn(opt.label, 'alert-snooze', () => {
-      close();
-      snoozeReminder(rem.id, opt.minutes);
-    });
-  }
-  if (rem.file) {
-    mkBtn('Open note', '', () => {
-      close();
-      openVaultNote(rem.file);
-    });
-  }
-  const doneBtn = mkBtn(
-    rem.repeat === 'none' ? 'Done' : 'Done — next ' + REPEAT_LABELS[rem.repeat].toLowerCase(),
-    'alert-primary',
-    () => {
-      close();
-      completeReminder(rem.id);
-    }
-  );
-
-  box.appendChild(actions);
-  doneBtn.focus();
+function checkDay() {
+  // A dialog is quite possibly the reminder editor, whose Save repaints anyway;
+  // repainting the list underneath one is never urgent enough to risk it.
+  if (dialogOpen() || today() === renderedDay) return;
+  renderReminders();
 }

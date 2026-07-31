@@ -55,14 +55,13 @@ async function gatherFiles(baseFolder) {
   return out;
 }
 
-// Human-readable local "now", so Claude can resolve relative dates in a note
-// ("tomorrow", "next Friday", "in two weeks") into an absolute reminder time.
+// Human-readable local "today", so Claude can resolve relative dates in a note
+// ("tomorrow", "next Friday", "in two weeks") into an absolute reminder date. The
+// weekday is what makes "next Friday" resolvable at all.
 function describeNow() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
-  const stamp =
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   const day = now.toLocaleDateString('en-US', { weekday: 'long' });
   return `${stamp} (${day})`;
 }
@@ -104,40 +103,41 @@ function buildInsertPrompt(files, text, currentRel) {
     '- You may lightly adjust wording for fit, but never invent unrelated content or delete existing content.',
     '- Contents above are provided inline; only use Read for files marked as large.',
     '',
-    `The current local date and time is ${describeNow()}.`,
+    `Today's local date is ${describeNow()}.`,
     'Then decide whether this note also warrants a reminder:',
     '- Create one only for a genuine time-bound commitment: a deadline, appointment, booking,',
     '  renewal, follow-up, or an explicit "remind me" / "don\'t forget".',
     '- A plain fact, idea or reference needs no reminder — use null in that case.',
-    '- "due" must be an absolute LOCAL date-time in "YYYY-MM-DDTHH:mm" form, resolved against',
-    '  the current date and time above, and it must be in the future.',
-    '- If the note implies a day but no time of day, use 09:00.',
-    '- For something recurring, set "repeat" to daily, weekly, monthly or yearly; otherwise "none".',
+    '- "due" is a DAY, not a time: an absolute local date in "YYYY-MM-DD" form, resolved',
+    '  against today\'s date above, and it must be today or later.',
     '- "title" is a short imperative label (e.g. "Renew passport"), not the whole note.',
     '',
     'Respond with ONLY a JSON object (no prose, no code fence) of exactly this shape:',
     '{"targetFile":"<relative path>","isNew":<true|false>,"reason":"<one short sentence>",' +
       '"newContent":"<the complete new content of the target file>",' +
-      '"reminder":{"title":"<short label>","due":"<YYYY-MM-DDTHH:mm>","repeat":"<none|daily|weekly|monthly|yearly>","reason":"<why this needs a reminder>"}}',
+      '"reminder":{"title":"<short label>","due":"<YYYY-MM-DD>","reason":"<why this needs a reminder>"}}',
     'Set "reminder" to null when no reminder is warranted.',
   ].join('\n');
 }
 
-// Validate the reminder Claude proposed. Anything malformed (or in the past) is
-// dropped rather than surfaced — a bogus alarm is worse than no alarm.
-const REPEATS = new Set(['none', 'daily', 'weekly', 'monthly', 'yearly']);
+// Validate the reminder Claude proposed. Anything malformed is dropped rather
+// than surfaced — a bogus reminder is worse than no reminder.
 function sanitizeReminder(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const title = typeof raw.title === 'string' ? raw.title.trim() : '';
   const due = typeof raw.due === 'string' ? raw.due.trim() : '';
   if (!title || !due) return null;
-  // "YYYY-MM-DDTHH:mm" with no zone is parsed as local time, which is what we want.
-  const when = new Date(due);
-  if (Number.isNaN(when.getTime())) return null;
+  // A reminder is due on a *day*, so the date is taken as written rather than
+  // parsed into an instant — `new Date('2026-08-03')` is UTC midnight, which is
+  // the day before west of Greenwich. A model that answered with a time anyway
+  // (or a full ISO instant) is trimmed to its date instead of being thrown away.
+  const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(due);
+  if (!day) return null;
+  const at = new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3]));
+  if (at.getMonth() !== Number(day[2]) - 1 || at.getDate() !== Number(day[3])) return null;
   return {
     title,
-    due: when.toISOString(),
-    repeat: REPEATS.has(raw.repeat) ? raw.repeat : 'none',
+    due: day[0],
     reason: typeof raw.reason === 'string' ? raw.reason.trim() : '',
   };
 }

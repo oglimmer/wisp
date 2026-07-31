@@ -23,7 +23,6 @@ computer:
 - opening Finder or the platform file manager;
 - local Git and Claude CLI execution;
 - the interactive Claude PTY;
-- desktop reminders and window alerts;
 - macOS and Linux packaging.
 
 It composes shared vault and editor services with Electron adapters.

@@ -18,6 +18,8 @@ const el = byId;
 const btn = (id) => /** @type {any} */ (el(id));
 /** @returns {HTMLInputElement} */
 const input = (id) => /** @type {any} */ (el(id));
+/** @returns {HTMLSelectElement} */
+const select = (id) => /** @type {any} */ (el(id));
 /** @returns {HTMLTextAreaElement} */
 const textarea = (id) => /** @type {any} */ (el(id));
 /** @returns {HTMLImageElement} */
@@ -81,4 +83,5 @@ export const terminalRestartBtn = btn('terminal-restart-btn');
 export const dividerTerminalEl = el('divider-terminal');
 export const reminderListEl = el('reminder-list');
 export const reminderCountEl = el('reminder-count');
+export const reminderFilterEl = select('reminder-filter');
 export const newReminderBtn = btn('new-reminder-btn');

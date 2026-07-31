@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen } from 'electron';
+import { BrowserWindow, Menu, ipcMain, dialog, shell, screen } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -212,19 +212,4 @@ ipcMain.handle('choose-folder', async () => {
   cfg.baseFolder = folder;
   saveConfig(cfg);
   return folder;
-});
-
-// A reminder has come due: make sure the window is actually in front of the user,
-// and flash the taskbar entry / bounce the dock if it isn't.
-ipcMain.handle('alert-window', () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  try {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    if (!mainWindow.isFocused()) {
-      mainWindow.flashFrame(true);
-      if (process.platform === 'darwin' && app.dock) app.dock.bounce('informational');
-    }
-    mainWindow.focus();
-  } catch {}
 });

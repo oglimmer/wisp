@@ -44,15 +44,14 @@ export interface TreeNode {
   mtime?: number;
 }
 
-export type RepeatRule = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
-
 /** A stored reminder, as `normalizeReminder()` in the renderer produces it. */
 export interface Reminder {
   id: string;
   title: string;
-  /** UTC ISO string. */
+  /** The local calendar date it is due on, `YYYY-MM-DD` — not an instant. */
   due: string;
-  repeat: RepeatRule;
+  /** The list it belongs to — free text, never empty (see `DEFAULT_LIST`). */
+  list: string;
   note: string;
   /** Vault-relative path of the note this reminder is attached to, or ''. */
   file: string;
@@ -65,12 +64,13 @@ export interface Reminder {
  */
 export interface ReminderProposal {
   title: string;
+  /** `YYYY-MM-DD`, as `sanitizeReminder()` in main/smart.mjs normalises it. */
   due: string;
-  repeat: RepeatRule;
   reason: string;
   // Absent as Claude proposes it, and present once the user has been through the
   // reminder editor from the preview card — which hands back a full reminder.
   id?: string;
+  list?: string;
   note?: string;
   file?: string;
 }
@@ -391,8 +391,6 @@ export interface WispApi {
   analyzeImage: AnalyzeImage;
   readReminders: ReadReminders;
   writeReminders: WriteReminders;
-  /** Raise and flash the window when a reminder comes due. */
-  alertWindow: () => Promise<void>;
   gitInfo: GitInfo;
   gitPull: GitPull;
   gitCommit: GitCommit;

@@ -60,12 +60,11 @@ const api = {
   // renderer to fold into the note that references it.
   analyzeImage: (baseFolder, imagePath) =>
     ipcRenderer.invoke('analyze-image', baseFolder, imagePath),
-  // Reminders: the list is stored as one JSON file in the vault root. alertWindow
-  // brings the window forward (and flashes the taskbar) when one comes due.
+  // Reminders: the list is stored as one JSON file in the vault root. Nothing
+  // announces a due reminder — the list is read, not raised.
   readReminders: (baseFolder) => ipcRenderer.invoke('read-reminders', baseFolder),
   writeReminders: (baseFolder, reminders) =>
     ipcRenderer.invoke('write-reminders', baseFolder, reminders),
-  alertWindow: () => ipcRenderer.invoke('alert-window'),
   // Git: the vault may or may not be a repository, so gitInfo answers
   // { repo: false } for a plain folder rather than failing.
   gitInfo: (baseFolder) => ipcRenderer.invoke('git-info', baseFolder),

@@ -673,8 +673,30 @@ button:hover {
   flex-shrink: 0;
 }
 
-.reminders-header .sidebar-actions {
+/* Filter by list. It takes the header's free space so the ＋ stays at the right
+   edge, and stays quiet until hovered — it is a filter, not a heading. */
+.reminder-filter {
   margin-left: auto;
+  max-width: 110px;
+  padding: 1px 2px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.reminder-filter:hover,
+.reminder-filter:focus {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--bg-active);
+}
+
+.reminders-header .sidebar-actions {
+  margin-left: 4px;
 }
 
 .reminder-list {
@@ -690,14 +712,107 @@ button:hover {
   color: var(--text-dim);
 }
 
+/* How far off each run of reminders is: overdue / today / this week / next week /
+   later. The list is sorted by due date, so these are section headings, not
+   filters — and the same class goes on the row, so an entry scrolled away from
+   its heading still says where it sits. */
+.reminder-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 2px 3px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+}
+
+.reminder-group::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.reminder-list > .reminder-group:first-child {
+  margin-top: 2px;
+}
+
+.reminder-group.group-overdue {
+  color: #d97066;
+}
+
+.reminder-group.group-today {
+  color: var(--accent);
+}
+
 .reminder-row {
   display: flex;
   align-items: flex-start;
   gap: 6px;
   padding: 5px 6px;
+  border: 1px solid transparent;
+  border-left-width: 2px;
   border-radius: 4px;
   cursor: pointer;
   overflow: hidden;
+}
+
+.reminder-row.group-thisWeek {
+  border-left-color: #4c5a70;
+}
+
+.reminder-row.group-nextWeek {
+  border-left-color: #3a4352;
+}
+
+/* Today is the one thing the list exists to put in front of you, so its rows are
+   a different object rather than a differently-coloured one: filled, outlined and
+   rounded, where every other row is a flat line of text. */
+.reminder-row.group-today {
+  background: rgba(74, 158, 255, 0.13);
+  border-color: rgba(74, 158, 255, 0.5);
+  border-left: 3px solid var(--accent);
+  border-radius: 7px;
+  padding: 6px 6px 6px 7px;
+  margin: 2px 0;
+}
+
+.reminder-row.group-today:hover {
+  background: rgba(74, 158, 255, 0.2);
+}
+
+.reminder-row.group-today .reminder-title {
+  font-weight: 600;
+  color: #cfe4ff;
+}
+
+.reminder-row.group-today .reminder-meta {
+  color: #7fb4f0;
+}
+
+/* Overdue shouts, in the other direction. */
+.reminder-row.group-overdue {
+  background: rgba(163, 39, 31, 0.13);
+  border-color: rgba(163, 39, 31, 0.5);
+  border-left: 3px solid #a3271f;
+  border-radius: 7px;
+  padding: 6px 6px 6px 7px;
+  margin: 2px 0;
+}
+
+.reminder-row.group-overdue:hover {
+  background: rgba(163, 39, 31, 0.22);
+}
+
+.reminder-row.group-overdue .reminder-title {
+  color: #ff9a93;
+  font-weight: 600;
+}
+
+.reminder-row.group-overdue .reminder-meta {
+  color: #d97066;
 }
 
 .reminder-row:hover {
@@ -728,16 +843,6 @@ button:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* An overdue reminder shouts a little. */
-.reminder-row.overdue .reminder-title {
-  color: #ff9a93;
-  font-weight: 600;
-}
-
-.reminder-row.overdue .reminder-meta {
-  color: #d97066;
 }
 
 /* Complete button, revealed on hover. */
@@ -1649,7 +1754,7 @@ button:hover {
   margin-bottom: 4px;
 }
 
-/* Date / time / repeat on one line. */
+/* Date and list on one line. */
 .rm-row {
   display: flex;
   gap: 10px;
@@ -1685,135 +1790,6 @@ select.modal-input {
 
 .rm-danger:hover {
   border-color: #ff6b6b;
-}
-
-/* ---- Due reminder popup ---- */
-.alert-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.72);
-  backdrop-filter: blur(3px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 3000;
-  animation: alert-fade 0.18s ease-out;
-}
-
-.alert-box {
-  width: min(680px, 84vw);
-  max-height: 84vh;
-  overflow-y: auto;
-  text-align: center;
-  padding: 40px 44px 32px;
-  background: linear-gradient(160deg, #2b2f3a 0%, var(--bg-alt) 60%);
-  border: 1px solid var(--accent);
-  border-radius: 16px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(74, 158, 255, 0.15);
-  animation: alert-pop 0.22s cubic-bezier(0.2, 1.3, 0.5, 1);
-}
-
-@keyframes alert-fade {
-  from {
-    opacity: 0;
-  }
-}
-
-@keyframes alert-pop {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.96);
-  }
-}
-
-.alert-bell {
-  font-size: 56px;
-  line-height: 1;
-  margin-bottom: 14px;
-  animation: alert-ring 1.4s ease-in-out 2;
-  transform-origin: 50% 10%;
-}
-
-@keyframes alert-ring {
-  0%,
-  60%,
-  100% {
-    transform: rotate(0deg);
-  }
-  10%,
-  30%,
-  50% {
-    transform: rotate(12deg);
-  }
-  20%,
-  40% {
-    transform: rotate(-12deg);
-  }
-}
-
-.alert-kicker {
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.6px;
-  color: var(--accent);
-  margin-bottom: 10px;
-}
-
-.alert-title {
-  font-size: 30px;
-  font-weight: 600;
-  line-height: 1.25;
-  word-wrap: break-word;
-  margin-bottom: 10px;
-}
-
-.alert-when {
-  font-size: 15px;
-  color: var(--text-dim);
-}
-
-.alert-note {
-  margin-top: 18px;
-  padding: 14px 16px;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.6;
-  text-align: left;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.alert-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 28px;
-}
-
-.alert-actions button {
-  padding: 10px 18px;
-  font-size: 14px;
-}
-
-.alert-snooze {
-  background: transparent;
-  color: var(--text-dim);
-}
-
-.alert-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
-}
-
-.alert-primary:hover {
-  background: var(--accent);
-  filter: brightness(1.1);
 }
 
 /* ---- Terminal pane ---- */

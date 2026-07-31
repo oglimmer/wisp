@@ -426,16 +426,16 @@ The first version does not analyze images with Claude on the server.
 ## Reminders
 
 For initial feature parity, reminder editing may continue through the shared
-reminder model. Reliable reminders while no browser is open require a later
-server scheduler and PostgreSQL-backed occurrence state.
+reminder model. A reminder is one date and one title: it does not repeat, and
+nothing is delivered — the list is read, not announced — so no scheduler is
+required for parity.
 
 The long-term server design owns:
 
 - per-user reminder assignment;
-- timezone-aware due times;
-- idempotent occurrence delivery;
-- Web Push or email channels;
-- scheduler leases and retries.
+- the day boundary each user's list is grouped against;
+- Web Push or email channels, if delivery is ever wanted;
+- scheduler leases and retries, only if it is.
 
 This does not change the local `.wisp-reminders.json` format.
 
