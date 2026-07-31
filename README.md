@@ -134,6 +134,7 @@ cross-compiling `node-pty` needs a toolchain a sandbox doesn't have.
 | `scripts/smoke.js` | Drives the running app with Playwright — the one test that is not static |
 | `Casks/wisp.rb` | Homebrew cask (version + sha256 bumped by CI on each tag) |
 | `.github/workflows/ci.yml` | Runs `./oglimmer.sh test` — the static suite — on every push and pull request |
+| `.github/workflows/ai-review.yml` | Reviews pull requests with `oglimmer/review-action` |
 | `.github/workflows/release.yml` | Builds and smoke-tests Linux x86_64 alongside a signed, notarized macOS arm64 build, then publishes both in one release |
 
 ## Releasing
