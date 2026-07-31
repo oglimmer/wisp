@@ -151,7 +151,7 @@ cmd_test() {
 
   say "syntax-checking the app sources"
   local f
-  for f in main.js preload.js renderer/*.js scripts/*.js; do
+  for f in main.mjs main/*.mjs preload.js renderer/*.js scripts/*.js; do
     if node --check "$f" >/dev/null; then
       ok "$f parses"
     else
@@ -202,17 +202,23 @@ cmd_test() {
   done
 
   say "checking the electron-builder files allowlist"
-  # The `files` list is hand-maintained; a new top-level source file that never
-  # gets added is missing only from the packaged app, which is the worst place
-  # to find out. node_modules is bundled by electron-builder automatically.
+  # The `files` list is hand-maintained; a new top-level source file (or the whole
+  # main/ module directory) that never gets added is missing only from the packaged
+  # app, which is the worst place to find out. node_modules is bundled by
+  # electron-builder automatically.
   local listed missing=""
   listed=$(node -p "require('./package.json').build.files.join('\n')")
-  for f in *.js *.html *.css; do
+  for f in *.js *.mjs *.html *.css; do
     [ "$f" = "oglimmer.sh" ] && continue
     if ! printf '%s\n' "$listed" | grep -qx -- "$f"; then
       missing="$missing $f"
     fi
   done
+  # A directory the per-file loop above cannot see: without "main/**" the packaged
+  # app ships no main process at all.
+  if [ -d main ] && ! printf '%s\n' "$listed" | grep -qxF -- 'main/**'; then
+    missing="$missing main/**"
+  fi
   if [ -n "$missing" ]; then
     warn "not in package.json build.files:$missing"
     warn "  (fine if deliberate — tooling and scripts do not belong in the app)"
@@ -477,9 +483,9 @@ COMMANDS
                        Extra arguments are passed through to electron.
 
   test                 Every check that can fail a release, since there is no
-                       unit-test suite: syntax-check main/preload/renderer/*,
-                       unbound-name + reachability scan of renderer modules,
-                       a tsc --noEmit
+                       unit-test suite: syntax-check main.mjs + main/*, preload,
+                       renderer/*, scripts/*, unbound-name + reachability scan of
+                       renderer modules, a tsc --noEmit
                        type-check against the JSDoc types, JSON validity,
                        the electron-builder `files` allowlist, the node_modules
                        paths index.html loads, cask/package version agreement,
