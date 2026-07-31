@@ -21,6 +21,15 @@ packaging/HTML/cask consistency, yamllint, and shellcheck on `oglimmer.sh` + `sc
 The *dynamic* half is `./oglimmer.sh linux smoke`, which launches the real app and
 clicks through it — see **Testing on Linux**. It is deliberately not part of `test`.
 
+**`.github/workflows/ci.yml` runs that same `./oglimmer.sh test` on every push and pull
+request**, so there is no second CI checklist to keep in sync — a check added to the script
+is a check that runs on every commit. It asserts yamllint and shellcheck are on `PATH`
+first, because the script *warns and skips* when a linter is missing (right for a laptop,
+and indistinguishable from a pass in CI). A same-repo pull request is skipped there: the
+push that created it already covers the commit, and a check attaches to the SHA, so the
+push run's result is what shows on the PR. The smoke test stays out of it — the release
+workflow already gates every tag on it.
+
 ## Packaging & release
 
 Two published platforms, from one `build` field in `package.json`: **macOS arm64** — signed, notarized,

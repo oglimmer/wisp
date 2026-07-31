@@ -1,0 +1,70 @@
+name: CI
+
+# The static suite on every commit — which is exactly `./oglimmer.sh test`, the
+# same command that runs before a release and the one to run locally. There is no
+# separate CI checklist to keep in sync with it: a check added there is a check
+# that runs here.
+#
+# The *dynamic* half is deliberately not here. `./oglimmer.sh linux smoke` launches
+# the real app and clicks through it, which needs the Electron system libraries,
+# xvfb and a packaged build — ~6 minutes, and the release workflow already gates
+# every tag on it. This job is the rough check: parse, bind, type, lint.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A branch pushed twice in a minute does not need the first run's answer.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Static checks
+    # A same-repo pull request is already covered by the push that created it:
+    # both events fire on the same commit, and a check attaches to the SHA, so the
+    # push run's result is what shows on the PR either way. Skipping the duplicate
+    # here is what keeps every commit checked exactly once. A pull request from a
+    # fork has no push event in this repository, so it must still run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Installing on Linux is correct here and nowhere near a developer's mac:
+      # this is a fresh checkout on the runner, so the tree is the host's platform
+      # and `assert_native_node_modules` has nothing to refuse.
+      - run: npm ci
+
+      # shellcheck is already on the runner image; yamllint is not.
+      - name: Install the linters the suite expects
+        run: |
+          pipx install yamllint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Asserted rather than trusted, because `./oglimmer.sh test` *warns and
+      # skips* when a linter is missing rather than failing. That is right for a
+      # laptop and exactly wrong here — a lint that quietly did not run is
+      # indistinguishable from a lint that passed.
+      - name: Check the linters are on PATH
+        run: |
+          yamllint --version
+          shellcheck --version
+
+      # node --check on every source, the Acorn unbound-name and reachability scan
+      # over renderer/, tsc --noEmit against the JSDoc types (the IPC contract in
+      # types/ipc.d.ts is the point of it), the packaging allowlist, the release
+      # targets, the cask, yamllint and shellcheck.
+      - name: ./oglimmer.sh test
+        run: ./oglimmer.sh test
