@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// Fail if any renderer ES module references an unbound name — or is never
-// reached from the entry point at all.
+// Fail if any ES module — renderer/ or main/ — references an unbound name, or
+// is never reached from its tree's entry point at all.
 //
-// Both are the same class of bug, left by the renderer.js → renderer/ split.
-// A free identifier that used to resolve via classic-script hoisting is now an
-// undeclared reference (missing import / forgotten export), and it throws only
-// when its code path runs, so it looks like a silent UI freeze. A module nobody
-// imports is quieter still: index.html loads only `renderer/index.js` and the
-// browser fetches the graph, so a file outside it never *runs* — its top-level
-// listeners are simply never registered, and the feature does nothing at all.
+// Both are the same class of bug, left by the renderer.js → renderer/ and
+// main.js → main/ splits. A free identifier that used to resolve via hoisting
+// in the old single files is now an undeclared reference (missing import /
+// forgotten export), and it throws only when its code path runs, so it looks
+// like a silent freeze. A module nobody imports is quieter still: the browser
+// fetches only the graph from `renderer/index.js`, and the Electron main
+// process imports only the graph from `main.mjs` → `main/index.mjs`, so a file
+// outside either never *runs* — its top-level listeners/IPC handlers are simply
+// never registered, and the feature does nothing at all.
 //
 // Usage: node scripts/check-unbound.js
 // Exit 0 = clean, 1 = issues (or acorn missing / parse error).
@@ -27,21 +29,17 @@ try {
 }
 
 const ROOT = path.resolve(__dirname, '..');
-const RENDERER = path.join(ROOT, 'renderer');
 
-// Browser + classic-script globals the renderer may touch without importing.
-const GLOBALS = new Set([
-  'window',
-  'document',
+// Names a module may touch without importing. The union of ES built-ins and
+// web-standard globals that are *also* Node globals is shared by both trees;
+// the DOM / classic-script set below is the renderer's alone, and the Node
+// set is main/'s (they are ES modules too, so no require/__dirname here).
+const ES_GLOBALS = [
   'console',
-  'localStorage',
-  'sessionStorage',
   'setTimeout',
   'clearTimeout',
   'setInterval',
   'clearInterval',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
   'queueMicrotask',
   'Promise',
   'Map',
@@ -72,30 +70,8 @@ const GLOBALS = new Set([
   'decodeURIComponent',
   'encodeURI',
   'decodeURI',
-  'CSS',
   'URL',
   'URLSearchParams',
-  'Blob',
-  'File',
-  'FileReader',
-  'Image',
-  'Node',
-  'Element',
-  'HTMLElement',
-  'Event',
-  'CustomEvent',
-  'KeyboardEvent',
-  'MouseEvent',
-  'DOMParser',
-  'NodeFilter',
-  'getComputedStyle',
-  'navigator',
-  'location',
-  'history',
-  'performance',
-  'crypto',
-  'TextEncoder',
-  'TextDecoder',
   'structuredClone',
   'atob',
   'btoa',
@@ -114,6 +90,39 @@ const GLOBALS = new Set([
   'Request',
   'Headers',
   'AbortController',
+  'TextEncoder',
+  'TextDecoder',
+  'crypto',
+  'performance',
+  'globalThis',
+];
+
+const BROWSER_GLOBALS = new Set([
+  ...ES_GLOBALS,
+  'window',
+  'document',
+  'localStorage',
+  'sessionStorage',
+  'requestAnimationFrame',
+  'cancelAnimationFrame',
+  'CSS',
+  'Blob',
+  'File',
+  'FileReader',
+  'Image',
+  'Node',
+  'Element',
+  'HTMLElement',
+  'Event',
+  'CustomEvent',
+  'KeyboardEvent',
+  'MouseEvent',
+  'DOMParser',
+  'NodeFilter',
+  'getComputedStyle',
+  'navigator',
+  'location',
+  'history',
   'alert',
   'confirm',
   'prompt',
@@ -123,7 +132,6 @@ const GLOBALS = new Set([
   'Range',
   'Selection',
   'Highlight', // CSS Custom Highlight API (find.js)
-  'globalThis',
   'self',
   'origin',
   'isSecureContext',
@@ -131,6 +139,15 @@ const GLOBALS = new Set([
   'marked',
   'TurndownService',
   'DOMPurify',
+]);
+
+const NODE_GLOBALS = new Set([
+  ...ES_GLOBALS,
+  'process',
+  'Buffer',
+  'global',
+  'setImmediate',
+  'clearImmediate',
 ]);
 
 function patternNames(pat, set) {
@@ -200,7 +217,7 @@ function isReference(node, parent) {
   return true;
 }
 
-function analyze(src) {
+function analyze(src, globals) {
   const ast = acorn.parse(src, { ecmaVersion: 2022, sourceType: 'module', locations: true });
   const moduleBindings = new Set();
 
@@ -235,7 +252,7 @@ function analyze(src) {
     for (let i = scopeStack.length - 1; i >= 0; i--) {
       if (scopeStack[i].has(name)) return true;
     }
-    return GLOBALS.has(name);
+    return globals.has(name);
   }
 
   function walkFull(node, parent) {
@@ -352,13 +369,17 @@ function analyze(src) {
   return issues;
 }
 
-// The entry point index.html loads; everything else has to be reachable from it.
-const ENTRY = 'index.js';
-
-// The modules `file` imports (or re-exports from), by file name.
+// The modules `src` imports (or re-exports from), by file name. Static imports
+// are top-level statements; a dynamic import() of a sibling — a lazily loaded
+// module — can sit anywhere in the tree, so the body is walked for those too.
+// The specifiers include their extension, matching the file names on disk.
 function importsOf(src) {
   const ast = acorn.parse(src, { ecmaVersion: 2022, sourceType: 'module' });
   const out = [];
+  const collect = (value) => {
+    const m = /^\.\/(.+)$/.exec(String(value));
+    if (m) out.push(m[1]);
+  };
   for (const stmt of ast.body) {
     const kind = stmt.type;
     if (
@@ -371,44 +392,59 @@ function importsOf(src) {
     // A side-effect import (`import './shortcuts.js'`) has no specifiers and is
     // exactly what a module registering listeners at load time needs.
     if (!stmt.source) continue;
-    const m = /^\.\/(.+)$/.exec(String(stmt.source.value));
-    if (m) out.push(m[1]);
+    collect(stmt.source.value);
   }
+  (function walkDeep(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'ImportExpression' && node.source && node.source.type === 'Literal') {
+      collect(node.source.value);
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      if (['type', 'start', 'end', 'loc', 'range'].includes(key)) continue;
+      const child = node[key];
+      if (Array.isArray(child)) child.forEach(walkDeep);
+      else if (child && typeof child === 'object') walkDeep(child);
+    }
+  })(ast);
   return out;
 }
 
-function unreachable(files) {
+// Modules of a tree that its entry never reaches — they are never fetched, so
+// whatever they register at load time (listeners, IPC handlers) never happens.
+function unreachable(files, treeDir, entry) {
   const seen = new Set();
   const walk = (file) => {
     if (seen.has(file) || !files.includes(file)) return;
     seen.add(file);
-    const src = fs.readFileSync(path.join(RENDERER, file), 'utf8');
+    const src = fs.readFileSync(path.join(treeDir, file), 'utf8');
     for (const next of importsOf(src)) walk(next);
   };
-  walk(ENTRY);
+  walk(entry);
   return files.filter((f) => !seen.has(f));
 }
 
-function main() {
+// Reachability + binding for one module tree ({ label, dir, entry, ext, globals }).
+function checkTree({ label, dir, entry, ext, globals }) {
   const files = fs
-    .readdirSync(RENDERER)
-    .filter((f) => f.endsWith('.js'))
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(ext))
     .sort();
 
   let total = 0;
 
-  for (const f of unreachable(files)) {
+  for (const f of unreachable(files, dir, entry)) {
     console.error(
-      `renderer/${f}: never imported — nothing in the graph from ${ENTRY} reaches it, so it never runs`
+      `${label}/${f}: never imported — nothing in the graph from ${entry} reaches it, so it never runs`
     );
     total++;
   }
   for (const f of files) {
-    const rel = path.join('renderer', f);
-    const src = fs.readFileSync(path.join(RENDERER, f), 'utf8');
+    const rel = `${label}/${f}`;
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
     let issues;
     try {
-      issues = analyze(src);
+      issues = analyze(src, globals);
     } catch (err) {
       console.error(`error: ${rel}: parse failed: ${err.message}`);
       process.exit(1);
@@ -424,9 +460,41 @@ function main() {
       total++;
     }
   }
+  return total;
+}
+
+function main() {
+  let total = 0;
+
+  total += checkTree({
+    label: 'renderer',
+    dir: path.join(ROOT, 'renderer'),
+    entry: 'index.js',
+    ext: '.js',
+    globals: BROWSER_GLOBALS,
+  });
+
+  // The root entry just forwards into the tree; the reachability walk starts
+  // inside main/ and can't see it, so assert the forward explicitly. (main.mjs
+  // is package.json's "main" — a typo here means a packaged app that never
+  // opens a window, which nothing else in the static suite would catch.)
+  const entrySrc = fs.existsSync(path.join(ROOT, 'main.mjs'))
+    ? fs.readFileSync(path.join(ROOT, 'main.mjs'), 'utf8')
+    : '';
+  if (!/import\s+['"]\.\/main\/index\.mjs['"]/.test(entrySrc)) {
+    console.error('main.mjs: does not import ./main/index.mjs — the app entry is broken');
+    total++;
+  }
+  total += checkTree({
+    label: 'main',
+    dir: path.join(ROOT, 'main'),
+    entry: 'index.mjs',
+    ext: '.mjs',
+    globals: NODE_GLOBALS,
+  });
 
   if (total > 0) {
-    console.error(`\n${total} unbound reference${total === 1 ? '' : 's'} in renderer/`);
+    console.error(`\n${total} problem${total === 1 ? '' : 's'} in renderer/ and main/`);
     process.exit(1);
   }
 }
