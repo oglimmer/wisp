@@ -3,6 +3,7 @@ import fs from 'fs';
 import { handle } from './ipc.mjs';
 import { vaultPath, isInside, assertReadableFile, assertTextContent, formatBytesLimit, MAX_TEXT_BYTES, MAX_IMAGE_BYTES } from './guards.mjs';
 import { isIgnored } from './tree.mjs';
+import { noteOwnWrite } from './watch.mjs';
 import { runClaude, readClaudeJson } from './claude.mjs';
 
 const fsp = fs.promises;
@@ -383,6 +384,12 @@ handle('smart-apply', async (baseFolder, relPath, content) => {
   const target = vaultPath(baseFolder, relPath);
   assertTextContent(content);
   await fsp.mkdir(path.dirname(target), { recursive: true });
+  // The app's own write, so the watcher must not report it as somebody else's —
+  // before the write, like every other writer, because the event can arrive
+  // while writeFile is still settling. The renderer already rebuilds the tree
+  // and re-opens the file it just filed into, so a vault-changed here is a
+  // second, racing refresh of what is already on screen.
+  noteOwnWrite(target);
   await fsp.writeFile(target, content, 'utf8');
   return { ok: true, path: target };
 });

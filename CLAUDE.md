@@ -928,9 +928,12 @@ call replaces the previous vault's watch.
   fired for anyone with a live statusline). Watching also covers what the terminal can't: the pane
   collapsed, another editor, a `git` command in a real terminal.
 - **The app's own writes are not news.** `noteOwnWrite()` records each `write-file` /
-  `write-file-sync` / `write-reminders` target *before* writing, and an event for a path written in the
-  last 1.5s is dropped — otherwise every autosave would re-read the whole tree, and an event racing
-  ahead of `writeFile` settling would reload the buffer the user is typing into.
+  `write-file-sync` / `write-reminders` / `smart-apply` target *before* writing, and an event for a
+  path written in the last 1.5s is dropped — otherwise every autosave would re-read the whole tree,
+  and an event racing ahead of `writeFile` settling would reload the buffer the user is typing into.
+  **Every handler that writes into the vault belongs on that list**: `smart-apply` was missing from it,
+  and the renderer already rebuilds the tree and re-opens the note it filed into, so the watcher's
+  refresh was a second one racing the explicit one.
 - **`isIgnored()` filters events per path segment**, the same helper the tree uses. Without it a single
   commit would fire dozens of times over `.git`, none of it anything the UI shows.
 - **A dirty buffer is never reloaded.** `openFile()` flushes before reading, so reloading an unsaved
