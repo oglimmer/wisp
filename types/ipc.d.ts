@@ -258,6 +258,18 @@ export type ImportImage = (
   srcPath: string,
   originalName: string
 ) => Promise<Result<{ path: string; ref: string }>>;
+/**
+ * The same import from bytes instead of a path — a pasted screenshot, or an
+ * image a pasted note carries inline as `data:image/…;base64,…`. `dataUrl` is
+ * untrusted: main checks the MIME, the encoding and the size before writing.
+ * There is no name to pass: a clipboard image has none, so main names it after
+ * the moment it was pasted.
+ */
+export type ImportImageData = (
+  baseFolder: VaultRoot,
+  currentFile: string | null,
+  dataUrl: string
+) => Promise<Result<{ path: string; ref: string }>>;
 
 /** `skipped` marks an image type Claude can't look at — not an error worth reporting. */
 export type AnalyzeImage = (
@@ -346,6 +358,7 @@ export interface IpcHandlers {
   'read-image': ReadImage;
   'read-image-file': ReadImageFile;
   'import-image': ImportImage;
+  'import-image-data': ImportImageData;
   'analyze-image': AnalyzeImage;
   'smart-check': SmartCheck;
   'smart-apply': SmartApply;
@@ -386,6 +399,7 @@ export interface WispApi {
   readImage: ReadImage;
   readImageFile: ReadImageFile;
   importImage: ImportImage;
+  importImageData: ImportImageData;
   /** Electron 32 removed `File.path`; `webUtils` is the replacement. */
   getPathForFile: (file: File) => string;
   analyzeImage: AnalyzeImage;

@@ -1,4 +1,5 @@
-// Importing dropped images into the vault, and Claude's description of each.
+// Importing images into the vault — dropped or pasted — and Claude's description
+// of each.
 
 import { api } from './api.js';
 import { editorEl, renderedEl, wysiwygEl } from './dom.js';
@@ -9,9 +10,9 @@ import { refreshTree } from './tree.js';
 import { setStatus } from './util.js';
 import { effectiveViewMode, hydrateImages, isImage, isMarkdown, renderMarkdown } from './views.js';
 
-// Dropping image files copies them into the vault's images/ folder and inserts a
-// Markdown reference. In raw view the ref lands at the cursor; in preview view
-// (where there's no cursor) it's appended to the end of the buffer.
+// Dropping (or pasting) image files copies them into the vault's images/ folder
+// and inserts a Markdown reference. In raw view the ref lands at the cursor; in
+// preview view (where there's no cursor) it's appended to the end of the buffer.
 
 function insertAtCursor(text) {
   const start = editorEl.selectionStart ?? editorEl.value.length;
@@ -166,47 +167,93 @@ async function analyzeImported(imports, forFile) {
   );
 }
 
-async function handleDroppedFiles(fileList, dropRange) {
+// Whether there is somewhere to put an image at all. A dropped or pasted picture
+// needs a note to reference it from: with no file open there is no buffer, and
+// with an *image* open there is no text behind it to hold a reference.
+function noteIsOpen() {
   if (!state.currentFile) {
     setStatus('Open a file before adding images.', true);
-    return;
+    return false;
   }
-  // An image is open, not a note — there's no buffer to insert a reference into.
   if (isImage(state.currentFile)) {
     setStatus('Open a note before adding images.', true);
-    return;
+    return false;
   }
+  return true;
+}
+
+// A file straight off the OS, by whichever route it arrived. A dropped file always
+// has a path behind it; one that came in on the clipboard (a screenshot, "Copy
+// Image") is only bytes, so it goes to main as a data URL instead.
+function fileDataUrl(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
+}
+
+async function importFile(file) {
+  let srcPath = '';
+  try {
+    srcPath = api.getPathForFile(file);
+  } catch {}
+  if (srcPath) {
+    return api.importImage(state.baseFolder, state.currentFile, srcPath, file.name);
+  }
+  const dataUrl = await fileDataUrl(file);
+  // Annotated so this answers with the same envelope the two channels do — the
+  // caller narrows on `ok` and would otherwise see a widened `boolean`.
+  if (!dataUrl) {
+    return /** @type {import('../types/ipc').Fail} */ ({
+      ok: false,
+      error: 'Could not read the image.',
+    });
+  }
+  // No name: the clipboard's own ("image.png", when it gives one at all) says
+  // nothing, so main names it after the moment it was pasted.
+  return api.importImageData(state.baseFolder, state.currentFile, dataUrl);
+}
+
+// What every import ends with, however the images arrived: the buffer is dirty,
+// the tree has a new images/ folder in it, and Claude is asked to describe what
+// just landed. Descriptions fold in afterwards — the note is usable without them.
+async function afterImport(imports, forFile) {
+  state.dirty = true;
+  setStatus('Saving…');
+  scheduleSave();
+  await refreshTree(); // surface the new images/ folder + files
+  analyzeImported(imports, forFile).catch(() => {});
+}
+
+// Import image files and reference them from the open note. `range` is where to
+// put them in the visual editor (a drop point, or the caret on paste).
+async function insertImageFiles(fileList, range) {
+  if (!noteIsOpen()) return;
   const images = Array.from(fileList).filter(
     (f) => /^image\//.test(f.type) || isImage(f.name)
   );
   if (!images.length) return;
   const forFile = state.currentFile; // the note these images belong to, pinned across the awaits
 
-  // In the visual editor, insert <img> nodes at the drop caret (falling back to
-  // the end); other modes edit the Markdown source buffer. effectiveViewMode, so a
+  // In the visual editor, insert <img> nodes at that point (falling back to the
+  // end); other modes edit the Markdown source buffer. effectiveViewMode, so a
   // remembered 'wysiwyg' can't route the insert into a pane that isn't live.
   const wys = effectiveViewMode() === 'wysiwyg';
-  let range = wys ? dropRange || endOfWysiwygRange() : null;
+  let at = wys ? range || endOfWysiwygRange() : null;
 
   let added = 0;
   const imports = []; // { ref, path } per imported image, for Claude to describe
   for (const file of images) {
-    let srcPath = '';
-    try {
-      srcPath = api.getPathForFile(file);
-    } catch {}
-    if (!srcPath) {
-      setStatus('Could not read the dropped file.', true);
-      continue;
-    }
-    const res = await api.importImage(state.baseFolder, state.currentFile, srcPath, file.name);
+    const res = await importFile(file);
     if (!res.ok) {
       setStatus('Error: ' + res.error, true);
       continue;
     }
     const alt = file.name.replace(/\.[^.]+$/, '');
     if (wys) {
-      range = insertImageNode(range, res.ref, alt);
+      at = insertImageNode(at, res.ref, alt);
     } else if (effectiveViewMode() === 'raw') {
       insertAtCursor(`![${alt}](${res.ref})\n`);
     } else {
@@ -218,25 +265,19 @@ async function handleDroppedFiles(fileList, dropRange) {
     added++;
   }
 
-  if (added) {
-    state.dirty = true;
-    setStatus('Saving…');
-    scheduleSave();
-    if (wys) {
-      hydrateImages(wysiwygEl); // resolve the newly inserted <img>s to data URLs
-      // Leave the caret after the last inserted image so typing continues there.
-      const sel = range && window.getSelection();
-      if (sel) {
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-    } else if (state.viewMode === 'preview' && isMarkdown(state.currentFile)) {
-      renderMarkdown();
+  if (!added) return;
+  if (wys) {
+    hydrateImages(wysiwygEl); // resolve the newly inserted <img>s to data URLs
+    // Leave the caret after the last inserted image so typing continues there.
+    const sel = at && window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      sel.addRange(at);
     }
-    await refreshTree(); // surface the new images/ folder + files
-    // Descriptions land afterwards — the note is already usable without them.
-    analyzeImported(imports, forFile).catch(() => {});
+  } else if (state.viewMode === 'preview' && isMarkdown(state.currentFile)) {
+    renderMarkdown();
   }
+  await afterImport(imports, forFile);
 }
 
 function setupDrop(el) {
@@ -260,12 +301,167 @@ function setupDrop(el) {
     if (el === wysiwygEl && document.caretRangeFromPoint) {
       dropRange = document.caretRangeFromPoint(e.clientX, e.clientY);
     }
-    handleDroppedFiles(e.dataTransfer.files, dropRange);
+    insertImageFiles(e.dataTransfer.files, dropRange);
   });
 }
 setupDrop(editorEl);
 setupDrop(wysiwygEl);
 setupDrop(renderedEl);
+
+// ---- Paste ----
+// An image reaches the clipboard three ways, and all three end up as a file in
+// images/ with an ordinary reference to it:
+//
+//   * bytes — a screenshot, or "Copy Image" from a browser: a File with no path;
+//   * Markdown text holding `![](data:image/png;base64,…)`, which is what several
+//     other note apps put on the clipboard;
+//   * HTML holding `<img src="data:…">`, pasted into the visual editor.
+//
+// The last two would otherwise be pasted verbatim, and a base64 image inlined in
+// the note is a megabyte on a single line: it bloats every save, shows up as one
+// unreadable line in the diff, and turndown carries it through every WYSIWYG fold.
+
+// Terminates on whitespace and on the delimiters that end a URL in either
+// context — `)` closes a Markdown ref, a quote closes an HTML attribute.
+const DATA_URL_RE = /data:image\/[a-z0-9.+-]+(?:;[a-z0-9.+=-]+)*,[^\s"'()<>[\]]+/gi;
+
+// Import each distinct data: URL and return url → { ref, path } for the ones that
+// landed. A URL that main refuses (unknown type, too large, malformed) is simply
+// absent from the map, and the caller leaves that image out rather than writing
+// the base64 into the note.
+async function importDataUrls(urls) {
+  const imported = new Map();
+  for (const url of urls) {
+    if (imported.has(url)) continue;
+    const res = await api.importImageData(state.baseFolder, state.currentFile, url);
+    if (res.ok) imported.set(url, { ref: res.ref, path: res.path });
+    else setStatus('Error: ' + res.error, true);
+  }
+  return imported;
+}
+
+// Pasted text with images inlined in it: import each and hand back the same text
+// with the data URLs replaced by references. Null when there was nothing to do,
+// which is the signal to let the browser paste it as it always has.
+async function importTextImages(text) {
+  const urls = text.match(DATA_URL_RE);
+  if (!urls) return null;
+  const imported = await importDataUrls(urls);
+  if (!imported.size) return null;
+  return {
+    text: text.replace(DATA_URL_RE, (url) => imported.get(url)?.ref ?? url),
+    imports: [...imported.values()],
+  };
+}
+
+// The same for pasted HTML, read as a document rather than scanned as text: the
+// images are imported and the fragment is sanitized before it is inserted, exactly
+// as rendered Markdown is. An image that failed to import is dropped — its data
+// URL is the one thing that must not reach the note.
+//
+// What is rewritten is `data-md-src`, not `src`: the pane holds hydrated pictures
+// (see hydrateImages), and the data URL the paste arrived with is already exactly
+// that. Putting the reference in `src` instead would send Chromium to fetch a path
+// the app:// scheme has nothing at, and the image would blink out until the
+// resolved copy came back.
+async function importHtmlImages(html) {
+  if (!window.DOMPurify) return null; // no sanitizer — fall back to the text route
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const imgs = [...doc.querySelectorAll('img')].filter((img) =>
+    /^data:image\//i.test(img.getAttribute('src') || '')
+  );
+  if (!imgs.length) return null;
+  const imported = await importDataUrls(imgs.map((img) => img.getAttribute('src') || ''));
+  if (!imported.size) return null;
+  for (const img of imgs) {
+    const hit = imported.get(img.getAttribute('src') || '');
+    if (!hit) {
+      img.remove();
+      continue;
+    }
+    // The portable path turndown re-emits on save; the src stays the data URL the
+    // paste came with, which is what the pane shows anyway.
+    img.setAttribute('data-md-src', hit.ref);
+  }
+  return {
+    html: window.DOMPurify.sanitize(doc.body.innerHTML, { USE_PROFILES: { html: true } }),
+    imports: [...imported.values()],
+  };
+}
+
+// The caret, as a range inside `el` — where a paste goes in the visual editor.
+function selectionRangeIn(el) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  if (!el.contains(range.commonAncestorContainer)) return null;
+  range.deleteContents(); // a paste replaces the selection
+  return range;
+}
+
+function setupPaste(el) {
+  el.addEventListener('paste', (e) => {
+    const cd = e.clipboardData;
+    if (!cd || !state.currentFile) return;
+    const wys = el === wysiwygEl;
+    const files = Array.from(cd.files || []).filter(
+      (f) => /^image\//.test(f.type) || isImage(f.name)
+    );
+    // Everything below has to be read off the clipboard synchronously — the event
+    // (and its data) is gone by the first await.
+    const html = wys ? cd.getData('text/html') : '';
+    const text = cd.getData('text/plain');
+
+    // Bytes win: copying an image in a browser also puts an <img> on the clipboard
+    // pointing back at the original URL, and the file is the thing we can import.
+    if (files.length) {
+      if (!noteIsOpen()) return;
+      e.preventDefault();
+      insertImageFiles(files, wys ? selectionRangeIn(wysiwygEl) : null);
+      return;
+    }
+
+    const inHtml = /data:image\//i.test(html);
+    if (!inHtml && !/data:image\//i.test(text)) return; // an ordinary paste
+    if (!noteIsOpen()) return;
+    e.preventDefault();
+    pasteInlineImages(el, inHtml ? html : '', text).catch(() => {});
+  });
+}
+
+// Import the images inlined in a paste, then insert what is left. The importing
+// is asynchronous, so the pane is focused again before the insert: execCommand
+// edits whatever has focus, and losing the paste is worse than pasting it late.
+async function pasteInlineImages(pane, html, text) {
+  const forFile = state.currentFile;
+  const done = html ? await importHtmlImages(html) : await importTextImages(text);
+  if (state.currentFile !== forFile) return; // the note closed while we were writing
+  pane.focus();
+  if (!done) {
+    // Nothing imported — paste the clipboard's own text rather than swallowing it.
+    // Not the HTML: it still holds the images, which is what we were avoiding.
+    document.execCommand('insertText', false, text);
+    return;
+  }
+  if ('html' in done) {
+    document.execCommand('insertHTML', false, done.html);
+    // The imported pictures are already showing (their src is the data URL the
+    // paste carried); this is for any *other* relative image in the fragment —
+    // a paragraph copied from another note, say.
+    hydrateImages(wysiwygEl);
+  } else {
+    // execCommand rather than assigning .value: it keeps the pane's native undo
+    // stack and fires `input`, which is what the autosave clock hangs off.
+    // No re-render to do: a paste can only land in a pane that takes typing, and
+    // the Preview pane is not one.
+    document.execCommand('insertText', false, done.text);
+  }
+  scheduleFindRefresh(); // the pasted text moved the find bar's matches
+  await afterImport(done.imports, forFile);
+}
+
+setupPaste(editorEl);
+setupPaste(wysiwygEl);
 
 // Stop a stray drop elsewhere in the window from navigating the app to the file.
 window.addEventListener('dragover', (e) => e.preventDefault());

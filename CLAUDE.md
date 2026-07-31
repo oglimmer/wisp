@@ -169,6 +169,7 @@ prints both.
 drives the actual app against a throwaway vault and asserts the things only a running window can
 show: the vault reopens from `config.json`, the tree renders, Preview renders marked's GFM through
 DOMPurify, the Editor pane is live and turndown loaded, a Raw edit reaches disk through the autosave,
+a pasted `data:` image is imported into `images/` and referenced rather than inlined,
 frontmatter is shown verbatim instead of as a heading, the git bar hides itself for a plain folder,
 the sidebar's recency list comes back flat with the note this run just edited at the top, and node-pty
 spawns a pty that streams `claude`'s output back over the bridge. **The fold has four
@@ -664,6 +665,25 @@ Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two thin
   which is what lets a move rewrite a ref *in the convention it already used*
   instead of quietly converting the vault to one of them.
 - **Drag & drop imports.** Dropping image files onto the editor (or preview) copies each into the vault's `images/` folder via the `import-image` handler (name-deduped, path-guarded) and inserts a reference to the open file — at the cursor in Raw view; in the WYSIWYG **Editor** an `<img>` node is inserted at the drop point (`caretRangeFromPoint`) and hydrated in place; in read-only Preview (no cursor) the Markdown ref is appended to the buffer. Dropped `File`s are turned into absolute paths with `webUtils.getPathForFile` (Electron 32 removed `File.path`), exposed as `api.getPathForFile` from preload. A window-level `drop`/`dragover` `preventDefault` stops stray drops from navigating the app away.
+- **Pasting is the same import, from bytes instead of a path.** Three things arrive on the clipboard
+  as an image and all three end up as a file in `images/` with an ordinary ref: raw bytes (a
+  screenshot, a browser's "Copy Image") as a `File` with nothing behind it, Markdown text carrying
+  `![](data:image/png;base64,…)` — which is what several other note apps put on the clipboard — and
+  HTML carrying `<img src="data:…">` pasted into the Editor pane. Left alone, the last two paste the
+  base64 **into the note**: a megabyte on one line that bloats every save, reads as one unintelligible
+  line in the diff, and rides through every WYSIWYG fold. `import-image-data` (main) is `import-image`
+  from a data URL — same `images/` folder, same dedupe, same vault guard, sharing `imageDest()`/
+  `refFor()` — and the payload is untrusted, so the MIME must name a known image type, base64 must be
+  base64, and the size cap is applied to the *encoded* length before anything is decoded into memory.
+  **The name is the one thing a paste can't supply**, so it is stamped in main rather than passed in:
+  `pasted-20260731-142530.png`, local time like every other date here, sorting by date and needing no
+  escaping in a ref. Two in the same second are told apart by the same dedupe as any other collision.
+  A URL main refuses is left out of the paste rather than inlined; a paste with no data URL in it is
+  the browser's business, untouched. Two details: the listeners are on the two editing panes only
+  (a window-level one would take the paste out of the find bar, the smart-insert box and the
+  terminal), and the HTML route rewrites `data-md-src` while **leaving the data URL in `src`** —
+  the pane's pictures are hydrated anyway, and putting the ref there would send Chromium after a
+  path the `app://` scheme has nothing at, blinking the image out until it resolved.
 - **Clicking an image in the tree shows the picture.** An image file has no text behind it, so
   `openFile()` routes it past `read-file` to `read-image-file` (main resolves the absolute vault path
   to a data URL, same guard and MIME table as `read-image`) and shows it in the read-only `#image-view`

@@ -426,6 +426,37 @@ async function main() {
   check('a Raw edit autosaves to disk', typed.includes('A line typed in Raw view.'));
   checkEqual('status line reports the save', (await text(win, '#status'))?.trim(), 'Saved');
 
+  // --- paste: an inlined image becomes a file and a reference --------------
+  // Several note apps put `![](data:image/…;base64,…)` on the clipboard, and a
+  // screenshot arrives as bytes with no path at all. Either way the base64 must
+  // not reach the note — it is imported into images/ and referenced like every
+  // other picture. A .bmp deliberately: Claude cannot read one, so the import
+  // never spawns the CLI for a description and the run stays hermetic.
+  const PASTED =
+    'data:image/bmp;base64,Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAATCwAAEwsAAAAAAAAAAAAA////AA==';
+  await win.evaluate((url) => {
+    const el = /** @type {HTMLTextAreaElement} */ (document.getElementById('editor'));
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+    const data = new DataTransfer();
+    data.setData('text/plain', `\n![shot](${url})\n`);
+    el.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  }, PASTED);
+  const pasted = await waitForDisk(vault, 'hello.md', (c) => c.includes('![shot]('));
+  const shown = pasted.slice(pasted.indexOf('![shot]'), pasted.indexOf('![shot]') + 80);
+  // A clipboard image has no name of its own, so it is named after the moment it
+  // was pasted — which is also what keeps two of them apart.
+  const ref = /!\[shot\]\((images\/pasted-\d{8}-\d{6}\.bmp)\)/.exec(pasted);
+  check('the note references the pasted image by date and time', !!ref, shown);
+  check(
+    'a pasted image is written into images/',
+    !!ref && fs.existsSync(path.join(vault, ref[1])),
+    'no file was imported',
+  );
+  check('the base64 is not in the note', !pasted.includes('data:image'), shown);
+
   // --- frontmatter is not read as a heading -------------------------------
   await openNote(win, vault, 'meta.md');
   await setView(win, 'view-md-btn');
@@ -545,7 +576,9 @@ async function main() {
       active: document.querySelector('#tree .node-row.active')?.dataset.path ?? null,
     };
   });
-  checkEqual('recency list holds every file, flat', recent.names.length, 4);
+  // The four fixture notes plus the image the paste imported — every *file*,
+  // wherever it lives, which is what the flat view is for.
+  checkEqual('recency list holds every file, flat', recent.names.length, 5);
   checkEqual('recency list is newest first', recent.names[0], 'hello.md');
   check(
     'recency list holds no folder rows',

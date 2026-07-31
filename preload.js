@@ -55,6 +55,10 @@ const api = {
     ipcRenderer.invoke('read-image-file', baseFolder, filePath),
   importImage: (baseFolder, currentFile, srcPath, originalName) =>
     ipcRenderer.invoke('import-image', baseFolder, currentFile, srcPath, originalName),
+  // The paste route: bytes rather than a path, so an image on the clipboard (or
+  // one inlined in pasted Markdown) becomes a file in images/ like any other.
+  importImageData: (baseFolder, currentFile, dataUrl) =>
+    ipcRenderer.invoke('import-image-data', baseFolder, currentFile, dataUrl),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   // Have Claude describe an imported image: returns { alt, description } for the
   // renderer to fold into the note that references it.
