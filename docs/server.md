@@ -533,8 +533,8 @@ The first server release does not own:
 
 ## Current-to-Target Function Inventory
 
-No server implementation exists yet. The server will reuse shared behavior after
-it has been extracted from `main.js`.
+No server implementation exists yet. The server will reuse the shared behavior
+as it now lives in `main/` (see `claude.mjs`, `guards.mjs`, `refs.mjs`, …).
 
 | Planned function or area | Target module |
 |---|---|

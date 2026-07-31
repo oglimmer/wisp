@@ -1,11 +1,11 @@
 // The IPC contract, in one place.
 //
-// Adding a filesystem operation is a three-file change — handler in `main.js`,
-// method in `preload.js`, call in a `renderer/` module — and nothing used to
-// check that the three agreed. This file is what they agree *on*: each channel's
-// signature is declared once as a named type, and both sides refer to it.
+// Adding a filesystem operation is a three-file change — handler in a `main/`
+// module, method in `preload.js`, call in a `renderer/` module — and nothing
+// used to check that the three agreed. This file is what they agree *on*: each
+// channel's signature is declared once as a named type, and both sides refer to it.
 //
-//   main.js     `handle()` is generic over `IpcHandlers`, so the channel name
+//   main/       `handle()` (ipc.mjs) is generic over `IpcHandlers`, so the channel name
 //               types the callback's parameters and its return value.
 //   preload.js  the exposed object is annotated `@type {WispApi}`, so a method
 //               that is missing, misspelled or wired to the wrong channel is an

@@ -20,9 +20,9 @@
 #     └── node_modules/   ← linux, built here, never shared with the repo
 #
 # It is a copy rather than a directory of symlinks on purpose. Node resolves a
-# module's realpath, so a symlinked `main.js` would report `__dirname` back inside
-# the repo — the app:// scheme would serve from there and `require('node-pty')`
-# would find the mac's binary. And index.html loads marked/turndown/xterm by
+# module's realpath, so a symlinked main-process module would report its real
+# directory back inside the repo — the app:// scheme would serve from there and
+# import('node-pty') would find the mac's binary. And index.html loads marked/turndown/xterm by
 # relative `node_modules/...` path, so the directory Electron is pointed at has to
 # own its own. The sources are ~2MB; the mirror costs nothing.
 #

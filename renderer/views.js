@@ -17,7 +17,7 @@ export function isMarkdown(filePath) {
 
 // The image extensions the app knows about — what drag & drop imports, and what
 // opens in the viewer pane instead of the text editor. (Kept in step with
-// IMAGE_MIME in main.js, which decides what can actually be read.)
+// IMAGE_MIME in main/images.mjs, which decides what can actually be read.)
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
 
 // Image files aren't text: opening one shows the picture, not its bytes.

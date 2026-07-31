@@ -174,7 +174,7 @@ cmd_test() {
   say "type-checking (tsc --noEmit against the JSDoc types)"
   # No build step and no .ts sources: tsconfig.json is checkJs + noEmit, so this
   # only reads the .js files the app already ships, plus the declarations in
-  # types/. It is what keeps main.js, preload.js and the renderer agreeing about
+  # types/. It is what keeps main/, preload.js and the renderer agreeing about
   # the IPC contract — a three-file change nothing else verifies.
   #
   # tsc is a native binary delivered as a platform-specific optional dependency,

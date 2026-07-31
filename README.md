@@ -123,7 +123,7 @@ cross-compiling `node-pty` needs a toolchain a sandbox doesn't have.
 
 | File | Role |
 |------|------|
-| `main.js` | Main process — window creation, folder dialog, tree building, file read/write/create/rename/delete IPC handlers, and the git integration (the only place `git` is run) |
+| `main.mjs` + `main/` | Main process, split into ES modules (`main/index.mjs` is the graph's entry): window creation, folder dialog, tree building, file read/write/create/rename/delete IPC handlers, git (`git.mjs` — the only place `git` is run), the pty terminal (`terminal.mjs`), and the Claude-backed handlers (`smart.mjs`/`claude.mjs`) |
 | `preload.js` | Secure `contextBridge` API exposed to the renderer |
 | `index.html` | Welcome screen + sidebar/editor layout |
 | `renderer/` | UI logic as ES modules: tree rendering, open/save, context menu, keyboard shortcuts |

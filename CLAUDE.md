@@ -11,10 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run dist` — package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
 
 There is no unit-test suite. `./oglimmer.sh test` (also run before `release`)
-does the static checks: `node --check` on main/preload/renderer/*/scripts/*, an Acorn
-unbound-name scan of renderer modules (`scripts/check-unbound.js` — catches
-missing imports after the module split, and any module that has dropped out of
-the graph reachable from `renderer/index.js`, which never runs at all),
+does the static checks: `node --check` on main.mjs/main/*/preload/renderer/*/scripts/*, an Acorn
+unbound-name scan of renderer and main modules (`scripts/check-unbound.js` — catches
+missing imports after the module splits, and any module that has dropped out
+of the graph reachable from its tree's entry, which never runs at all),
 `tsc --noEmit` (see **Types**),
 packaging/HTML/cask consistency, yamllint, and shellcheck on `oglimmer.sh` + `scripts/*.sh`.
 
@@ -106,7 +106,7 @@ Four packaging-specific gotchas worth remembering:
   removes `prebuilds/` outright before packaging, in both CI and a local build.
 - **A bundled `.app` launched from Finder gets a bare `PATH`** (`/usr/bin:/bin:/usr/sbin:/sbin`), which
   would make `spawn('claude', …)` fail with `ENOENT` even for users who have the CLI. `claudeEnv()` in
-  `main.js` appends the usual install locations before spawning; extend that list rather than assuming
+  `main/host.mjs` appends the usual install locations before spawning; extend that list rather than assuming
   the inherited environment.
 - **The Flatpak is self-distributed as a single-file bundle, not published to Flathub.** It uses the
   Freedesktop Platform/SDK and Electron BaseApp pinned to 25.08. Wisp needs arbitrary vault access and
@@ -145,8 +145,8 @@ run, with a linux `node_modules` of its own that the repo never sees. `./oglimme
 prints both.
 
 - **The mirror is a copy, not symlinks into the repo.** Node resolves a module's realpath, so a
-  symlinked `main.js` would report `__dirname` back inside the repo — the `app://` scheme would
-  serve from there and `require('node-pty')` would find the mac's binary. And `index.html` loads
+  symlinked main-process module would report its real directory back inside the repo — the
+  `app://` scheme would serve from there and `import('node-pty')` would find the mac's binary. And `index.html` loads
   marked/turndown/xterm by relative `node_modules/...` path, so whatever directory Electron is
   pointed at has to own its own. The sources are ~2MB, so the copy is free.
 - **git decides what a source file is**: `git ls-files --cached --others --exclude-standard`, so a
@@ -225,7 +225,7 @@ Wisp is a single-window Electron app: a folder/file tree on the left, an editor 
 
 The whole app is built around Electron's **three-context security model**, and understanding the boundary between the contexts is the key to working here:
 
-- **`main.js` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as a handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `move-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), the terminal pane's pty
+- **`main/` (main process, Node.js)** — owns all filesystem and OS access. Every filesystem operation lives here as a handler (`read-tree`, `read-file`, `write-file`, `create-file`, `create-folder`, `delete-path`, `rename-path`, `move-path`, `read-reminders`, `write-reminders`), plus git (`git-info`, `git-pull`, `git-commit`, `git-diff`, `git-revert` — the only place `git` is ever spawned), the terminal pane's pty
   (`term-start`, `term-input`, `term-resize`, `term-stop` — the only place a *process* is spawned
   interactively), watching the vault (`watch-vault`), folder picking (`choose-folder`), window raising (`alert-window`), revealing an entry in the
   OS file manager (`reveal-path`) and config. The renderer has **no direct fs access** — anything touching disk must be added as a handler here.
@@ -234,7 +234,39 @@ The whole app is built around Electron's **three-context security model**, and u
   `renderer/index.js` as the entry point (see **The renderer's modules**). Talks to disk **only**
   through `window.api.*`, which it gets from `renderer/api.js`. It never `require`s Node modules.
 
-So adding any file operation is always a three-file change: handler in `main.js` → method in `preload.js` → call in a `renderer/` module.
+So adding any file operation is always a three-file change: handler in a `main/` module → method in `preload.js` → call in a `renderer/` module.
+
+### The main process's modules
+
+The main process grew past the point where one file was reviewable, so it is split the same way
+the renderer is: plain ES modules (`main/*.mjs`), no build step, one graph from `main/index.mjs`.
+The root `main.mjs` is only the entry package.json points at — it forwards to `main/index.mjs`.
+The `.mjs` extension, not `"type": "module"`, carries the module kind: preload.js and scripts/
+stay CommonJS (a sandboxed preload cannot be ESM), and `.mjs` also marks "Node context" against
+the renderer's browser-context `.js`. Handlers register at module load, exactly as they did when
+they were sections of the old main.js — `main/index.mjs` imports each module once for that side
+effect, and `scripts/check-unbound.js` fails the build on any module nothing imports (an
+un-required module means missing IPC handlers — exactly what used to be impossible in one file).
+
+| | |
+|---|---|
+| `index` | the entry: imports the rest (protocol first — its privileged-scheme registration must evaluate before `ready`), then the `whenReady` wiring; `killPty` is injected into `createWindow` here, which is what keeps `window` and `terminal` from importing each other |
+| `ipc` | `handle()` — the generic wrapper every handler registers through, typed against `IpcHandlers` in `types/ipc.d.ts` (see **Types**) |
+| `guards` | the path/size guards: `vaultPath`/`assertInsideVault` (the traversal guard that throws), `isInside`, `assertReadableFile`, `assertTextContent`, the byte caps |
+| `config` | `config.json` persistence (last folder, window geometry) |
+| `host` | Flatpak/PATH/env helpers (`hostCommand`, `hostCliEnv`, `claudeEnv`) — how a build running in a sandbox still reaches the host's git and claude |
+| `protocol` | the `app://` scheme (registered at load time), serving the app's own directory and nothing else |
+| `tree` | `isIgnored`, `buildTree` (one walk feeds the tree and the recency list), the `read-tree` handler |
+| `refs` | Markdown refs: resolve (note-relative then vault-root) and `updateRefsAfterMove` — keeping every note's refs true across a move |
+| `window` | the one window (geometry persistence, the menu, `sendToWindow`), plus the shell/dialog handlers: `choose-folder`, `get-last-folder`, `alert-window`, `open-external`, `reveal-path` |
+| `vault` | the CRUD handlers: read/write/create/delete/rename/move |
+| `reminders` | the vault-root `.wisp-reminders.json` read/write |
+| `watch` | `fs.watch` the vault, debounced, own writes suppressed via `noteOwnWrite` |
+| `terminal` | the one pty session (`node-pty`, lazily imported), `killPty` |
+| `git` | everything git: `runGit`, porcelain parsing, info/pull/commit/revert/diff |
+| `images` | the image read/import handlers and the MIME table |
+| `claude` | the one-shot `runClaude` and `readClaudeJson` — the CLI spawn and the reading of its reply, shared by all three Claude features |
+| `smart` | the prompts, file gathering, sanitizers and the four handlers: smart-check/apply/lookup and analyze-image |
 
 Traffic runs the other way for the app menu (see **Keyboard shortcuts help**), the terminal pane's
 output and the vault watcher — and each crosses the same bridge: `webContents.send` in main, an
@@ -248,7 +280,7 @@ passes the payload on but never the event object, which carries a handle on the 
 
 **This is why the window is served from a custom `app://` scheme rather than `loadFile()`.**
 Chromium refuses a `<script type="module">` on a `file://` page: module fetches go through CORS
-and a `file://` origin is opaque. So `main.js` registers `app` as a **standard, secure** scheme
+and a `file://` origin is opaque. So `main/protocol.mjs` registers `app` as a **standard, secure** scheme
 (`standard` is what gives it real origin semantics — relative URLs resolve, and `localStorage`
 works) and `protocol.handle` serves the app's own directory, refusing anything that resolves
 outside it. Content types are stated rather than guessed, because a module script that doesn't
@@ -302,11 +334,11 @@ Electron and the browser load are the files in the repo. Types are **JSDoc annot
 sources and emits nothing. `./oglimmer.sh test` runs it; `npx tsc --noEmit` runs it alone.
 
 **`types/ipc.d.ts` is the IPC contract, and it is the point of the exercise.** Adding a filesystem
-operation is a three-file change — handler in `main.js`, method in `preload.js`, call in a
+operation is a three-file change — handler in a `main/` module, method in `preload.js`, call in a
 `renderer/` module — and nothing else checks that the three agree. Each channel's signature is
 declared there once and referred to from all three sides:
 
-- `handle()` in `main.js` is **generic over `IpcHandlers`**, so the channel name types the callback's
+- `handle()` in `main/ipc.mjs` is **generic over `IpcHandlers`**, so the channel name types the callback's
   parameters *and* its return value. A handler that answers with a shape the renderer isn't expecting
   fails at its own registration.
 - the object `preload.js` exposes is annotated `@type {WispApi}`, so a method that is missing,
@@ -342,7 +374,7 @@ else; change a tag in `index.html`, change the helper there.
   written and then accidentally ignored on the success path. It takes relative and absolute targets
   alike. `isInside()` underneath is still used directly where the question is a test rather than a
   guard (which files a discard covers, whether a path is worth showing relative).
-- **The tree is rebuilt, not mutated.** After any change, the renderer calls `refreshTree()` which re-reads the whole tree from `main.js` and re-renders from scratch. Expanded-folder state is preserved separately in the `expanded` Set (keyed by absolute path), not in the DOM. Two things a rebuild would otherwise throw away are put back explicitly: the sidebar's scroll offset (emptying it collapses its height, so the reader would be sent to the top) and the open file's `active` row, whose class went with the element the click put it on.
+- **The tree is rebuilt, not mutated.** After any change, the renderer calls `refreshTree()` which re-reads the whole tree from the main process and re-renders from scratch. Expanded-folder state is preserved separately in the `expanded` Set (keyed by absolute path), not in the DOM. Two things a rebuild would otherwise throw away are put back explicitly: the sidebar's scroll offset (emptying it collapses its height, so the reader would be sent to the top) and the open file's `active` row, whose class went with the element the click put it on.
 - **Persistence.** The last-opened base folder and the window's last geometry (`window`: bounds + `maximized`/`fullScreen`) are stored in `config.json` under Electron's `userData` dir (not in the vault). Geometry is saved debounced on move/resize and flushed on `close`; on restore the size is always reused but the *position* only if the frame still overlaps a live display, so unplugging a monitor can't strand the window off-screen. The window is created with `show: false` and maximized/fullscreened before `show()` so it doesn't visibly jump. Note contents are plain files in the user's chosen folder — there is no database or index.
 - **Reading positions are captured continuously, not on close.** `renderer/positions.js` remembers where the reader is in each file under `rawNotes.positions:<vault>`, LRU-capped, keyed by vault-relative path. It records off the panes' own `scroll`/`selectionchange` events rather than at the moment a file closes, which is what lets **`applyView()` restore too**: a view switch re-renders the Preview/Editor panes from scratch (and a hidden pane loses its scroll anyway), so without it every toggle would bounce the reader to the top. **A file with no remembered position is explicitly put back at the top**, not left alone: assigning `editorEl.value` parks Chromium's caret at the *end* of the text, so doing nothing opens every new file at its bottom. `restorePosition()` runs *after* `focus()` in `openFile()` and `setViewMode()` (focusing scrolls the caret into view, undoing a restore that ran before it) and *before* `refreshFind()` in `applyView()` (an open find bar's match should win). Since `hydrateImages()` resolves pictures asynchronously, a pane holding them lays out short and clamps the restore — so the requested offset is re-applied on each image `load` (capture phase; `load` doesn't bubble) until it fits or the user scrolls somewhere themselves.
 - **What is remembered is a place in the *source*, not a scroll offset.** The four panes lay the same file out completely differently, so one offset would be four different places in it and a per-pane offset means switching views lands wherever that pane was left — which for a pane you have not opened yet is the top. So the position is a **fractional source line** for the top of the viewport plus a **line/column caret**, and each pane maps into and out of its own geometry: the textarea through a measured mirror (it soft-wraps, so a line's position cannot be derived from a line height — hence `.text-metrics`, which shares the textarea's typography rule), the rendered panes through `blockLineRanges()` (marked's tokens carry their `raw`, so counting newlines while walking them says which lines each top-level child came from — no rendering, unlike the fold), and the diff through the working-tree line each row carries in `data-line`. A pane whose children don't line up with the ranges (WYSIWYG edits not yet folded back, an `html` block that rendered as several elements) is mapped by proportion instead.
@@ -350,7 +382,7 @@ else; change a tag in `index.html`, change the helper there.
   - **Working the line out is deferred to `syncAnchor()`**, called from `setViewMode`, `openFile`, `openFolder` and `flushPositions` — measuring a pane needs it on screen (a hidden textarea has no width to wrap at), so it has to happen *before* the switch, not when the position is captured. It runs after the WYSIWYG fold, so the lines are the buffer's.
   - **A restore's own scroll and selection events are suppressed** (`appliedTop` / `appliedSelection` / `appliedCaret`, compared against the live values, since the events arrive a frame later). Treating them as the reader moving would bump the anchor's stamp on every view switch, and every pane would then be mapped rather than restored exactly.
   - **The caret is the lossy part, and only across panes.** A rendered block carries neither the markers nor the markup of its source lines, so the *line* crosses reliably and the column only as far as the line's own marker allows. Exact in Raw. Scrolling the Preview or the diff moves the reader, not the cursor, so those carry the caret through unchanged rather than dragging it to wherever the scroll ended up.
-- **Ignored entries.** `isIgnored()` in `main.js` hides every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`) plus the explicit `IGNORED` set (`node_modules`) during tree building — and, because `gatherFiles` calls the same helper, keeps them out of the smart-insert prompt too.
+- **Ignored entries.** `isIgnored()` in `main/tree.mjs` hides every dot-prefixed entry (`.git`, `.DS_Store`, other editors' per-vault config folders, `.wisp-reminders.json`) plus the explicit `IGNORED` set (`node_modules`) during tree building — and, because `gatherFiles` calls the same helper, keeps them out of the smart-insert prompt too.
 
 ### The sidebar's two views (tree / recent)
 
@@ -360,7 +392,7 @@ the choice survives a restart). The tree answers "what is in this folder"; the r
 "what have I been working on", which the tree cannot show at all — the note changed a minute ago is
 wherever it happens to live, quite possibly inside a folder that is collapsed.
 
-- **One tree read feeds both.** `buildTree()` in `main.js` puts an `mtime` (epoch ms, `0` if it
+- **One tree read feeds both.** `buildTree()` in `main/tree.mjs` puts an `mtime` (epoch ms, `0` if it
   couldn't be stat'd) on every **file** node, read during the walk it is already doing rather than in
   a second pass. `refreshTree()` then either renders the nested tree or flattens the same children,
   sorts by `mtime` descending, and renders rows — so there is no second channel and no second model.
@@ -571,7 +603,7 @@ that opens it — a shortcut and its help are one change, not two. `chord()` wri
 way the host OS does: glyphs run together on macOS (`⌘⇧T`), spelled out with pluses elsewhere
 (`Ctrl+Shift+T`). **Add a shortcut, add its row.**
 
-**`buildMenu()` in `main.js` exists for that one item, but it has to rebuild the standard menu roles
+**`buildMenu()` in `main/window.mjs` exists for that one item, but it has to rebuild the standard menu roles
 around it.** Setting any application menu replaces Electron's default one, and on macOS ⌘C/⌘V/⌘Q are
 menu accelerators rather than browser behaviour — a template without an Edit menu silently takes them
 away. The dialog is a plain `.modal-overlay` like every other (see **Dialogs**), so the window-level
@@ -627,7 +659,7 @@ Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two thin
   to the note that holds it — what this app writes — or relative to the **vault
   root**, which is what Obsidian's "relative to vault root" setting produces:
   a note in `hiring/` refers to its own picture as `./hiring/images/x.png`, which
-  resolves nowhere note-relative. `resolveVaultRef()` in `main.js` tries the note
+  resolves nowhere note-relative. `resolveVaultRef()` in `main/refs.mjs` tries the note
   first and the vault root second, and the fallback is only taken when the
   candidate **is** an image that exists — so the second convention can never
   claim a ref the first one already answered. It reports which one hit (`style`),
@@ -648,7 +680,7 @@ Notes can embed images with normal Markdown (`![alt](images/foo.png)`). Two thin
   replacing the alt and appending a collapsed `<details>` block, which is what makes the picture's
   content findable via `⌘F` later. Anything that moved on in the meantime is dropped rather than
   forced: a different file open, or the `![…](ref)` reference no longer in the buffer. Only the types
-  Claude can actually look at are sent (`ANALYZABLE_IMAGE` in `main.js`); `.svg`/`.bmp`/`.ico`/`.avif`
+  Claude can actually look at are sent (`ANALYZABLE_IMAGE` in `main/smart.mjs`); `.svg`/`.bmp`/`.ico`/`.avif`
   import as before, silently unanalysed. A failure (no `claude` on PATH, say) is a status-line
   message, never a lost image.
 
@@ -673,7 +705,7 @@ the folder it is already in) are simply not offered as drop targets — main ref
 too, but a highlight that can only end in an error message is worse than no highlight.
 
 **A move is a rename plus a ref rewrite, and the rewrite is the hard half.**
-`updateRefsAfterMove()` in `main.js` walks every text file in the vault and fixes both
+`updateRefsAfterMove()` in `main/refs.mjs` walks every text file in the vault and fixes both
 directions, because a move breaks refs both ways: a note that moved has to re-aim its
 own refs, and every note that pointed *at* something moved has to follow it. A moved
 folder is both at once. `rename-path` goes through the same helper — renaming an image
