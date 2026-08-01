@@ -2,8 +2,8 @@
 # Don't hand-edit them: a version bumped ahead of a published release makes the URL resolve
 # while the checksum still points at the previous build, which fails only after a 120MB download.
 cask "wisp" do
-  version "0.1.12"
-  sha256 "647c028aabd5bada0f15a37e229222212a6de89714387e03097659cd343b515f"
+  version "0.1.14"
+  sha256 "20ea2e217006abe0687819f1a13eabb492cf9438eb86c613093a834e4dbe1314"
 
   url "https://github.com/oglimmer/wisp/releases/download/v#{version}/Wisp-#{version}-arm64.dmg",
       verified: "github.com/oglimmer/wisp/"
