@@ -1,0 +1,30 @@
+# Build context filter for docker/Dockerfile (BuildKit reads <dockerfile>.dockerignore
+# in preference to a root .dockerignore, so this stays out of the repo root).
+
+# The one that matters: on a mac checkout this holds darwin binaries — an
+# Electron.app bundle and a Mach-O node-pty — which are useless in a linux image
+# and would be several hundred MB of context to upload before being overwritten.
+node_modules
+**/node_modules
+
+.git
+.github
+dist
+smoke
+
+# Emitted output is gitignored and rebuilt in the image; copying a mac build's
+# emits in would only make the layer cache lie about what was compiled.
+main.mjs
+main.mjs.map
+main/*.mjs
+main/*.mjs.map
+preload.js
+preload.js.map
+renderer/*.js
+renderer/*.js.map
+
+Casks
+docs
+*.dmg
+*.zip
+*.AppImage

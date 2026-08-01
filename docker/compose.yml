@@ -1,0 +1,63 @@
+# Wisp in a browser. From this directory:
+#
+#   WISP_VAULT=~/Notes docker compose up --build
+#
+# then open http://localhost:6080. The password is printed on the first start.
+services:
+  wisp:
+    build:
+      # The repo root, because the image is built from source — see
+      # docker/Dockerfile.dockerignore for what is kept out of the context.
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: wisp-remote
+
+    # Bound to the loopback interface deliberately. The terminal pane runs
+    # `claude` at the vault root, so this screen is a shell on the container:
+    # reach it from another machine over Tailscale, WireGuard or an SSH tunnel,
+    # not by changing this to 0.0.0.0.
+    ports:
+      - "127.0.0.1:6080:6080"
+
+    environment:
+      # Leave unset to have an 8-character one generated and printed at startup.
+      VNC_PASSWORD: "${VNC_PASSWORD:-}"
+      WISP_GEOMETRY: "${WISP_GEOMETRY:-1600x1000}"
+
+    volumes:
+      # The notes themselves.
+      - "${WISP_VAULT:?set WISP_VAULT to your notes folder}:/vault"
+
+      # config.json (last folder, window geometry) and the renderer's
+      # localStorage — view mode, tree/recent mode, the five divider positions.
+      # Named, so the layout survives a rebuild.
+      - wisp-config:/home/wisp/.config
+
+      # The claude CLI's credentials. Both must already exist on the host or
+      # Docker creates them as directories — see docker/README.md.
+      - "${HOME}/.claude:/home/wisp/.claude"
+      - "${HOME}/.claude.json:/home/wisp/.claude.json"
+
+    # The image runs as uid 1000, which is the usual single-user host's. If
+    # yours differs the bind-mounted vault will not be writable — the entrypoint
+    # says so at startup — and the fix is to run as yourself:
+    #
+    #   user: "${UID}:${GID}"        # with: export UID GID=$(id -g)
+    #
+    # The image's home directory is mode 0777 so that works without a rebuild.
+
+    # Chromium's default 64MB /dev/shm makes renderers crash under memory
+    # pressure; this is the same allowance a desktop gets.
+    shm_size: 1gb
+
+    # Xvnc, openbox, websockify and Electron are four processes in one
+    # container, and Electron spawns more — without an init, zombies accumulate.
+    init: true
+
+    # Bounded rather than `unless-stopped`: a misconfiguration is permanent, and
+    # an unbounded policy turns it into a container restarting forever while the
+    # log scrolls past. Five crashes means something needs looking at.
+    restart: on-failure:5
+
+volumes:
+  wisp-config:
