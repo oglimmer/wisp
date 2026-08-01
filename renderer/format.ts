@@ -20,8 +20,22 @@ import { blockGap, isTableLine } from './markdown.js';
 import { state } from './state.js';
 import { setStatus } from './util.js';
 import { effectiveViewMode } from './views.js';
+import type { EffectiveViewMode } from './views.js';
 
 const HEADING_LEVEL: Record<string, number> = { h1: 1, h2: 2, h3: 3, h4: 4, h5: 5, h6: 6 };
+
+/**
+ * What kind of block to make the one the cursor is in. Absolute, not a toggle —
+ * except `code`, where a second one is the only way back out.
+ */
+export type FormatOp = 'paragraph' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'code';
+
+/** A fenced code block, as the lines it spans. An unterminated one is not `closed`. */
+interface FenceBlock {
+  start: number;
+  end: number;
+  closed: boolean;
+}
 
 // ---- Raw view ----
 
@@ -37,7 +51,7 @@ function lineStarts(lines: string[]) {
   return starts;
 }
 
-function lineAt(starts, caret) {
+function lineAt(starts: number[], caret: number) {
   let idx = 0;
   while (idx + 1 < starts.length && starts[idx + 1] <= caret) idx += 1;
   return idx;
@@ -54,7 +68,7 @@ const LINE_PREFIX = /^[ \t]*(?:>[ \t]?)*(?:(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ 
 // otherwise `---` is a thematic break, which is a block of its own.
 const SETEXT_RE = /^ {0,3}(?:=+|-+)[ \t]*$/;
 
-function isSetextUnderline(lines, i) {
+function isSetextUnderline(lines: string[], i: number) {
   return i > 0 && SETEXT_RE.test(lines[i]) && !!(lines[i - 1] || '').trim();
 }
 
@@ -66,9 +80,9 @@ function isSetextUnderline(lines, i) {
 // block too rather than being ignored.
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
-function fenceBlocks(lines) {
-  const out: {start: number, end: number, closed: boolean}[] = [];
-  let open: {start: number, fence: string} | null = null;
+function fenceBlocks(lines: string[]) {
+  const out: FenceBlock[] = [];
+  let open: { start: number; fence: string } | null = null;
   for (let i = 0; i < lines.length; i += 1) {
     const m = FENCE_RE.exec(lines[i]);
     if (!m) continue;
@@ -84,14 +98,14 @@ function fenceBlocks(lines) {
   return out;
 }
 
-function fenceBlockAt(lines, index) {
+function fenceBlockAt(lines: string[], index: number) {
   return fenceBlocks(lines).find((b) => index >= b.start && index <= b.end) || null;
 }
 
 // Replace whole lines of the buffer. insertText (rather than assigning .value)
 // keeps the textarea's native undo stack and fires `input`, which is what the
 // autosave clock hangs off — the same reason tables.js writes this way.
-function replaceLines(lines, starts, from, to, text) {
+function replaceLines(lines: string[], starts: number[], from: number, to: number, text: string) {
   editorEl.setSelectionRange(starts[from], starts[to] + lines[to].length);
   document.execCommand('insertText', false, text);
 }
@@ -99,7 +113,7 @@ function replaceLines(lines, starts, from, to, text) {
 // Take the fences off the block the cursor is in, leaving its contents where they
 // stood. The closing fence is only dropped when there is one: an unterminated
 // block's last line is content.
-function rawUnfence(lines, starts, fence) {
+function rawUnfence(lines: string[], starts: number[], fence: FenceBlock) {
   const body = lines.slice(fence.start + 1, fence.closed ? fence.end : fence.end + 1);
   const caret = starts[fence.start];
   replaceLines(lines, starts, fence.start, fence.end, body.join('\n'));
@@ -110,7 +124,14 @@ function rawUnfence(lines, starts, fence) {
 // Wrap lines in a fence. A selection decides the lines itself; a bare cursor takes
 // the paragraph it sits in (the run of non-blank lines around it), and on a blank
 // line there is nothing to wrap, so an empty block is opened to type into.
-function rawFence(lines, starts, from, to, start, end) {
+function rawFence(
+  lines: string[],
+  starts: number[],
+  from: number,
+  to: number,
+  start: number,
+  end: number,
+) {
   const value = editorEl.value;
   if (start === end && !lines[from].trim()) {
     const lead = blockGap(value.slice(0, start), false);
@@ -140,7 +161,15 @@ function rawFence(lines, starts, from, to, start, end) {
 // selection are left alone — they separate the blocks either side of them — but a
 // cursor on a blank line still gets its marker, since that is a heading about to
 // be typed.
-function rawPrefix(lines, starts, from, to, start, end, op) {
+function rawPrefix(
+  lines: string[],
+  starts: number[],
+  from: number,
+  to: number,
+  start: number,
+  end: number,
+  op: FormatOp,
+) {
   const level = HEADING_LEVEL[op] || 0;
   const marker = level ? `${'#'.repeat(level)} ` : '';
   const single = from === to;
@@ -171,7 +200,7 @@ function rawPrefix(lines, starts, from, to, start, end, op) {
   return true;
 }
 
-function rawFormatOp(op) {
+function rawFormatOp(op: FormatOp) {
   const lines = editorEl.value.split('\n');
   const starts = lineStarts(lines);
   const start = editorEl.selectionStart ?? 0;
@@ -193,7 +222,7 @@ function rawFormatOp(op) {
 // what a contenteditable leaves behind when the user splits a line themselves.
 const BLOCK_SEL = 'p, h1, h2, h3, h4, h5, h6, pre, blockquote, li, div';
 
-function elementOf(node) {
+function elementOf(node: Node | null) {
   const el = node && node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
   return el && el.nodeType === Node.ELEMENT_NODE ? (el as Element) : null;
 }
@@ -226,7 +255,7 @@ function selectedBlocks() {
 // Move `el` out to the pane's top level, splitting every list or quote around it.
 // "Make this a heading" on the third bullet means exactly that: the bullet leaves
 // the list, and the list closes up either side of it.
-function liftOut(el) {
+function liftOut(el: Element) {
   let node: Element = el;
   while (node.parentNode && node.parentNode !== wysiwygEl && wysiwygEl.contains(node.parentNode)) {
     const parent = (node.parentNode as Element);
@@ -242,10 +271,12 @@ function liftOut(el) {
 }
 
 // Drop a block, and any list or quote it was the last thing in.
-function removeBlock(el) {
+function removeBlock(el: Element) {
   let node: Node | null = el;
   while (node && node !== wysiwygEl) {
-    const parent = node.parentNode;
+    // Annotated because `node` is assigned from it below: without it the two
+    // infer through each other and the checker gives up.
+    const parent: ParentNode | null = node.parentNode;
     (node as Element).remove();
     if (!parent || parent === wysiwygEl || (parent as Element).children.length) break;
     node = parent;
@@ -254,7 +285,7 @@ function removeBlock(el) {
 
 // A block as the plain text a code block is made of: hard breaks become newlines,
 // and a task checkbox is a marker rather than text, so it doesn't come along.
-function blockText(el) {
+function blockText(el: Element) {
   const copy = (el.cloneNode(true) as Element);
   copy.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode('\n')));
   copy.querySelectorAll('input').forEach((input) => input.remove());
@@ -265,7 +296,7 @@ function blockText(el) {
 
 // Where the cursor sits inside a block, counted in characters, so it can be put
 // back in the block that replaces it.
-function caretOffsetIn(el) {
+function caretOffsetIn(el: Element) {
   const range = currentRange();
   if (!range || !el.contains(range.startContainer)) return null;
   const upto = range.cloneRange();
@@ -274,7 +305,7 @@ function caretOffsetIn(el) {
   return upto.toString().length;
 }
 
-function placeCaret(el, offset) {
+function placeCaret(el: Element, offset: number | null) {
   const range = document.createRange();
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   let target: Text | null = null;
@@ -302,7 +333,7 @@ function placeCaret(el, offset) {
 // The block(s) `el` becomes. Everything but a code block keeps its children, so
 // the bold and the links inside it survive the change; a code block holds text,
 // so each of its lines becomes a block of its own rather than one run-on line.
-function convertBlock(el, op) {
+function convertBlock(el: Element, op: FormatOp) {
   const tag = op === 'paragraph' ? 'p' : op;
   const made: Element[] = [];
   if (el.nodeName === 'PRE') {
@@ -324,7 +355,7 @@ function convertBlock(el, op) {
   return made;
 }
 
-function wysiwygConvert(blocks, op) {
+function wysiwygConvert(blocks: Element[], op: FormatOp) {
   const offset = blocks.length === 1 ? caretOffsetIn(blocks[0]) : null;
   let landed: Element | null = null;
   for (const el of blocks) {
@@ -339,7 +370,7 @@ function wysiwygConvert(blocks, op) {
 
 // Fence the touched blocks as one code block — or, if the cursor is simply in one
 // already, unfence it back into paragraphs.
-function wysiwygCode(blocks) {
+function wysiwygCode(blocks: Element[]) {
   if (!blocks.length) return false;
   if (blocks.length === 1 && blocks[0].nodeName === 'PRE') return wysiwygConvert(blocks, 'paragraph');
   const text = blocks.map(blockText).join('\n');
@@ -354,7 +385,7 @@ function wysiwygCode(blocks) {
   return true;
 }
 
-function wysiwygFormatOp(op) {
+function wysiwygFormatOp(op: FormatOp) {
   const blocks = selectedBlocks();
   if (op === 'code') return wysiwygCode(blocks);
   // A cursor in stray text the pane never wrapped in a block has nothing to
@@ -378,7 +409,7 @@ function wysiwygFormatOp(op) {
 // text, a table cell or a code block keeps the character as the character —
 // converting there would silently throw away the block the user is in, which is a
 // worse surprise than a literal dash.
-function markerBlock(range) {
+function markerBlock(range: Range) {
   const block = elementOf(range.startContainer)?.closest(BLOCK_SEL);
   if (!block || !wysiwygEl.contains(block)) return null;
   const tag = block.nodeName;
@@ -389,7 +420,7 @@ function markerBlock(range) {
 // Chromium makes its own list rather than joining the one above, which would
 // leave two `<ul>`s where the source had one — and turndown writes them out as
 // two lists, so the note grows a break nobody typed.
-function mergeWithListAbove(item) {
+function mergeWithListAbove(item: Element) {
   const list = item.parentElement;
   const above = list && list.previousElementSibling;
   if (!list || !above || above.nodeName !== list.nodeName) return;
@@ -399,9 +430,9 @@ function mergeWithListAbove(item) {
 
 /**
  * Handle the space that follows a lone `*` or `-` at the start of a block.
- * @returns {boolean} true if it started a list, and the space should not be typed
+ * @returns true if it started a list, and the space should not be typed
  */
-export function bulletInputRule() {
+export function bulletInputRule(): boolean {
   if (state.viewMode !== 'wysiwyg' || !state.currentFile) return false;
   const range = currentRange();
   if (!range || !range.collapsed) return false;
@@ -436,7 +467,7 @@ export function bulletInputRule() {
 
 // A table row is written as a table, in either pane: `# | a | b |` is not a
 // heading, and a cell is not a block that can hold one.
-function caretInTable(mode) {
+function caretInTable(mode: EffectiveViewMode) {
   if (mode === 'raw') {
     const lines = editorEl.value.split('\n');
     return isTableLine(lines[lineAt(lineStarts(lines), editorEl.selectionStart ?? 0)] || '');
@@ -456,7 +487,7 @@ function caretInTable(mode) {
 //
 // The plain ⌘0/⌘1… chords other editors use are not available: ⌘0/⌘+/⌘- are the
 // window menu's zoom accelerators, and a menu accelerator never reaches the page.
-const FORMAT_CODES: Record<string, string> = {
+const FORMAT_CODES: Record<string, FormatOp> = {
   Digit0: 'paragraph',
   Digit1: 'h1',
   Digit2: 'h2',
@@ -467,12 +498,12 @@ const FORMAT_CODES: Record<string, string> = {
   KeyC: 'code',
 };
 
-export function formatOpFor(e) {
+export function formatOpFor(e: KeyboardEvent): FormatOp | null {
   if (!(e.ctrlKey || e.metaKey) || !e.altKey || e.shiftKey) return null;
   return FORMAT_CODES[e.code] || null;
 }
 
-export function runFormatOp(op) {
+export function runFormatOp(op: FormatOp) {
   if (!state.currentFile) return;
   // Another text field (find, the smart-insert note) owns its own keyboard while
   // it has focus — formatting belongs to the note, not to whatever is being typed.

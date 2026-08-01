@@ -8,7 +8,7 @@ import { byId, workspaceEl } from './dom.js';
   const MIN = 160;
   const MAX = 600; // keep in sync with .sidebar min/max-width in styles.css
 
-  const clamp = (w) => Math.max(MIN, Math.min(MAX, w));
+  const clamp = (w: number) => Math.max(MIN, Math.min(MAX, w));
 
   // Restore a persisted width from a previous session.
   const saved = parseInt(localStorage.getItem('rawNotes.sidebarWidth') || '', 10);
@@ -16,7 +16,7 @@ import { byId, workspaceEl } from './dom.js';
 
   let dragging = false;
 
-  function onMove(e) {
+  function onMove(e: MouseEvent) {
     if (!dragging) return;
     const left = workspaceEl.getBoundingClientRect().left;
     sidebar.style.width = clamp(e.clientX - left) + 'px';
@@ -80,7 +80,7 @@ function makeRowDivider(
   const paneEl = opts.container || (document.querySelector('.editor-pane') as HTMLElement);
   const RESERVE = opts.reserve ?? 140;
   const dir = opts.below ? -1 : 1;
-  const clamp = (h) =>
+  const clamp = (h: number) =>
     Math.max(minPx, Math.min(h, paneEl.getBoundingClientRect().height - RESERVE));
 
   // Deferred, not applied here: clamping needs the container's real height, and

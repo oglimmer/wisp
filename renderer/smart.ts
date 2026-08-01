@@ -8,7 +8,7 @@ import { formatDue, newReminderId, normalizeList, upsertReminder } from './remin
 import { openVaultNote, reminderModal } from './reminders-ui.js';
 import { state } from './state.js';
 import { expandAncestors, refreshTree } from './tree.js';
-import type { SmartPlan } from '../types/ipc';
+import type { LookupResult, ReminderProposal, SmartPlan } from '../types/ipc';
 import { cssEscape } from './util.js';
 
 // was computed for. If the text changes, the plan is stale and Add re-checks.
@@ -34,7 +34,10 @@ export function resetSmartPanel() {
   setSmartStatus('');
 }
 
-export function setSmartStatus(text: string, isError?: boolean) {
+// `text` takes the undefined a failed result's `error` may be: every caller
+// reporting a failure passes `res.error` straight through, and the empty status
+// line is the right thing to show for a failure that named no reason.
+export function setSmartStatus(text: string | undefined, isError?: boolean) {
   smartStatusEl.textContent = text || '';
   smartStatusEl.classList.toggle('error', !!isError);
 }
@@ -210,7 +213,7 @@ export function invalidateSmartPlan() {
 }
 
 // Build a preview: target file, a NEW/EXISTING badge, Claude's reason, and a diff.
-function renderPreview(plan) {
+function renderPreview(plan: SmartPlan) {
   smartPreviewEl.innerHTML = '';
   smartLookupFor = null; // the plan owns the preview pane now
 
@@ -236,7 +239,7 @@ function renderPreview(plan) {
   // Every check also asks Claude whether the note implies a reminder. When it
   // does, offer it here — opt-out, editable, and only created when Add is pressed.
   smartReminderOn = !!plan.reminder;
-  if (plan.reminder) smartPreviewEl.appendChild(renderReminderProposal(plan));
+  if (plan.reminder) smartPreviewEl.appendChild(renderReminderProposal(plan, plan.reminder));
 
   const diff = document.createElement('pre');
   diff.className = 'sp-diff';
@@ -253,7 +256,11 @@ function renderPreview(plan) {
 
 // The reminder card inside the smart-insert preview: a checkbox to include it,
 // what it will fire as, and an Edit… button that opens the normal reminder editor.
-function renderReminderProposal(plan) {
+// The proposal is passed alongside the plan rather than read off it: this is only
+// ever called under `if (plan.reminder)`, and taking it as a parameter is what
+// carries that guard in — `plan.reminder` is reassigned below, so reading it back
+// out would be reading a field this card has already replaced.
+function renderReminderProposal(plan: SmartPlan, reminder: ReminderProposal) {
   const card = document.createElement('div');
   card.className = 'sp-reminder';
 
@@ -273,20 +280,20 @@ function renderReminderProposal(plan) {
   badge.textContent = 'REMINDER';
   const title = document.createElement('span');
   title.className = 'sp-rem-title';
-  title.textContent = plan.reminder.title;
+  title.textContent = reminder.title;
   head.appendChild(badge);
   head.appendChild(title);
 
   const meta = document.createElement('div');
   meta.className = 'sp-rem-meta';
-  meta.textContent = formatDue(plan.reminder.due);
+  meta.textContent = formatDue(reminder.due);
 
   body.appendChild(head);
   body.appendChild(meta);
-  if (plan.reminder.reason) {
+  if (reminder.reason) {
     const why = document.createElement('div');
     why.className = 'sp-rem-why';
-    why.textContent = plan.reminder.reason;
+    why.textContent = reminder.reason;
     body.appendChild(why);
   }
 
@@ -296,9 +303,9 @@ function renderReminderProposal(plan) {
   edit.addEventListener('click', async () => {
     const res = await reminderModal({
       id: newReminderId(),
-      title: plan.reminder.title,
-      due: plan.reminder.due,
-      list: normalizeList(plan.reminder.list),
+      title: reminder.title,
+      due: reminder.due,
+      list: normalizeList(reminder.list),
       note: smartInputEl.value.trim(),
       file: plan.targetFile,
     });
@@ -307,7 +314,7 @@ function renderReminderProposal(plan) {
       plan.reminder = null;
       smartReminderOn = false;
     } else if (res.action === 'save') {
-      plan.reminder = { ...res.reminder, reason: plan.reminder.reason };
+      plan.reminder = { ...res.reminder, reason: reminder.reason };
     }
     renderPreview(plan);
   });
@@ -321,7 +328,7 @@ function renderReminderProposal(plan) {
 // Render a lookup answer into the same preview pane: Claude's answer, then the
 // files it drew on. Each source opens the note it names, so an answer stays
 // checkable against what the vault actually says.
-function renderLookup(result) {
+function renderLookup(result: LookupResult) {
   smartPreviewEl.innerHTML = '';
 
   const head = document.createElement('div');

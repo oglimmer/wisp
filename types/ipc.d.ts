@@ -228,23 +228,25 @@ export type GitRevert = (
   targets: string | string[]
 ) => Promise<Result<{ reverted: number; skipped: number }>>;
 
-/** `head`/`work` are null for a binary (or oversized) file, and for the side that doesn't exist. */
-export type GitDiff = (
-  baseFolder: VaultRoot,
-  target: string
-) => Promise<
-  Result<{
-    path: string;
-    rel: string;
-    binary: boolean;
-    head: string | null;
-    work: string | null;
-    isNew: boolean;
-    isDeleted: boolean;
-    /** git's own unified patch, '' when there is none. */
-    raw: string;
-  }>
->;
+/**
+ * One file's change against HEAD, in both the forms the diff view offers.
+ * Named rather than inline because `renderer/diff.ts` renders it twice — once
+ * side-by-side and once as git's patch — and both need to say what they take.
+ */
+export interface GitFileDiff {
+  path: string;
+  rel: string;
+  binary: boolean;
+  /** Null for a binary (or oversized) file, and for the side that doesn't exist. */
+  head: string | null;
+  work: string | null;
+  isNew: boolean;
+  isDeleted: boolean;
+  /** git's own unified patch, '' when there is none. */
+  raw: string;
+}
+
+export type GitDiff = (baseFolder: VaultRoot, target: string) => Promise<Result<GitFileDiff>>;
 
 export type ReadImage = (
   baseFolder: VaultRoot,
@@ -430,7 +432,8 @@ declare global {
     api: WispApi;
     /** `marked`, `turndown` and DOMPurify load as classic scripts, so their globals exist synchronously. */
     marked?: typeof import('marked');
-    TurndownService?: typeof import('turndown');
+    /** The UMD global is the class itself, not the module namespace around it. */
+    TurndownService?: (typeof import('turndown'))['default'];
     DOMPurify?: (typeof import('dompurify'))['default'];
     /** xterm.js and its fit addon, loaded the same way, for the terminal pane. */
     Terminal?: typeof import('@xterm/xterm').Terminal;

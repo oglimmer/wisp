@@ -32,7 +32,7 @@ export async function openFile(filePath: string, rowEl?: Element | null) {
   state.currentFile = filePath;
   state.diffOnlyFile = null; // a real file is open again
   state.dirty = false;
-  if (image) {
+  if ('dataUrl' in res) {
     // Keep the buffer empty and disabled: there is no text behind an image, so
     // nothing can be typed — and no autosave can overwrite the file with text.
     editorEl.value = '';
@@ -151,7 +151,7 @@ wysiwygEl.addEventListener('keydown', (e) => {
 const INDENT_UNIT = '\t';
 
 // Widen [start,end) to whole lines so a block indent can't leave half a line behind.
-function lineSpan(value, start, end) {
+function lineSpan(value: string, start: number, end: number) {
   const from = value.lastIndexOf('\n', start - 1) + 1;
   let to = value.indexOf('\n', end);
   if (to === -1) to = value.length;
@@ -161,10 +161,10 @@ function lineSpan(value, start, end) {
 // Indent (or, with shift, outdent) every line the selection touches. Returns the
 // rewritten block plus how much the first line and the whole block moved, which is
 // what the caller needs to put the selection back where the user left it.
-function reindentBlock(block, outdent) {
+function reindentBlock(block: string, outdent: boolean) {
   let firstDelta = 0;
   let totalDelta = 0;
-  const lines = block.split('\n').map((line, i) => {
+  const lines = block.split('\n').map((line: string, i: number) => {
     let delta = 0;
     let out = line;
     if (outdent) {

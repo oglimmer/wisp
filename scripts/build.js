@@ -48,6 +48,17 @@ const ROOT = path.resolve(__dirname, '..');
 //
 // This table is the same information as tsconfig.build.json's `include` and the
 // .gitignore rules for emitted output; the three move together, one tree at a time.
+/**
+ * One tree under compilation.
+ * @typedef {object} Tree
+ * @property {string} dir directory, relative to the repo root
+ * @property {string} src the source extension — `.mts` or `.ts`
+ * @property {string} out what tsc emits for it — `.mjs` or `.js`
+ * @property {string[]} [only] narrows the tree to these named files
+ * @property {boolean} converted every source in the tree is TypeScript
+ */
+
+/** @type {Tree[]} */
 const TREES = [
   { dir: '.', src: '.mts', out: '.mjs', only: ['main.mts'], converted: true },
   { dir: 'main', src: '.mts', out: '.mjs', converted: true },
@@ -64,6 +75,7 @@ const SHARED_INPUTS = [
   'scripts/build.js',
 ];
 
+/** @param {string} dir */
 function listDir(dir) {
   try {
     return fs.readdirSync(path.join(ROOT, dir));
@@ -75,19 +87,23 @@ function listDir(dir) {
 // The sources a tree actually has right now. `only` narrows a tree to named files,
 // which is how the two root-level entries (main.mts, preload.ts) avoid claiming
 // each other's extension or anything else that lands in the repo root.
+/** @param {Tree} tree */
 function sourcesOf(tree) {
   const names = tree.only || listDir(tree.dir).filter((f) => f.endsWith(tree.src));
   return names.filter((f) => fs.existsSync(path.join(ROOT, tree.dir, f)));
 }
 
+/** @param {Tree} tree @param {string} source */
 function outputFor(tree, source) {
   return path.join(tree.dir, source.slice(0, -tree.src.length) + tree.out);
 }
 
+/** @param {string} rel */
 function abs(rel) {
   return path.join(ROOT, rel);
 }
 
+/** @param {string} rel */
 function mtimeMs(rel) {
   try {
     return fs.statSync(abs(rel)).mtimeMs;
@@ -96,6 +112,7 @@ function mtimeMs(rel) {
   }
 }
 
+/** @param {string} rel */
 function rm(rel) {
   try {
     fs.unlinkSync(abs(rel));
@@ -109,6 +126,7 @@ function rm(rel) {
 // removed together, because a stale map is worse than a stale module — it is still
 // served over `app://`, and it points DevTools at a version of the file that no
 // longer exists.
+/** @param {Tree} tree @param {string} source */
 function outputsFor(tree, source) {
   const out = outputFor(tree, source);
   return [out, `${out}.map`];

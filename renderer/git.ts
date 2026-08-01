@@ -9,7 +9,7 @@ import { state } from './state.js';
 import { refreshTree } from './tree.js';
 import { cssEscape, setStatus } from './util.js';
 import { effectiveViewMode } from './views.js';
-import type { GitFile, GitRepoInfo } from '../types/ipc';
+import type { GitFile, GitRepoInfo, GitStatusKind } from '../types/ipc';
 
 // The vault is *often* a git repository, but never has to be: `gitState` is null
 // for a plain folder and every piece of git UI hides itself. Status is read whole
@@ -17,7 +17,7 @@ import type { GitFile, GitRepoInfo } from '../types/ipc';
 // there is no incremental bookkeeping to fall out of sync with the repository.
 
 // Single letter shown in the tree, and what the row's colour means.
-export const GIT_LETTER = {
+export const GIT_LETTER: Record<GitStatusKind, string> = {
   modified: 'M',
   added: 'A',
   untracked: '?',
@@ -25,7 +25,7 @@ export const GIT_LETTER = {
   renamed: 'R',
   conflict: '!',
 };
-const GIT_KIND_LABEL = {
+const GIT_KIND_LABEL: Record<GitStatusKind, string> = {
   modified: 'Modified',
   added: 'Added',
   untracked: 'Untracked',
@@ -125,7 +125,7 @@ function indexGitStatus() {
 }
 
 // What a status entry means in words, for the row's tooltip.
-export function gitEntryTitle(entry) {
+export function gitEntryTitle(entry: GitFile) {
   const label = GIT_KIND_LABEL[entry.kind] || 'Changed';
   if (entry.kind === 'untracked') return 'Untracked — not in git yet';
   if (entry.kind === 'conflict') return 'Conflicted — resolve before committing';
@@ -251,7 +251,7 @@ export async function afterGitChange(message: string, isError?: boolean) {
 
 // git prints the interesting part of a pull last ("3 files changed, …"); its first
 // line is the near-useless "Updating abc1234..def5678".
-function summarizePull(output) {
+function summarizePull(output: string) {
   const lines = String(output || '').split('\n').map((s) => s.trim()).filter(Boolean);
   return (
     lines.find((l) => /files? changed/i.test(l)) ||
@@ -262,7 +262,7 @@ function summarizePull(output) {
 }
 
 // Conversely, git buries the actual failure under a pile of `hint:` lines.
-export function gitErrorLine(text) {
+export function gitErrorLine(text: string | undefined) {
   const lines = String(text || '').split('\n').map((s) => s.trim()).filter(Boolean);
   return (
     lines.find((l) => /^(fatal|error):/i.test(l)) ||

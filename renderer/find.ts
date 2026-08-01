@@ -87,7 +87,7 @@ function findInDom(container: HTMLElement, query: string): Range[] {
   if (!nodes.length) return [];
 
   // The node containing offset `pos` — the last one that starts at or before it.
-  const at = (pos) => {
+  const at = (pos: number) => {
     let lo = 0;
     let hi = nodes.length - 1;
     let k = 0;
@@ -245,7 +245,7 @@ export function scheduleFindRefresh() {
   }, 120);
 }
 
-export function findStep(delta) {
+export function findStep(delta: number) {
   if (!findMatches.length) return;
   findIndex = (findIndex + delta + findMatches.length) % findMatches.length;
   paintFindHighlights();
@@ -266,7 +266,7 @@ function selectionSeed() {
   return text;
 }
 
-export function openFind(withReplace) {
+export function openFind(withReplace: boolean) {
   // Replace rewrites the Markdown source; the visual panes are projections of it,
   // so switch to the buffer itself rather than offering a control that can't work.
   // (Not for an image: there's no source buffer behind it to switch to.)

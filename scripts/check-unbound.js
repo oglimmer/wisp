@@ -20,6 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 
+/** @type {typeof import('acorn')} */
 let acorn;
 try {
   acorn = require('acorn');
@@ -150,6 +151,23 @@ const NODE_GLOBALS = new Set([
   'clearImmediate',
 ]);
 
+/**
+ * An ESTree node as these two walkers treat it: a `type`, plus whatever fields
+ * that type carries. Deliberately loose, and the one place in the repo that is.
+ *
+ * Both walks are *reflective* — they enumerate `Object.keys(node)` and recurse
+ * into whatever they find, which is what makes them correct for every node kind
+ * acorn can produce, including ones added by a future ecmaVersion. Acorn's own
+ * `AnyNode` union is precise but describes the opposite shape: it has no index
+ * signature, so the generic descent cannot be written against it at all, and
+ * every `node.params` / `node.body` reached through a multi-type check would
+ * need a cast. The typed entry points below (`analyze`, `importsOf`) do use
+ * acorn's real types — this covers only the descent itself.
+ *
+ * @typedef {{ type: string, [key: string]: any }} AstNode
+ */
+
+/** @param {AstNode | null | undefined} pat @param {Set<string>} set */
 function patternNames(pat, set) {
   if (!pat) return;
   if (pat.type === 'Identifier') set.add(pat.name);
@@ -168,6 +186,7 @@ function patternNames(pat, set) {
   else if (pat.type === 'RestElement') patternNames(pat.argument, set);
 }
 
+/** @param {AstNode} node @param {AstNode | null} parent */
 function isReference(node, parent) {
   if (node.type !== 'Identifier' || !parent) return false;
   if (parent.type === 'MemberExpression' && parent.property === node && !parent.computed) {
@@ -217,6 +236,7 @@ function isReference(node, parent) {
   return true;
 }
 
+/** @param {string} src @param {Set<string>} globals */
 function analyze(src, globals) {
   const ast = acorn.parse(src, { ecmaVersion: 2022, sourceType: 'module', locations: true });
   const moduleBindings = new Set();
@@ -246,8 +266,10 @@ function analyze(src, globals) {
   }
 
   const scopeStack = [moduleBindings];
+  /** @type {{name: string, line: number}[]} */
   const issues = [];
 
+  /** @param {string} name */
   function resolve(name) {
     for (let i = scopeStack.length - 1; i >= 0; i--) {
       if (scopeStack[i].has(name)) return true;
@@ -255,6 +277,7 @@ function analyze(src, globals) {
     return globals.has(name);
   }
 
+  /** @param {AstNode | null} node @param {AstNode | null} parent */
   function walkFull(node, parent) {
     if (!node || typeof node !== 'object') return;
 
@@ -373,9 +396,12 @@ function analyze(src, globals) {
 // are top-level statements; a dynamic import() of a sibling — a lazily loaded
 // module — can sit anywhere in the tree, so the body is walked for those too.
 // The specifiers include their extension, matching the file names on disk.
+/** @param {string} src */
 function importsOf(src) {
   const ast = acorn.parse(src, { ecmaVersion: 2022, sourceType: 'module' });
+  /** @type {string[]} */
   const out = [];
+  /** @param {unknown} value */
   const collect = (value) => {
     const m = /^\.\/(.+)$/.exec(String(value));
     if (m) out.push(m[1]);
@@ -394,7 +420,7 @@ function importsOf(src) {
     if (!stmt.source) continue;
     collect(stmt.source.value);
   }
-  (function walkDeep(node) {
+  (/** @param {AstNode | null} node */ function walkDeep(node) {
     if (!node || typeof node !== 'object') return;
     if (node.type === 'ImportExpression' && node.source && node.source.type === 'Literal') {
       collect(node.source.value);
@@ -412,8 +438,10 @@ function importsOf(src) {
 
 // Modules of a tree that its entry never reaches — they are never fetched, so
 // whatever they register at load time (listeners, IPC handlers) never happens.
+/** @param {string[]} files @param {string} treeDir @param {string} entry */
 function unreachable(files, treeDir, entry) {
   const seen = new Set();
+  /** @param {string} file */
   const walk = (file) => {
     if (seen.has(file) || !files.includes(file)) return;
     seen.add(file);
@@ -424,7 +452,15 @@ function unreachable(files, treeDir, entry) {
   return files.filter((f) => !seen.has(f));
 }
 
-// Reachability + binding for one module tree ({ label, dir, entry, ext, globals }).
+/**
+ * Reachability + binding for one module tree.
+ * @param {object} tree
+ * @param {string} tree.label how the tree is named in the output
+ * @param {string} tree.dir the directory holding its emitted modules
+ * @param {string} tree.entry the file its graph is reachable from
+ * @param {string} tree.ext the emitted extension — `.js` or `.mjs`
+ * @param {Set<string>} tree.globals names a module of this tree may touch unimported
+ */
 function checkTree({ label, dir, entry, ext, globals }) {
   const files = fs
     .readdirSync(dir)

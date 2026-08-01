@@ -22,7 +22,7 @@
 // position describes is still on screen.
 
 import { diffViewEl, editorEl, renderedEl, wysiwygEl } from './dom.js';
-import { blockLineRanges } from './markdown.js';
+import { blockLineRanges, type LineRange } from './markdown.js';
 import { state, type ViewMode } from './state.js';
 import { relativePath } from './util.js';
 import { effectiveViewMode } from './views.js';
@@ -54,7 +54,8 @@ export interface Caret {
  */
 export interface Position {
   seq?: number;
-  from?: string;
+  /** The pane the reader last moved in — the only one that can be measured. */
+  from?: ViewMode;
   anchor?: { line: number; caret: Caret | null } | null;
   raw?: PaneOffset;
   wysiwyg?: PaneOffset;
@@ -89,7 +90,7 @@ function paneEl(mode: PaneMode) {
 // Positions are keyed by vault so switching folders doesn't mix two vaults'
 // files (paths are stored relative for the same reason — moving a vault keeps
 // them pointing at the right notes).
-export function loadPositions(folder) {
+export function loadPositions(folder: string | null) {
   flushPositions(); // don't carry a pending write over to the new key
   positions = new Map();
   anchorOwed = null;
@@ -136,12 +137,12 @@ export function flushPositions() {
 // A moved (or renamed) file keeps its reading position. The store is keyed by
 // vault-relative path, so the key has to follow the file — including every file
 // under a folder that moved, which is why this re-keys by prefix as well.
-export function remapPositions(oldRel, newRel) {
+export function remapPositions(oldRel: string, newRel: string) {
   if (!oldRel || !newRel || oldRel === newRel) return;
   const sep = oldRel.includes('\\') ? '\\' : '/';
   const prefix = oldRel + sep;
   // Rebuilt in order rather than edited in place: the Map's order is the LRU one.
-  const next = new Map();
+  const next: Map<string, Position> = new Map();
   for (const [key, pos] of positions) {
     if (key === oldRel) next.set(newRel, pos);
     else if (key.startsWith(prefix)) next.set(newRel + sep + key.slice(prefix.length), pos);
@@ -153,11 +154,15 @@ export function remapPositions(oldRel, newRel) {
 }
 
 // Fetch this file's entry, moving it to the end: the Map's order is the LRU one.
-function touch(key) {
+function touch(key: string): Position {
   const pos = positions.get(key) || {};
   positions.delete(key);
   positions.set(key, pos);
-  while (positions.size > MAX_FILES) positions.delete(positions.keys().next().value);
+  while (positions.size > MAX_FILES) {
+    const oldest = positions.keys().next().value;
+    if (oldest === undefined) break;
+    positions.delete(oldest);
+  }
   return pos;
 }
 
@@ -217,8 +222,13 @@ export function syncAnchor() {
   schedulePersist();
 }
 
-/** @returns {{line: number, caret: Caret | null} | null} */
-function readAnchor(mode, el, pos) {
+/** A place in the source the panes are matched against: a line, and maybe a caret. */
+interface Anchor {
+  line: number;
+  caret: Caret | null;
+}
+
+function readAnchor(mode: ViewMode, el: HTMLElement, pos: Position): Anchor | null {
   const carried = pos.anchor ? pos.anchor.caret : null;
   if (mode === 'raw') {
     const tops = rawLineTops();
@@ -256,7 +266,7 @@ const appliedTop: Map<Element, number> = new Map();
 let appliedSelection: {start: number, end: number} | null = null;
 let appliedCaret: {node: Node, offset: number} | null = null;
 
-function applyScroll(el, top) {
+function applyScroll(el: HTMLElement, top: number) {
   el.scrollTop = top;
   appliedTop.set(el, el.scrollTop);
   pending = el.scrollTop < top ? { el, top } : null;
@@ -302,13 +312,13 @@ export function restorePosition() {
 
 // The buffer offsets to put the textarea's selection at: a stored raw offset pair
 // as it stands, a caret mapped from another pane as a collapsed cursor.
-function caretOffsets(caret) {
+function caretOffsets(caret: Caret | null) {
   if (!caret) return null;
   const at = offsetAtLineCol(caret.line, caret.col);
   return { start: at, end: at };
 }
 
-function applyRawSelection(sel) {
+function applyRawSelection(sel: { start?: number; end?: number } | null | undefined) {
   const max = editorEl.value.length;
   // The file may have been edited elsewhere since — clamp rather than trusting a
   // stored offset to still be inside it. (scrollTop the browser clamps itself.)
@@ -318,8 +328,7 @@ function applyRawSelection(sel) {
   appliedSelection = { start, end };
 }
 
-/** @returns {{top: number, caret: Caret | null} | null} */
-function mapAnchor(mode, el, anchor) {
+function mapAnchor(mode: PaneMode, el: HTMLElement, anchor: Anchor) {
   const top =
     mode === 'raw' ? rawPixelsAt(anchor.line)
     : mode === 'diff' ? diffTopAt(el, anchor.line)
@@ -338,8 +347,8 @@ function bufferLines() {
   return lineCache.lines;
 }
 
-const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
-const clamp01 = (n) => (Number.isFinite(n) ? clamp(n, 0, 1) : 0);
+const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
+const clamp01 = (n: number) => (Number.isFinite(n) ? clamp(n, 0, 1) : 0);
 
 // A block sitting within a pixel of the viewport's top edge is the block at the top:
 // laid-out positions are fractional, so an exact comparison would answer with the
@@ -353,7 +362,7 @@ function caretFromRaw() {
   return { line, col: at - (before.lastIndexOf('\n') + 1) };
 }
 
-function offsetAtLineCol(line, col) {
+function offsetAtLineCol(line: number, col: number) {
   const lines = bufferLines();
   const i = clamp(Math.floor(line) || 0, 0, lines.length - 1);
   let at = 0;
@@ -370,8 +379,8 @@ function offsetAtLineCol(line, col) {
 
 let metrics: {text: string, width: number, tops: number[]} | null = null;
 
-/** @returns {number[] | null} one top per line, plus the bottom of the last */
-function rawLineTops() {
+/** @returns one top per line, plus the bottom of the last */
+function rawLineTops(): number[] | null {
   const text = editorEl.value;
   const width = editorEl.clientWidth;
   const parent = editorEl.parentElement;
@@ -403,7 +412,7 @@ function rawLineTops() {
   return tops;
 }
 
-function lineAtPixels(tops, top) {
+function lineAtPixels(tops: number[], top: number) {
   const last = tops.length - 2; // the final entry is the bottom, not a line
   if (last < 0) return 0;
   let lo = 0;
@@ -417,7 +426,7 @@ function lineAtPixels(tops, top) {
   return lo + clamp01((top - tops[lo]) / height);
 }
 
-function rawPixelsAt(line) {
+function rawPixelsAt(line: number) {
   const tops = rawLineTops();
   if (!tops) return null;
   const last = Math.max(tops.length - 2, 0);
@@ -451,7 +460,7 @@ function paneRegions(el: HTMLElement) {
   return regions;
 }
 
-function paneLineAt(el) {
+function paneLineAt(el: HTMLElement) {
   const total = bufferLines().length;
   const regions = paneRegions(el);
   if (!regions) return clamp01(el.scrollTop / Math.max(1, el.scrollHeight)) * total;
@@ -462,7 +471,7 @@ function paneLineAt(el) {
   return region.start + frac * Math.max(1, region.end - region.start);
 }
 
-function paneTopAt(el, line) {
+function paneTopAt(el: HTMLElement, line: number) {
   const regions = paneRegions(el);
   if (!regions) {
     const total = bufferLines().length;
@@ -475,7 +484,9 @@ function paneTopAt(el, line) {
 }
 
 // The block a line falls in — the last one that starts at or before it.
-function regionFor(regions, line) {
+// Takes anything carrying a `start`: the measured pane regions, and the raw line
+// ranges `blockLineRanges()` answers with.
+function regionFor(regions: { start: number }[], line: number) {
   let i = regions.length - 1;
   while (i > 0 && regions[i].start > line) i--;
   return i;
@@ -499,7 +510,7 @@ function diffRows(el: HTMLElement) {
   }));
 }
 
-function diffLineAt(el) {
+function diffLineAt(el: HTMLElement) {
   const rows = diffRows(el);
   if (!rows) return null;
   let i = rows.length - 1;
@@ -507,7 +518,7 @@ function diffLineAt(el) {
   return rows[i].line;
 }
 
-function diffTopAt(el, line) {
+function diffTopAt(el: HTMLElement, line: number) {
   const rows = diffRows(el);
   if (!rows) return null;
   // Above the first row shown is the legend, which is worth seeing.
@@ -527,24 +538,24 @@ function diffTopAt(el, line) {
 
 const LINE_MARKER = /^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?|>[ \t]*|#{1,6}[ \t]+)?/;
 
-function markerLength(line) {
+function markerLength(line: string) {
   return (LINE_MARKER.exec(line) || [''])[0].length;
 }
 
-/** @returns {Caret | null} */
-function paneCaret(el) {
+function paneCaret(el: HTMLElement): Caret | null {
   const sel = window.getSelection();
   if (!sel || !sel.focusNode || !el.contains(sel.focusNode)) return null;
   const ranges = blockLineRanges(editorEl.value);
   const kids = Array.from(el.children);
   if (!ranges || ranges.length !== kids.length) return null;
   const block = topLevelBlock(el, sel.focusNode);
-  const i = block ? kids.indexOf(block) : -1;
+  if (!block) return null;
+  const i = kids.indexOf(block);
   if (i < 0) return null;
   return lineColInBlock(ranges[i], textOffsetIn(block, sel.focusNode, sel.focusOffset));
 }
 
-function placePaneCaret(el, caret) {
+function placePaneCaret(el: HTMLElement, caret: Caret | null) {
   if (!caret) return;
   const ranges = blockLineRanges(editorEl.value);
   const kids = Array.from(el.children);
@@ -558,14 +569,14 @@ function placePaneCaret(el, caret) {
 }
 
 // The pane child a node sits in — the ancestor whose parent is the pane itself.
-function topLevelBlock(el, node) {
-  let cur = node;
+function topLevelBlock(el: Element, node: Node | null) {
+  let cur: Node | null = node;
   while (cur && cur.parentNode !== el) cur = cur.parentNode;
   return cur && cur.nodeType === Node.ELEMENT_NODE ? (cur as Element) : null;
 }
 
 // How many characters of the block's rendered text come before (node, offset).
-function textOffsetIn(block, node, offset) {
+function textOffsetIn(block: Element, node: Node, offset: number) {
   if (node === block) {
     // An offset among the block's children rather than into text.
     let n = 0;
@@ -583,8 +594,7 @@ function textOffsetIn(block, node, offset) {
   return n;
 }
 
-/** @returns {Caret} */
-function lineColInBlock(range, offset) {
+function lineColInBlock(range: LineRange, offset: number): Caret {
   const lines = bufferLines();
   let rest = Math.max(0, offset);
   for (let ln = range.start; ln < range.end; ln++) {
@@ -599,7 +609,7 @@ function lineColInBlock(range, offset) {
   return { line: range.start, col: 0 };
 }
 
-function blockTextOffset(range, caret) {
+function blockTextOffset(range: LineRange, caret: Caret) {
   const lines = bufferLines();
   const line = clamp(caret.line, range.start, range.end - 1);
   let offset = 0;
@@ -612,8 +622,7 @@ function blockTextOffset(range, caret) {
   return offset;
 }
 
-/** @returns {{node: Node, offset: number} | null} */
-function textNodeAt(block, offset) {
+function textNodeAt(block: Element, offset: number): { node: Node; offset: number } | null {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   let n = 0;
   let last: Node | null = null;
@@ -664,7 +673,7 @@ document.addEventListener('selectionchange', () => {
 // Whether the selection is still exactly the one a restore put there. Setting it is
 // what fires the event, and treating that as the reader moving the cursor would
 // throw the anchor away on every view switch.
-function isRestoredCaret(active) {
+function isRestoredCaret(active: Element | null) {
   if (active === editorEl) {
     return !!appliedSelection
       && appliedSelection.start === (editorEl.selectionStart ?? 0)

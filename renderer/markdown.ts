@@ -7,14 +7,15 @@
 
 import { lcsOps } from './lcs.js';
 import { IMAGE_SUMMARY } from './state.js';
+import type { Token } from 'marked';
+import type TurndownService from 'turndown';
 
 // ---- Markdown -> HTML ----
 
 // marked leaves raw HTML in the source intact (`<script>`, event handlers,
 // javascript: links). Never assign its output to innerHTML without sanitizing.
 // If DOMPurify failed to load, fall closed to plain text rather than injecting.
-/** @returns {string | null} */
-export function safeMarkdownHtml(source) {
+export function safeMarkdownHtml(source: string): string | null {
   if (!window.marked) return null;
   // marked.parse is only asynchronous when configured with `async: true`, which
   // this app never does — so the declared string | Promise<string> is a string.
@@ -42,12 +43,10 @@ export const FRONTMATTER_CLASS = 'md-frontmatter';
 const FRONTMATTER_RE = /^---[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?---[ \t]*(?:\r?\n|$)/;
 
 /**
- * @param {string} text
- * @returns {{fm: string, body: string}} `fm` is the whole block including both
- * fences (empty if there is none), `body` everything after it. `fm + body` is
- * always the input.
+ * @returns `fm` is the whole block including both fences (empty if there is none),
+ * `body` everything after it. `fm + body` is always the input.
  */
-export function splitFrontmatter(text) {
+export function splitFrontmatter(text: string): { fm: string; body: string } {
   const source = text || '';
   const m = FRONTMATTER_RE.exec(source);
   if (!m) return { fm: '', body: source };
@@ -57,7 +56,7 @@ export function splitFrontmatter(text) {
 // Shown, but not editable: the buffer keeps the canonical copy and the fold
 // re-attaches it, so an edit made here would be silently discarded. Raw view is
 // where frontmatter is edited.
-export function frontmatterNode(fm) {
+export function frontmatterNode(fm: string) {
   const pre = document.createElement('pre');
   pre.className = FRONTMATTER_CLASS;
   pre.setAttribute('contenteditable', 'false');
@@ -65,7 +64,7 @@ export function frontmatterNode(fm) {
   return pre;
 }
 
-function isFrontmatterNode(node) {
+function isFrontmatterNode(node: Node | null) {
   return !!node
     && node.nodeType === Node.ELEMENT_NODE
     && node.nodeName === 'PRE'
@@ -86,15 +85,20 @@ function isFrontmatterNode(node) {
 // lines are absorbed into the range of the block before them, so the ranges still
 // cover the whole file.
 
-const newlines = (text) => (text ? text.split('\n').length - 1 : 0);
+const newlines = (text: string) => (text ? text.split('\n').length - 1 : 0);
+
+/** A half-open, 0-based range of source lines: `[start, end)`. */
+export interface LineRange {
+  start: number;
+  end: number;
+}
 
 /**
  * The source lines behind each top-level child of a rendered pane, in order.
- * @param {string} text the whole buffer, frontmatter included
- * @returns {{start: number, end: number}[] | null} half-open, 0-based line ranges;
- *   null when marked can't be asked or there is nothing to show
+ * @param text the whole buffer, frontmatter included
+ * @returns null when marked can't be asked, or there is nothing to show
  */
-export function blockLineRanges(text) {
+export function blockLineRanges(text: string): LineRange[] | null {
   if (!window.marked || !window.marked.lexer) return null;
   const { fm, body } = splitFrontmatter(text || '');
   let tokens;
@@ -103,7 +107,7 @@ export function blockLineRanges(text) {
   } catch {
     return null; // an unparseable buffer has no blocks to line up with
   }
-  const ranges: {start: number, end: number}[] = [];
+  const ranges: LineRange[] = [];
   // Frontmatter is a block of its own in the pane (shown verbatim), and the body
   // starts on the line after it.
   let at = newlines(fm);
@@ -126,7 +130,7 @@ export function blockLineRanges(text) {
 }
 
 // Whether a token reaches the pane as a child of its own.
-function rendersVisibly(t) {
+function rendersVisibly(t: Token) {
   if (t.type === 'space' || t.type === 'def') return false;
   const raw = (t.raw || '').trim();
   if (!raw) return false;
@@ -135,7 +139,7 @@ function rendersVisibly(t) {
 
 // ---- HTML -> Markdown ----
 
-let turndown: import('turndown') | null = null;
+let turndown: TurndownService | null = null;
 // Internal: the fold is the only way HTML becomes Markdown here (see
 // **WYSIWYG fold-back**), so nothing outside this module needs the service itself.
 function getTurndown() {
@@ -167,10 +171,11 @@ function getTurndown() {
     filter: 'details',
     replacement: (_content, node) => {
       const summary = node.querySelector('summary');
-      const label = summary ? summary.textContent.trim() : IMAGE_SUMMARY;
-      const rest = node.cloneNode(true);
-      const stale = rest.querySelector('summary');
-      if (stale) stale.parentNode.removeChild(stale);
+      // A <summary> with no text at all still names the block: the default heading
+      // is what the note would have been written with.
+      const label = summary?.textContent?.trim() || IMAGE_SUMMARY;
+      const rest = node.cloneNode(true) as HTMLElement;
+      rest.querySelector('summary')?.remove();
       // innerHTML, so escaped entities stay escaped exactly as they sit in the note.
       const body = rest.innerHTML.trim();
       return `\n\n<details>\n<summary>${label}</summary>\n${body}\n</details>\n\n`;
@@ -201,7 +206,8 @@ function getTurndown() {
   td.addRule('listItem', {
     filter: 'li',
     replacement: (content, node, options) => {
-      const parent = node.parentNode;
+      // parentElement, not parentNode: the `<ol>` attributes below are an element's.
+      const parent = node.parentElement;
       let prefix = `${options.bulletListMarker} `;
       if (parent && parent.nodeName === 'OL') {
         const start = parent.getAttribute('start');
@@ -235,7 +241,7 @@ function getTurndown() {
 // The line-anchored rules are turndown's own (with `m` added, which changes nothing
 // while whitespace is collapsed but is right if it isn't); the four character rules
 // are narrowed:
-const NARROW_ESCAPES = [
+const NARROW_ESCAPES: [RegExp, string][] = [
   [/\\/g, '\\\\'], // first, or it would escape the escapes below
   // `*` opens emphasis only where it flanks a word, and a list only at the start of
   // a line. ` 5 * 3 ` is neither. `***` is a thematic break, and its first `*` is
@@ -263,7 +269,7 @@ const NARROW_ESCAPES = [
   [/^(\d+)\. /gm, '$1\\. '],
 ];
 
-function narrowEscape(text) {
+function narrowEscape(text: string) {
   return NARROW_ESCAPES.reduce((out, [re, to]) => out.replace(re, to), text);
 }
 
@@ -276,7 +282,7 @@ function narrowEscape(text) {
 const MIN_CELL_WIDTH = 3; // the narrowest delimiter GFM can express (`:-:`)
 
 // Delimiter cell → column alignment, mirroring CELL_BORDER on the way back in.
-function borderAlign(cell) {
+function borderAlign(cell: string) {
   const left = cell.startsWith(':');
   const right = cell.endsWith(':');
   if (left && right) return 'center';
@@ -298,7 +304,7 @@ export function pipePositions(line: string) {
 // The cells of one source row. GFM makes the outer pipes optional, so a blank
 // segment before the first pipe or after the last is a delimiter's shadow rather
 // than a cell — dropping them keeps the column count honest either way.
-function splitRow(line) {
+function splitRow(line: string): string[] | null {
   const at = pipePositions(line);
   if (!at.length) return null;
   const cells: string[] = [];
@@ -316,11 +322,11 @@ function splitRow(line) {
 // A table row, strictly: it opens with a pipe. GFM would also swallow a following
 // paragraph line into the table, but reformatting prose as a row is a silent way
 // to mangle a note, so the block we edit stops where the pipes do.
-export function isTableLine(line) {
+export function isTableLine(line: string) {
   return line.trim().startsWith('|');
 }
 
-export function isDelimiterRow(line) {
+export function isDelimiterRow(line: string) {
   const cells = splitRow(line);
   return !!cells && cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
@@ -328,8 +334,22 @@ export function isDelimiterRow(line) {
 // Source lines → the model every operation works on: the heading row and the body
 // rows as one list (the delimiter row isn't content, it's the alignments), padded
 // to a common width so a column can be inserted at the same index in every row.
-export function parseTable(lines) {
-  const rows = lines.map(splitRow).filter(Boolean);
+/**
+ * The table model both panes edit. The delimiter row is not one of `rows` — it
+ * *is* `aligns`, which is why a GFM table always has exactly one heading row.
+ */
+export interface Table {
+  /** One per column: '', 'left', 'center' or 'right'. */
+  aligns: string[];
+  /** The heading row first, then the body, every row padded to a common width. */
+  rows: string[][];
+}
+
+export function parseTable(lines: string[]): Table {
+  // A predicate rather than `filter(Boolean)`: only the former tells the checker the
+  // nulls are gone. Callers have already established there is a delimiter row at
+  // index 1 (that is what makes the block a table at all).
+  const rows = lines.map(splitRow).filter((row): row is string[] => row !== null);
   const aligns = rows[1].map(borderAlign);
   const body = rows.filter((_, i) => i !== 1);
   const cols = Math.max(aligns.length, ...body.map((row) => row.length));
@@ -343,7 +363,7 @@ export function parseTable(lines) {
 // The model back to source, with the columns padded to a common width. Every
 // operation rewrites all of a table's lines anyway (a new column touches each
 // one), so lining them up costs nothing and keeps the raw source readable.
-export function formatTable(table) {
+export function formatTable(table: Table): string[] {
   const widths = table.aligns.map((_, col) =>
     table.rows.reduce((max, row) => Math.max(max, (row[col] || '').length), MIN_CELL_WIDTH)
   );
@@ -354,7 +374,8 @@ export function formatTable(table) {
     if (align === 'right') return `${'-'.repeat(width - 1)}:`;
     return '-'.repeat(width);
   });
-  const line = (cells) => `| ${cells.map((cell, col) => cell.padEnd(widths[col])).join(' | ')} |`;
+  const line = (cells: string[]) =>
+    `| ${cells.map((cell, col) => cell.padEnd(widths[col])).join(' | ')} |`;
   const out = table.rows.map((row) => line(row));
   out.splice(1, 0, line(border));
   return out;
@@ -364,7 +385,7 @@ export function formatTable(table) {
 // turndown emits `| a | b |` with no padding at all, so without this a table
 // edited in the WYSIWYG pane comes back unaligned — a whole-table diff for a
 // one-cell change, which is the churn the fold exists to avoid.
-function repadTable(text) {
+function repadTable(text: string) {
   const lines = text.split('\n');
   if (lines.length < 2 || !lines.every(isTableLine)) return null;
   // The same test tableBlockAt applies: a run of pipe rows is only a table if its
@@ -381,10 +402,10 @@ function repadTable(text) {
 // this, for the same reason they need one table formatter: two versions would mean
 // two ideas of where a block begins.
 /**
- * @param {string} text the source on that side of the insertion point
- * @param {boolean} trailing true for the text *after* it, which is read outwards
+ * @param text the source on that side of the insertion point
+ * @param trailing true for the text *after* it, which is read outwards
  */
-export function blockGap(text, trailing) {
+export function blockGap(text: string, trailing: boolean) {
   if (!text) return '';
   const blank = trailing ? /^\n\n/.test(text) : /\n\n$/.test(text);
   if (blank) return '';
@@ -393,14 +414,14 @@ export function blockGap(text, trailing) {
 }
 
 // Delimiter-row cell for each alignment GFM can express.
-const CELL_BORDER = { left: ':--', center: ':-:', right: '--:' };
+const CELL_BORDER: Record<string, string> = { left: ':--', center: ':-:', right: '--:' };
 
 // marked renders GFM — tables, ~~strikethrough~~, `- [ ]` task lists — but stock
 // turndown only reverses CommonMark, so without these rules a WYSIWYG save
 // *destroys* every one of them: a table flattens into one paragraph per cell,
 // strikethrough and checkboxes come back as bare text. These are the inverse
 // rules, so what marked renders is what turndown re-emits.
-function addGfmRules(td) {
+function addGfmRules(td: TurndownService) {
   // Cells open with their own `|`; the row closes the last one. Deriving the
   // pipes here rather than from a cell's index keeps it right whatever mix of
   // element and whitespace nodes the contenteditable pane leaves in a row.
@@ -416,7 +437,7 @@ function addGfmRules(td) {
       // A GFM table *is* its delimiter row — without one the block is prose, so
       // the heading row emits it, carrying each column's alignment across.
       const border = Array.from(node.children)
-        .map((cell) => `| ${CELL_BORDER[cellAlign(cell)] || '---'} `)
+        .map((cell: Element) => `| ${CELL_BORDER[cellAlign(cell)] || '---'} `)
         .join('');
       return `${row}\n${border}|`;
     },
@@ -426,7 +447,7 @@ function addGfmRules(td) {
     replacement: (content) => content,
   });
   td.addRule('table', {
-    filter: (node) => node.nodeName === 'TABLE' && hasHeadingRow(node),
+    filter: (node) => node.nodeName === 'TABLE' && hasHeadingRow(node as HTMLTableElement),
     // Rows already carry their own leading newline; drop the blank lines the
     // section boundaries leave behind, since one would end the table early. Then
     // re-pad through the Raw editor's own formatter, so a table edited here is
@@ -438,7 +459,7 @@ function addGfmRules(td) {
   });
   // A table with no heading row can't be written as GFM at all, so keep the
   // HTML the note already had rather than flattening it to text.
-  td.keep((node) => node.nodeName === 'TABLE' && !hasHeadingRow(node));
+  td.keep((node) => node.nodeName === 'TABLE' && !hasHeadingRow(node as HTMLTableElement));
 
   td.addRule('strikethrough', {
     filter: ['del', 's', 'strike'],
@@ -449,9 +470,8 @@ function addGfmRules(td) {
   td.addRule('taskListItem', {
     filter: (node) => node.nodeName === 'INPUT'
       && node.getAttribute('type') === 'checkbox'
-      && node.parentNode
-      && node.parentNode.nodeName === 'LI',
-    replacement: (_content, node) => (node.checked ? '[x]' : '[ ]'),
+      && node.parentNode?.nodeName === 'LI',
+    replacement: (_content, node) => ((node as HTMLInputElement).checked ? '[x]' : '[ ]'),
   });
 }
 
@@ -461,7 +481,7 @@ function addGfmRules(td) {
 // is dropped rather than written out — it's a blank line with nothing on the far
 // side of it, and an empty cell is exactly where Chromium parks the placeholder
 // <br> it gives an empty editable block, which would otherwise save as text.
-function cellText(content) {
+function cellText(content: string) {
   return content
     .replace(/\|/g, '\\|')
     .replace(/\s*\n\s*/g, '<br>')
@@ -469,17 +489,18 @@ function cellText(content) {
     .replace(/^(?:<br>)+|(?:<br>)+$/g, '');
 }
 
-function cellAlign(cell) {
+function cellAlign(cell: Element) {
   const attr = (cell.getAttribute('align') || '').toLowerCase();
   if (attr) return attr; // what marked emits
-  return ((cell.style && cell.style.textAlign) || '').toLowerCase();
+  const style = (cell as HTMLElement).style;
+  return ((style && style.textAlign) || '').toLowerCase();
 }
 
 // Mirrors how marked reads one: the row of a <thead>, or an all-<th> first row
 // of the table or of a leading <tbody> (which is where a browser parking a bare
 // <tr> puts it).
-export function isHeadingRow(row) {
-  const parent = row && row.parentNode;
+export function isHeadingRow(row: Element | null) {
+  const parent = row && row.parentElement;
   if (!parent) return false;
   if (parent.nodeName === 'THEAD') return true;
   const leadingSection = parent.nodeName === 'TABLE'
@@ -490,7 +511,7 @@ export function isHeadingRow(row) {
     && Array.from(row.children).every((cell: Element) => cell.nodeName === 'TH');
 }
 
-function hasHeadingRow(table) {
+function hasHeadingRow(table: HTMLTableElement) {
   return !!(table.rows && table.rows.length && isHeadingRow(table.rows[0]));
 }
 
@@ -521,11 +542,10 @@ const FOLD_MAX_CELLS = 1_000_000;
 /**
  * Fold the WYSIWYG pane back into Markdown, keeping the source of every block the
  * user did not actually change.
- * @param {string} oldText the buffer as it stood before the pane was edited
- * @param {Element} paneEl the contenteditable pane
- * @returns {string}
+ * @param oldText the buffer as it stood before the pane was edited
+ * @param paneEl the contenteditable pane
  */
-export function foldToMarkdown(oldText, paneEl) {
+export function foldToMarkdown(oldText: string, paneEl: HTMLElement): string {
   const td = getTurndown();
   if (!td) return oldText; // no turndown: the caller must not write a lossy save
   const { fm, body } = splitFrontmatter(oldText);
@@ -536,9 +556,8 @@ export function foldToMarkdown(oldText, paneEl) {
 /**
  * The reconciled body, or null if it can't be trusted and the caller should fall
  * back to turning the whole pane down.
- * @returns {string | null}
  */
-function reconcile(body, paneEl, td) {
+function reconcile(body: string, paneEl: HTMLElement, td: TurndownService): string | null {
   const src = sourceBlocks(body);
   const pane = paneBlocks(paneEl);
   if (!src) return null;
@@ -554,7 +573,7 @@ function reconcile(body, paneEl, td) {
   // deleted one is one separation, not two.
   let sep = '';
   let last = ''; // the block emitted last, to test a new block's adjacency against
-  const emit = (chunk, isAdd) => {
+  const emit = (chunk: string, isAdd: boolean) => {
     if (!chunk) return;
     if (out) {
       if (sep) {
@@ -618,9 +637,8 @@ function reconcile(body, paneEl, td) {
  * if `prev` still lexes as the whole of the first token. Anything unclear — no
  * marked, a `prev` that isn't one block, a lexer error — answers false, which
  * keeps the blank line that has always been written there.
- * @param {string} prev @param {string} next
  */
-function stillSeparate(prev, next) {
+function stillSeparate(prev: string, next: string) {
   if (!prev) return true;
   if (!window.marked || !window.marked.lexer) return false;
   const head = prev.replace(/[ \t\r\n]*$/, '') + '\n';
@@ -634,7 +652,7 @@ function stillSeparate(prev, next) {
 
 // The whitespace a body ends with — a new file (no body yet) gets the one
 // trailing newline a text file is expected to have.
-function endOf(body) {
+function endOf(body: string) {
   if (!body) return '\n';
   return (/[ \t\r\n]*$/.exec(body) || [''])[0];
 }
@@ -647,22 +665,34 @@ function endOf(body) {
  * Concatenating `prefix` and every `raw` reproduces the source exactly — and that
  * is asserted, because a byte that ended up in no block would be dropped from
  * every fold.
- * @returns {{prefix: string, blocks: {raw: string, sig: string}[]} | null}
  */
+/** One block of the old source: its original bytes, and what it renders to. */
+interface SourceBlock {
+  raw: string;
+  /** The canonicalised HTML to match the pane against; '' means the pane can't show it. */
+  sig: string;
+}
+
+interface SourceSplit {
+  /** The blank lines before the first block. */
+  prefix: string;
+  blocks: SourceBlock[];
+}
+
 // One-entry memo: rendering every block costs a marked + DOMPurify pass each, and
 // while the user types in one block the autosave folds the *same* buffer again
 // every 400ms. The buffer only changes when a fold writes it or a file is opened,
 // so keying on its text is enough.
-let blockCache: {body: string, blocks: {prefix: string, blocks: {raw: string, sig: string}[]} | null} | null = null;
+let blockCache: { body: string; blocks: SourceSplit | null } | null = null;
 
-function sourceBlocks(body) {
+function sourceBlocks(body: string) {
   if (blockCache && blockCache.body === body) return blockCache.blocks;
   const blocks = lexSourceBlocks(body);
   blockCache = { body, blocks };
   return blocks;
 }
 
-function lexSourceBlocks(body) {
+function lexSourceBlocks(body: string): SourceSplit | null {
   if (!window.marked || !window.marked.lexer) return null;
   let tokens;
   try {
@@ -678,7 +708,7 @@ function lexSourceBlocks(body) {
   const scope = defs ? defs + '\n\n' : '';
 
   let prefix = '';
-  const blocks: {raw: string, sig: string}[] = [];
+  const blocks: SourceBlock[] = [];
   for (const t of tokens) {
     const raw = t.raw || '';
     if (!raw) continue;
@@ -706,13 +736,18 @@ function lexSourceBlocks(body) {
 // from being skipped, and a skipped node is an edit thrown away.
 const INLINE_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'BR', 'BUTTON', 'CITE', 'CODE', 'DATA', 'DEL', 'DFN', 'EM', 'FONT', 'I', 'IMG', 'INPUT', 'INS', 'KBD', 'LABEL', 'MARK', 'Q', 'RUBY', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TIME', 'U', 'VAR', 'WBR']);
 
+/** One block as the pane holds it: the HTML to turn down, and its signature. */
+interface PaneBlock {
+  html: string;
+  sig: string;
+}
+
 /**
  * The pane's top-level blocks, in order, each with the HTML to turn down and the
  * signature to match against the source.
- * @returns {{html: string, sig: string}[]}
  */
-function paneBlocks(paneEl) {
-  const out: {html: string, sig: string}[] = [];
+function paneBlocks(paneEl: HTMLElement): PaneBlock[] {
+  const out: PaneBlock[] = [];
   let pending = '';
   const flush = () => {
     if (pending.trim()) out.push(paneBlock(`<p>${pending}</p>`));
@@ -746,7 +781,7 @@ function paneBlocks(paneEl) {
   return out;
 }
 
-function paneBlock(html) {
+function paneBlock(html: string): PaneBlock {
   return { html, sig: canonicalHtml(html) };
 }
 
@@ -754,7 +789,7 @@ function paneBlock(html) {
 // one is a string marked produced, the other a live pane's own innerHTML. Passing
 // marked's string through a detached element normalises it, and hydrateImages'
 // swaps are undone so a resolved picture doesn't read as an edit.
-function canonicalHtml(html) {
+function canonicalHtml(html: string) {
   const box = document.createElement('div');
   box.innerHTML = html;
   for (const img of Array.from(box.querySelectorAll('img'))) {
@@ -770,6 +805,6 @@ function canonicalHtml(html) {
   return box.innerHTML.trim();
 }
 
-function escapeHtml(text) {
+function escapeHtml(text: string) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

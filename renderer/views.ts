@@ -10,8 +10,9 @@ import { gitState } from './git.js';
 import { foldToMarkdown, frontmatterNode, safeMarkdownHtml, splitFrontmatter } from './markdown.js';
 import { restorePosition, syncAnchor } from './positions.js';
 import { STORED_VIEW_MODES, VIEW_MODES, state } from './state.js';
+import type { DiffMode, ViewMode } from './state.js';
 
-export function isMarkdown(filePath) {
+export function isMarkdown(filePath: string | null) {
   return /\.(md|markdown|mdown|mkd)$/i.test(filePath || '');
 }
 
@@ -21,14 +22,14 @@ export function isMarkdown(filePath) {
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
 
 // Image files aren't text: opening one shows the picture, not its bytes.
-export function isImage(filePath) {
+export function isImage(filePath: string | null) {
   return IMAGE_RE.test(filePath || '');
 }
 
 // Project the buffer into one of the two display panes. Frontmatter is shown
 // verbatim rather than rendered — marked reads a leading `---` block as a rule
 // plus a heading, and the fold re-attaches the buffer's copy.
-function renderPane(paneEl, source) {
+function renderPane(paneEl: HTMLElement, source: string) {
   const { fm, body } = splitFrontmatter(source || '');
   const html = safeMarkdownHtml(body);
   if (html !== null) {
@@ -73,9 +74,9 @@ export function syncWysiwygToEditor() {
 // main process to resolve it (relative to the open file) and inline it as a data
 // URL. Remote (http/data) sources are left alone. Captures the file the render was
 // for so a stale async result from a previous file can't paint over a new one.
-export function hydrateImages(container) {
+export function hydrateImages(container: HTMLElement) {
   const forFile = state.currentFile;
-  container.querySelectorAll('img').forEach(async (img) => {
+  container.querySelectorAll('img').forEach(async (img: HTMLImageElement) => {
     const raw = img.getAttribute('src') || '';
     if (!raw || /^(https?:|data:)/i.test(raw)) return;
     // Stash the original vault-relative path before we swap in the data: URL, so
@@ -95,7 +96,10 @@ export function hydrateImages(container) {
 // Which pane is actually live right now. `viewMode` is what the user picked, but
 // non-Markdown files (and no file) always fall back to the raw textarea, and
 // WYSIWYG needs turndown to save edits back — without it, it degrades to raw.
-export function effectiveViewMode() {
+/** What `effectiveViewMode()` answers: the four modes, plus the derived image one. */
+export type EffectiveViewMode = ViewMode | 'image';
+
+export function effectiveViewMode(): EffectiveViewMode {
   // A deleted file has nothing left on disk to show in any other pane.
   if (state.diffOnlyFile) return 'diff';
   // An image file has no text to edit at all — it always shows in the viewer.
@@ -178,7 +182,7 @@ export function applyView() {
   refreshFind();
 }
 
-export function setViewMode(mode) {
+export function setViewMode(mode: ViewMode) {
   if (!VIEW_MODES.includes(mode)) mode = 'raw';
   if (mode === 'wysiwyg' && !window.TurndownService) mode = 'raw';
   // Leaving WYSIWYG: fold its edits back into the buffer before we switch panes,
@@ -209,7 +213,7 @@ export function setViewMode(mode) {
 }
 
 // Switch between the side-by-side and unified-patch renderings of the same diff.
-export function setDiffMode(mode) {
+export function setDiffMode(mode: DiffMode) {
   if (state.diffMode === mode) return;
   syncAnchor(); // the rendering about to be replaced is the one that can be read
   state.diffMode = mode;
@@ -221,7 +225,7 @@ export function setDiffMode(mode) {
 // Images are read as a data URL by main (same reason as the preview: the app's
 // app:// origin + CSP won't load vault paths directly) and shown read-only.
 
-function formatBytes(bytes) {
+function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes)) return '';
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KB', 'MB', 'GB'];
@@ -242,7 +246,7 @@ function updateImageMeta() {
   imageViewMetaEl.textContent = w && h ? `${w} × ${h}${size ? ' · ' + size : ''}` : size;
 }
 
-export function showImageView(filePath, res) {
+export function showImageView(filePath: string, res: { dataUrl: string; size: number }) {
   imageViewEl.dataset.size = formatBytes(res.size);
   imageViewImgEl.alt = filePath.split(/[\\/]/).pop() || '';
   imageViewImgEl.src = res.dataUrl;

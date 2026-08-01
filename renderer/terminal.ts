@@ -65,7 +65,7 @@ export function toggleTerminal() {
   setTerminalOpen(!paneOpen);
 }
 
-function setTerminalOpen(next) {
+function setTerminalOpen(next: boolean) {
   paneOpen = next;
   localStorage.setItem(OPEN_KEY, paneOpen ? '1' : '0');
   paintToggle();
@@ -87,7 +87,8 @@ function setTerminalOpen(next) {
 function ensureTerm() {
   if (term || !window.Terminal || !window.FitAddon) return;
   const styles = getComputedStyle(document.documentElement);
-  const cssVar = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+  const cssVar = (name: string, fallback: string) =>
+    styles.getPropertyValue(name).trim() || fallback;
 
   term = new window.Terminal({
     fontFamily: cssVar('--font-mono', 'Menlo, monospace'),

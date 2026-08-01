@@ -25,19 +25,23 @@ let renderedDay = '';
 const ALL_LISTS = '\u0000all';
 let listFilter = localStorage.getItem('rawNotes.reminderList') || ALL_LISTS;
 
-function inFilter(rem) {
+function inFilter(rem: Reminder) {
   return listFilter === ALL_LISTS || rem.list.toLowerCase() === listFilter.toLowerCase();
 }
 
 // Rebuild the header's filter dropdown from the lists actually in use. A filter
 // pointing at a list that no longer has any entries falls back to all of them
 // rather than showing an empty pane with no way to tell why.
-function renderFilter(lists) {
+function renderFilter(lists: string[]) {
   if (listFilter !== ALL_LISTS && !lists.some((n) => n.toLowerCase() === listFilter.toLowerCase())) {
     setListFilter(ALL_LISTS, false);
   }
   reminderFilterEl.innerHTML = '';
-  for (const [value, label] of [[ALL_LISTS, 'All lists'], ...lists.map((n) => [n, n])]) {
+  const options: Array<[string, string]> = [
+    [ALL_LISTS, 'All lists'],
+    ...lists.map((n): [string, string] => [n, n]),
+  ];
+  for (const [value, label] of options) {
     const opt = document.createElement('option');
     opt.value = value;
     opt.textContent = label;
@@ -46,7 +50,7 @@ function renderFilter(lists) {
   reminderFilterEl.value = listFilter;
 }
 
-function setListFilter(value, repaint = true) {
+function setListFilter(value: string, repaint = true) {
   listFilter = value;
   localStorage.setItem('rawNotes.reminderList', value);
   if (repaint) renderReminders();
@@ -155,7 +159,7 @@ export function renderReminders() {
 }
 
 // Open a note by its vault-relative path (reminders and lookup sources both use this).
-export async function openVaultNote(rel) {
+export async function openVaultNote(rel: string) {
   if (!rel || !state.baseFolder) return;
   const sep = state.baseFolder.includes('\\') ? '\\' : '/';
   const full = state.baseFolder + sep + String(rel).split('/').join(sep);
@@ -165,13 +169,13 @@ export async function openVaultNote(rel) {
   await openFile(full, row);
 }
 
-export async function newReminder(forFilePath) {
+export async function newReminder(forFilePath: string | null) {
   const file = forFilePath || state.currentFile;
   const res = await reminderModal(null, file ? relativePath(file) : '');
   if (res && res.action === 'save') await upsertReminder(res.reminder);
 }
 
-async function editReminder(rem) {
+async function editReminder(rem: Reminder) {
   const res = await reminderModal(rem);
   if (!res) return;
   if (res.action === 'save') await upsertReminder(res.reminder);
@@ -181,9 +185,16 @@ async function editReminder(rem) {
 
 // ---- Reminder editor ----
 // Same promise-based pattern as promptModal (Electron has no window.prompt), but
-// with the fields a reminder needs. Resolves to { action, reminder } or null.
+// with the fields a reminder needs.
+
+/** What the reminder editor settles with — null if it was dismissed. */
+export type ReminderResult =
+  | { action: 'save'; reminder: Reminder }
+  | { action: 'delete' }
+  | { action: 'open' };
+
 export function reminderModal(existing: Reminder | null, defaultFile = '', onSaved?: () => void) {
-  const { box, close, promise } = openModal({
+  const { box, close, promise } = openModal<ReminderResult | null>({
     boxClass: 'modal-box rm-box',
     // Enter saves — except in the details box, where it's a newline.
     onKey: (e) => {
@@ -259,7 +270,7 @@ export function reminderModal(existing: Reminder | null, defaultFile = '', onSav
   listInput.setAttribute('list', listOptions.id);
   box.appendChild(listOptions);
 
-  const cell = (labelText, control) => {
+  const cell = (labelText: string, control: HTMLElement) => {
     const wrap = document.createElement('div');
     wrap.className = 'rm-field';
     const label = document.createElement('label');

@@ -36,14 +36,16 @@
     // envelope is the whole point of typing the bridge — a failure result must
     // not be readable as a successful one.
     //
-    // `noImplicitAny` is off, which is what the migration from JSDoc landed at:
-    // an un-annotated parameter is checked where inference reaches it and is
-    // `any` where it doesn't, rather than failing the build. Turning it on is the
-    // next step, and it is worth doing a file at a time — see the note in
-    // CLAUDE.md's **Types** section for where the real defects are.
+    // `noImplicitAny` is on. It was off through the migration from JSDoc — an
+    // un-annotated parameter was checked where inference reached it and was `any`
+    // where it didn't — and turning it on was done a file at a time, which is what
+    // found the defects it was expected to: an image result read as a text one in
+    // `openFile()`, `wordSegments()` handed the `string | null` pair its own comment
+    // says it must not be, and the two unguarded null derefs in the `detailsBlock`
+    // turndown rule. `strict` as a whole is still not on.
     "strict": false,
     "strictNullChecks": true,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
     "noImplicitThis": false,
     "noUnusedLocals": false,
     "noFallthroughCasesInSwitch": true,

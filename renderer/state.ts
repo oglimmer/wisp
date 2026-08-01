@@ -6,6 +6,9 @@
 
 export type ViewMode = 'raw' | 'wysiwyg' | 'preview' | 'diff';
 
+/** How the Diff view draws: side-by-side, or git's own unified patch. */
+export type DiffMode = 'visual' | 'raw';
+
 export const VIEW_MODES: ViewMode[] = ['raw', 'wysiwyg', 'preview', 'diff'];
 export const STORED_VIEW_MODES: ViewMode[] = ['raw', 'wysiwyg', 'preview'];
 
@@ -24,7 +27,7 @@ export interface AppState {
   currentFile: string | null;
   dirty: boolean;
   viewMode: ViewMode;
-  diffMode: 'visual' | 'raw';
+  diffMode: DiffMode;
   diffOnlyFile: string | null;
 }
 

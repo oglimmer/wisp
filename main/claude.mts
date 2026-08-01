@@ -112,7 +112,7 @@ function jsonSpans(text: string): { spans: string[]; truncated: boolean } {
 // parse) or `none` (prose, or an error message where JSON was asked for).
 function parseModelJson(
   text: string,
-): { value: any; reason: 'ok' | 'truncated' | 'malformed' | 'none' } {
+): { value: unknown; reason: 'ok' | 'truncated' | 'malformed' | 'none' } {
   if (!text) return { value: null, reason: 'none' };
   const t = String(text).trim();
   try {
@@ -144,21 +144,30 @@ function firstLine(s: string, max = 200) {
 // well-formed envelope whose `result` is an error message rather than the model's
 // answer. Reading only `result` turned every one of those into "could not
 // understand Claude's response", which is the one thing they are not.
-// `envelope` is whatever JSON.parse returned, so it is genuinely `any` here — the
-// shape is the CLI's to decide and every field below is probed before it is used.
-function envelopeError(envelope: any) {
-  if (!envelope || typeof envelope !== 'object' || envelope.type !== 'result') return null;
-  if (envelope.subtype === 'success' && !envelope.is_error) return null;
-  const detail =
-    typeof envelope.result === 'string' && envelope.result.trim() ? firstLine(envelope.result) : '';
-  if (envelope.api_error_status) {
-    return `Claude’s API answered ${envelope.api_error_status}${detail ? `: ${detail}` : '.'}`;
+// `envelope` is whatever JSON.parse returned — the shape is the CLI's to decide, so
+// it arrives as `unknown` and every field is probed before it is used. `asRecord`
+// buys the right to ask about a field without asserting anything about its value.
+function envelopeError(envelope: unknown) {
+  const e = asRecord(envelope);
+  if (!e || e.type !== 'result') return null;
+  if (e.subtype === 'success' && !e.is_error) return null;
+  const detail = typeof e.result === 'string' && e.result.trim() ? firstLine(e.result) : '';
+  if (e.api_error_status) {
+    return `Claude’s API answered ${String(e.api_error_status)}${detail ? `: ${detail}` : '.'}`;
   }
-  if (envelope.subtype === 'error_max_turns') {
+  if (e.subtype === 'error_max_turns') {
     return 'Claude ran out of turns before it answered.';
   }
   if (detail) return `Claude reported an error: ${detail}`;
-  return `Claude reported an error (${envelope.subtype || 'no reason given'}).`;
+  return `Claude reported an error (${e.subtype ? String(e.subtype) : 'no reason given'}).`;
+}
+
+/**
+ * A parsed JSON value as something whose fields can be probed, or null if it is
+ * not an object at all. The values stay `unknown` — this only says "you may ask".
+ */
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 }
 
 // A parse failure is the one Claude problem that leaves no trace anywhere else —
@@ -166,21 +175,21 @@ function envelopeError(envelope: any) {
 // text goes to the main process's console (head and tail, since a reply can be a
 // whole file, and a truncation is only visible at the end) alongside the envelope
 // fields that say how the run ended.
-function logClaudeFailure(what: string, error: string, envelope: any, text: string) {
+function logClaudeFailure(what: string, error: string, envelope: unknown, text: string) {
   const raw = String(text || '');
   const shown =
     raw.length > 2000 ? `${raw.slice(0, 1200)}\n…[${raw.length - 1700} chars]…\n${raw.slice(-500)}` : raw;
-  const meta =
-    envelope && typeof envelope === 'object'
-      ? {
-          subtype: envelope.subtype,
-          is_error: envelope.is_error,
-          stop_reason: envelope.stop_reason,
-          api_error_status: envelope.api_error_status,
-          num_turns: envelope.num_turns,
-          permission_denials: envelope.permission_denials,
-        }
-      : '(the CLI did not answer with a result envelope)';
+  const e = asRecord(envelope);
+  const meta = e
+    ? {
+        subtype: e.subtype,
+        is_error: e.is_error,
+        stop_reason: e.stop_reason,
+        api_error_status: e.api_error_status,
+        num_turns: e.num_turns,
+        permission_denials: e.permission_denials,
+      }
+    : '(the CLI did not answer with a result envelope)';
   console.error(`[${what}] ${error}`, meta);
   console.error(`[${what}] raw reply, ${raw.length} chars:\n${shown}`);
 }
@@ -190,12 +199,18 @@ function logClaudeFailure(what: string, error: string, envelope: any, text: stri
 // every surprise with the same sentence. `describe` returns a message when the
 // reply parsed but isn't usable, so "arrived in the wrong shape" reads differently
 // from "never arrived", and both differ from the CLI failing outright.
-export function readClaudeJson(
+/**
+ * `T` is what the caller's `describe` has just established the reply to be. The
+ * validation is `describe`'s, at runtime; `T` is how the caller states what
+ * passing it means, so the value comes back usable instead of as an `unknown` every
+ * call site would have to re-narrow. Getting `T` wrong is getting `describe` wrong.
+ */
+export function readClaudeJson<T>(
   what: string,
   stdout: string,
-  describe: (value: any) => string | null,
-): { ok: true; value: any } | { ok: false; error: string } {
-  let envelope: any = null;
+  describe: (value: unknown) => string | null,
+): { ok: true; value: T } | { ok: false; error: string } {
+  let envelope: unknown = null;
   try {
     envelope = JSON.parse(stdout);
   } catch {}
@@ -206,15 +221,17 @@ export function readClaudeJson(
     return { ok: false, error: reported };
   }
 
+  const envelopeRecord = asRecord(envelope);
   const modelText =
-    envelope && typeof envelope.result === 'string' ? envelope.result : stdout;
+    envelopeRecord && typeof envelopeRecord.result === 'string' ? envelopeRecord.result : stdout;
   const parsed = parseModelJson(modelText);
   const wrongShape = parsed.value ? describe(parsed.value) : null;
-  if (parsed.value && !wrongShape) return { ok: true, value: parsed.value };
+  if (parsed.value && !wrongShape) return { ok: true, value: parsed.value as T };
 
   // `stop_reason` says the model hit its output limit even where the JSON happens
   // to have survived it, so it is the more honest explanation when both apply.
-  const cutOff = parsed.reason === 'truncated' || (envelope && envelope.stop_reason === 'max_tokens');
+  const cutOff =
+    parsed.reason === 'truncated' || envelopeRecord?.stop_reason === 'max_tokens';
   let error;
   if (cutOff) {
     error = 'Claude’s reply was cut off before it finished. Try again, or with a shorter note.';

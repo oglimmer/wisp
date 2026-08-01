@@ -7,6 +7,7 @@
 import { editorEl, wysiwygEl } from './dom.js';
 import { markBufferEdited } from './editor.js';
 import { blockGap, formatTable, isDelimiterRow, isHeadingRow, isTableLine, parseTable, pipePositions } from './markdown.js';
+import type { Table } from './markdown.js';
 import { state } from './state.js';
 import { setStatus } from './util.js';
 import { effectiveViewMode } from './views.js';
@@ -22,10 +23,31 @@ import { effectiveViewMode } from './views.js';
 // table *is* its delimiter row), so no operation can put a row above it.
 
 const TABLE_SIZE = 3; // a fresh table: a heading row plus two body rows, 3 columns
+
+/** Insert a table, or grow the one the caret is in by a row or a column. */
+export type TableOp = 'insert' | 'row-above' | 'row-below' | 'column-left' | 'column-right';
+
+/** A cell of the model, by index. Row 0 is the heading. */
+interface CellRef {
+  row: number;
+  col: number;
+}
+
+/** The table the caret is in, as source lines plus the offsets they occupy. */
+interface TableBlock {
+  lines: string[];
+  /** Offsets of the block's first and last characters in the buffer. */
+  from: number;
+  to: number;
+  /** The caret's line within the block, and its column within that line. */
+  line: number;
+  column: number;
+}
+
 // The table the caret sits in, as source lines plus the offsets they occupy, or
 // null. A run of pipe rows is only a table if its second line is the delimiter —
 // without one the block is prose that merely contains pipes.
-function tableBlockAt(value, caret) {
+function tableBlockAt(value: string, caret: number): TableBlock | null {
   const lines = value.split('\n');
   const starts: number[] = [];
   let pos = 0;
@@ -53,7 +75,7 @@ function tableBlockAt(value, caret) {
 
 // Where a cell's text starts in a formatted line: past its opening pipe and the
 // space after it, which is where the caret belongs once the table is rewritten.
-function cellStart(line, col) {
+function cellStart(line: string, col: number) {
   const at = pipePositions(line);
   if (col >= at.length) return line.length;
   return Math.min(at[col] + 2, line.length);
@@ -61,7 +83,7 @@ function cellStart(line, col) {
 
 // Which cell of the model the caret is in. The delimiter row isn't a row of the
 // model, so a caret parked on it counts as the heading row above it.
-function caretCell(block, table) {
+function caretCell(block: TableBlock, table: Table): CellRef {
   const row = block.line <= 1 ? 0 : block.line - 1;
   const at = pipePositions(block.lines[block.line]);
   let col = at.filter((p) => p < block.column).length - 1;
@@ -69,7 +91,7 @@ function caretCell(block, table) {
   return { row, col };
 }
 
-function blankTable(rows, cols) {
+function blankTable(rows: number, cols: number): Table {
   return {
     aligns: Array.from({ length: cols }, () => ''),
     rows: Array.from({ length: rows }, () => Array.from({ length: cols }, () => '')),
@@ -78,7 +100,7 @@ function blankTable(rows, cols) {
 
 // Grow the model, and say which cell the caret should land in afterwards. Row
 // indices clamp to 1: row 0 is the heading, and nothing can precede it.
-function growTable(table, op, at) {
+function growTable(table: Table, op: TableOp, at: CellRef): CellRef {
   const cols = table.aligns.length;
   if (op === 'row-above' || op === 'row-below') {
     const index = op === 'row-below' ? at.row + 1 : Math.max(at.row, 1);
@@ -94,12 +116,12 @@ function growTable(table, op, at) {
 // Replace the table's source lines with the rewritten ones and put the caret in
 // `at`. insertText (rather than assigning .value) keeps the textarea's native undo
 // stack and fires `input`, which is what the autosave clock hangs off.
-function rewriteRawTable(block, table, at) {
+function rewriteRawTable(block: TableBlock, table: Table, at: CellRef) {
   const lines = formatTable(table);
   editorEl.setSelectionRange(block.from, block.to);
   document.execCommand('insertText', false, lines.join('\n'));
   const line = at.row === 0 ? 0 : at.row + 1; // the delimiter row sits at index 1
-  const before = lines.slice(0, line).reduce((n, text) => n + text.length + 1, 0);
+  const before = lines.slice(0, line).reduce((n: number, text: string) => n + text.length + 1, 0);
   const caret = block.from + before + cellStart(lines[line], at.col);
   editorEl.setSelectionRange(caret, caret);
 }
@@ -116,7 +138,7 @@ function rawInsertTable() {
   return true;
 }
 
-function rawTableOp(op) {
+function rawTableOp(op: TableOp) {
   if (op === 'insert') return rawInsertTable();
   const block = tableBlockAt(editorEl.value, editorEl.selectionStart ?? 0);
   if (!block) return false;
@@ -137,7 +159,7 @@ function caretTableCell() {
   return cell && wysiwygEl.contains(cell) ? cell : null;
 }
 
-function placeCaretIn(node) {
+function placeCaretIn(node: Node) {
   const range = document.createRange();
   range.setStart(node, 0);
   range.collapse(true);
@@ -158,13 +180,17 @@ function tableBody(table: HTMLTableElement): HTMLTableSectionElement {
   return body;
 }
 
-function isHeadingCellRow(row) {
-  return row.parentNode.nodeName === 'THEAD' || isHeadingRow(row);
+function isHeadingCellRow(row: HTMLTableRowElement) {
+  return row.parentNode?.nodeName === 'THEAD' || isHeadingRow(row);
 }
 
-function wysiwygInsertRow(cell, below) {
-  const row = cell.parentNode;
-  const table = row.closest('table');
+function wysiwygInsertRow(cell: HTMLTableCellElement, below: boolean) {
+  // A cell outside a row, or a row outside a table, is not a state the pane can
+  // reach — but the operation has nowhere to put a row either way, and answering
+  // "no new cell" is what the caller already handles.
+  const row = cell.closest('tr');
+  const table = row?.closest('table');
+  if (!row || !table) return null;
   const fresh = document.createElement('tr');
   for (let i = 0; i < row.children.length; i += 1) {
     fresh.appendChild(document.createElement('td'));
@@ -178,7 +204,7 @@ function wysiwygInsertRow(cell, below) {
     const at = body === row.parentNode ? row.nextElementSibling : body.firstElementChild;
     body.insertBefore(fresh, at);
   } else {
-    row.parentNode.insertBefore(fresh, below ? row.nextElementSibling : row);
+    row.parentNode?.insertBefore(fresh, below ? row.nextElementSibling : row);
   }
   return fresh.firstElementChild as HTMLTableCellElement | null;
 }
@@ -212,7 +238,7 @@ function wysiwygInsertTable() {
   return true;
 }
 
-function wysiwygTableOp(op) {
+function wysiwygTableOp(op: TableOp) {
   if (op === 'insert') return wysiwygInsertTable();
   const cell = caretTableCell();
   if (!cell) return false;
@@ -226,21 +252,21 @@ function wysiwygTableOp(op) {
 
 // ⌘/Ctrl+⇧T inserts a table; ⌘/Ctrl+⌥+arrow grows the one the caret is in, in the
 // direction of the arrow.
-const TABLE_KEYS = {
+const TABLE_KEYS: Record<string, TableOp> = {
   ArrowLeft: 'column-left',
   ArrowRight: 'column-right',
   ArrowUp: 'row-above',
   ArrowDown: 'row-below',
 };
 
-export function tableOpFor(e) {
+export function tableOpFor(e: KeyboardEvent): TableOp | null {
   if (!(e.ctrlKey || e.metaKey)) return null;
   if (e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') return 'insert';
   if (e.altKey && !e.shiftKey) return TABLE_KEYS[e.key] || null;
   return null;
 }
 
-export function runTableOp(op) {
+export function runTableOp(op: TableOp) {
   if (!state.currentFile) return;
   // Another text field (find, the smart-insert note) owns its own keyboard while
   // it has focus — a table belongs to the note, not to whatever is being typed.

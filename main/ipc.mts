@@ -14,9 +14,11 @@ import type { IpcHandlers } from '../types/ipc';
 export function handle<C extends keyof IpcHandlers>(channel: C, fn: IpcHandlers[C]) {
   ipcMain.handle(channel, async (_e, ...args) => {
     try {
-      // The arguments arrive off the wire as `any[]`; each handler declares what
-      // it actually takes, and its own body is checked against that.
-      return await (fn as (...a: any[]) => any)(...args);
+      // The one cast in the file, and it is the boundary itself: `args` arrives off
+      // the wire untyped, and `fn` is the union of every declared handler, which
+      // nothing can be spread into. Each handler still declares what it takes, and
+      // its own body — and every renderer call site — is checked against that.
+      return await (fn as (...a: unknown[]) => unknown)(...args);
     } catch (err) {
       return { ok: false, error: String(err) };
     }

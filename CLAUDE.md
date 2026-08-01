@@ -373,7 +373,7 @@ all 193 already said `./state.js` / `./index.mjs`, and TypeScript resolves those
 | `main.mts`, `main/*.mts` | `main.mjs`, `main/*.mjs` | ESM (Node) |
 | `renderer/*.ts` | `renderer/*.js` | ESM (browser, `<script type="module">`) |
 | `preload.ts` | `preload.js` | CommonJS — a sandboxed preload cannot be ESM |
-| `types/ipc.d.ts` | — | declarations only |
+| `types/*.d.ts` | — | declarations only (`ipc.d.ts`, `turndown.d.ts`) |
 | `scripts/*.js` | — | **stays JavaScript** |
 
 `scripts/` stays JavaScript deliberately: `pty-permissions.js` runs from `postinstall`, before a
@@ -438,13 +438,54 @@ declared there once and referred to from all three sides:
 
 Two settings are deliberate. **`strictNullChecks` is on and not optional** — without it TypeScript
 doesn't narrow `if (!res.ok)`, which is the whole reason for typing the bridge. **`noImplicitAny` is
-off**, which is where the migration from JSDoc landed: an un-annotated parameter is checked where
-inference reaches it and is `any` where it doesn't. `strict` as a whole is not on.
+on**, so a parameter with no annotation is an error rather than a silent `any`. `strict` as a whole
+is still not on.
 
-**Turning `noImplicitAny` on is the next step, and it is worth doing a file at a time** — that is
-where the remaining defects are. `renderer/markdown.ts` is the case in point: turndown's rule
-callbacks take a `node` that is still implicitly `any`, and under it `summary.textContent.trim()` and
-`stale.parentNode.removeChild(stale)` are both unguarded null-derefs that nothing currently reports.
+**It was turned on a file at a time, and that is where the defects were** — every one of them a
+place where the implicit `any` was standing in for a check the surrounding comment already said was
+needed:
+
+- **`openFile()` read an image result as a text one.** `read-file` and `read-image-file` answer with
+  different shapes, and the file already narrowed the *text* branch with `'content' in res` — the
+  image branch went on trusting a boolean `image` flag the checker cannot follow. It is now
+  `'dataUrl' in res`, which is the same idiom on both halves.
+- **`wordSegments()` was handed the `string | null` pair its own comment forbids.** `PairedRow`
+  declares both sides nullable and the comment says the caller "has to be handed a checked pair";
+  nothing checked. `diffRowEl()` now tests both sides before calling it.
+- **The `detailsBlock` turndown rule held two unguarded null-derefs**, `summary.textContent.trim()`
+  and `stale.parentNode.removeChild(stale)` — an image-description block with an empty `<summary>`
+  would have thrown mid-fold, which is a lost save.
+
+**turndown ships no type declarations, so `types/turndown.d.ts` declares the surface the fold uses**
+— the constructor, `addRule`/`keep`/`remove`, the assignable `escape` hook and `turndown()` itself.
+Deliberately narrower than the real API: anything else turndown can do is a compile error rather
+than an `any`. `@types/turndown` would do the same job, but it is a dependency for one module, and
+`assert_native_node_modules()` refuses an install from the Linux mirror anyway (see **Commands**).
+
+**Explicit `any` was taken out with it, and the replacements are the interesting part** — each one
+was a place where `any` stood in for a shape the code already knew:
+
+- **A model reply is `unknown` until something checks it.** `readClaudeJson` is now generic over what
+  the caller's `describe` callback has just established (`readClaudeJson<PlanReply>(…)`): the
+  validation is `describe`'s, at runtime, and `T` is how the caller states what passing it means, so
+  the value comes back usable instead of as an `unknown` every call site re-narrows. Getting `T`
+  wrong is getting `describe` wrong. The envelope and the three `sanitize*` functions take `unknown`
+  and go through `asRecord()`, which buys the right to *ask* about a field without asserting
+  anything about its value.
+- **`openModal<T>` is generic over what the dialog settles with**, so `commitModal` answers
+  `CommitResult | null` and `reminderModal` a discriminated `ReminderResult`. `result.action ===
+  'diff'` narrows where it used to be a property read off `any`.
+
+**One `any` is left in the repo, and it is load-bearing**: the `AstNode` typedef in
+`scripts/check-unbound.js`. Both walkers there are *reflective* — they enumerate `Object.keys(node)`
+and recurse into whatever they find, which is what keeps them correct for every node kind acorn can
+produce. Acorn's own `AnyNode` union is precise but describes the opposite shape: no index
+signature, so the generic descent cannot be written against it at all. The typed entry points
+(`analyze`, `importsOf`) do use acorn's real types; only the descent is loose.
+
+The nearest thing to a second is the single cast in `main/ipc.mts` — `fn as (...a: unknown[]) =>
+unknown`. That one is the bridge itself: `args` arrives off the wire untyped and `fn` is the union
+of every declared handler, which nothing can be spread into.
 
 Three conventions follow from the boundary itself. `baseFolder` is `VaultRoot` (`string | null`)
 throughout, because the renderer passes `state.baseFolder` straight through and every handler is

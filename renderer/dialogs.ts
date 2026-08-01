@@ -12,18 +12,25 @@
 // Returns `{ box, close, promise }`: fill `box`, call `close(value)` to settle.
 // `onKey(e, close)` is consulted first and returns true once it has handled the
 // event; Escape is the fallback. `onClose(value)` runs before the promise settles.
-export type CloseModal = (value?: any) => void;
+//
+// `T` is what this dialog settles with. A dismissal — Escape, the backdrop, a
+// Cancel button — settles with `null` unless the caller names another
+// `cancelValue`, so `T` includes `null` for every dialog that can be dismissed.
+export type CloseModal<T> = (value?: T) => void;
 
-export interface ModalOptions {
+export interface ModalOptions<T> {
   boxClass?: string;
-  cancelValue?: any;
-  onKey?: (e: KeyboardEvent, close: CloseModal) => boolean | void;
-  onClose?: (value: any) => void;
+  /** What a dismissal settles with. Defaults to null. */
+  cancelValue?: T;
+  onKey?: (e: KeyboardEvent, close: CloseModal<T>) => boolean | void;
+  onClose?: (value: T) => void;
 }
 
-export function openModal(
-  { boxClass = 'modal-box', cancelValue = null, onKey, onClose }: ModalOptions = {},
-) {
+export function openModal<T>(options: ModalOptions<T> = {}) {
+  const { boxClass = 'modal-box', onKey, onClose } = options;
+  // `in` rather than `?? null`: a dialog whose cancel value is deliberately
+  // `undefined` is still the caller having named one.
+  const cancelValue = ('cancelValue' in options ? options.cancelValue : null) as T;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   const box = document.createElement('div');
@@ -31,13 +38,13 @@ export function openModal(
   overlay.appendChild(box);
   document.body.appendChild(overlay);
 
-  let settle!: (value: any) => void;
-  const promise = new Promise<any>((resolve) => {
+  let settle!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
     settle = resolve;
   });
 
   let done = false;
-  function close(value: any = cancelValue) {
+  function close(value: T = cancelValue) {
     if (done) return;
     done = true;
     overlay.remove();
@@ -65,8 +72,8 @@ export function dialogOpen() {
   return !!document.querySelector('.modal-overlay');
 }
 
-export function promptModal(title, defaultValue = '') {
-  const { box, close, promise } = openModal({
+export function promptModal(title: string, defaultValue = '') {
+  const { box, close, promise } = openModal<string | null>({
     onKey: (e, close) => {
       if (e.key !== 'Enter') return false;
       e.preventDefault();

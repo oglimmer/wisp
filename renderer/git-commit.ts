@@ -68,8 +68,17 @@ const DEFAULT_COMMIT_MESSAGE = 'Update';
 
 // The commit dialog: the message, the exact list of files that will be included
 // (each opening its diff on click), and whether to push afterwards.
+/**
+ * What the commit dialog settles with: a request to see one file's diff instead
+ * (the dialog comes back afterwards with the draft intact), or the commit itself.
+ * Discriminated on `action`, which the commit arm deliberately doesn't carry.
+ */
+type CommitResult =
+  | { action: 'diff'; path: string; message?: undefined; push?: undefined }
+  | { action?: undefined; message: string; push: boolean };
+
 function commitModal(files: GitFile[], hasUpstream?: boolean) {
-  const { box, close, promise } = openModal({
+  const { box, close, promise } = openModal<CommitResult | null>({
     boxClass: 'modal-box gc-box',
     // Plain Enter is a newline: a commit message has more than one line.
     onKey: (e) => {
@@ -80,7 +89,7 @@ function commitModal(files: GitFile[], hasUpstream?: boolean) {
     },
     // Keep whatever was typed unless this was a real commit or an explicit cancel.
     onClose: (value) => {
-      commitDraft = value && value.action === 'diff' ? msgInput.value : '';
+      commitDraft = value?.action === 'diff' ? msgInput.value : '';
     },
   });
 
@@ -181,7 +190,7 @@ function commitModal(files: GitFile[], hasUpstream?: boolean) {
 
 // Everything a discard of `target` would affect. Untracked files are separated out
 // rather than filtered away, so the dialog can say what it is *not* going to do.
-function revertScope(target: string, scope?: string) {
+function revertScope(target: string, scope?: 'file' | 'dir') {
   const sep = (state.baseFolder || '').includes('\\') ? '\\' : '/';
   const inScope = [...gitFileStatus.values()].filter((f) =>
     scope === 'file' ? f.path === target : f.path.startsWith(target + sep)
@@ -192,7 +201,7 @@ function revertScope(target: string, scope?: string) {
   };
 }
 
-export async function discardChanges(target, scope, label) {
+export async function discardChanges(target: string, scope: 'file' | 'dir', label: string) {
   if (!gitState) return;
   // Act on what git says now, not on what the tree was last painted with.
   await refreshGit();
@@ -255,8 +264,19 @@ export async function discardChanges(target, scope, label) {
 
 // A yes/no dialog that shows exactly what is about to happen. Used for discarding,
 // which is the one action here that destroys work with no undo.
-function confirmModal({ title, message, files, notes, confirmLabel }) {
-  const { box, close, promise } = openModal({
+interface ConfirmOptions {
+  title: string;
+  /** The sentence under the heading; omitted when the file list says it all. */
+  message?: string;
+  /** Exactly which files the action will touch, listed with their status letters. */
+  files?: GitFile[];
+  /** What the action will *not* do — untracked files a discard leaves alone. */
+  notes?: string[];
+  confirmLabel?: string;
+}
+
+function confirmModal({ title, message, files, notes, confirmLabel }: ConfirmOptions) {
+  const { box, close, promise } = openModal<boolean>({
     boxClass: 'modal-box gc-box',
     cancelValue: false,
     onKey: (e, close) => {

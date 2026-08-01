@@ -27,7 +27,7 @@ function showWelcome() {
   workspaceEl.classList.add('hidden');
 }
 
-async function openFolder(folder) {
+async function openFolder(folder: string) {
   // Whatever is open belongs to the vault being left: settle its reading position
   // while its pane (and the buffer the position is expressed in) is still there.
   syncAnchor();

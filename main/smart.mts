@@ -5,7 +5,7 @@ import { vaultPath, isInside, assertReadableFile, assertTextContent, formatBytes
 import { isIgnored } from './tree.mjs';
 import { noteOwnWrite } from './watch.mjs';
 import type { LookupSource } from '../types/ipc';
-import { runClaude, readClaudeJson } from './claude.mjs';
+import { runClaude, readClaudeJson, asRecord } from './claude.mjs';
 
 const fsp = fs.promises;
 
@@ -26,6 +26,22 @@ const INLINE_TOTAL_MAX = 96 * 1024; // stop inlining once we've included this mu
 interface GatheredFile {
   rel: string;
   content: string | null;
+}
+
+// What the model answers with, as each handler's `describe` callback has just
+// established it to be. Only the fields `describe` actually checks are declared as
+// present; everything else it may have sent stays `unknown` and goes through a
+// sanitizer, because a field nobody vetted is not a field to trust.
+interface PlanReply {
+  targetFile: string;
+  newContent: string;
+  reason?: unknown;
+  reminder?: unknown;
+}
+
+interface LookupReply {
+  answer: string;
+  sources?: unknown;
 }
 
 async function gatherFiles(baseFolder: string): Promise<GatheredFile[]> {
@@ -129,10 +145,11 @@ function buildInsertPrompt(files: GatheredFile[], text: string, currentRel: stri
 
 // Validate the reminder Claude proposed. Anything malformed is dropped rather
 // than surfaced — a bogus reminder is worse than no reminder.
-function sanitizeReminder(raw: any) {
-  if (!raw || typeof raw !== 'object') return null;
-  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
-  const due = typeof raw.due === 'string' ? raw.due.trim() : '';
+function sanitizeReminder(raw: unknown) {
+  const r = asRecord(raw);
+  if (!r) return null;
+  const title = typeof r.title === 'string' ? r.title.trim() : '';
+  const due = typeof r.due === 'string' ? r.due.trim() : '';
   if (!title || !due) return null;
   // A reminder is due on a *day*, so the date is taken as written rather than
   // parsed into an instant — `new Date('2026-08-03')` is UTC midnight, which is
@@ -145,7 +162,7 @@ function sanitizeReminder(raw: any) {
   return {
     title,
     due: day[0],
-    reason: typeof raw.reason === 'string' ? raw.reason.trim() : '',
+    reason: typeof r.reason === 'string' ? r.reason.trim() : '',
   };
 }
 
@@ -164,10 +181,11 @@ handle('smart-check', async (baseFolder, currentFile, text) => {
   const res = await runClaude(baseFolder, buildInsertPrompt(files, text, currentRel));
   if (!res.ok) return res;
 
-  const read = readClaudeJson('smart-check', res.stdout, (v) => {
-    if (!v || typeof v !== 'object') return 'Claude’s answer wasn’t a filing plan.';
-    if (!v.targetFile) return 'Claude didn’t say which file to file this into.';
-    if (typeof v.newContent !== 'string') return 'Claude didn’t include the file’s new content.';
+  const read = readClaudeJson<PlanReply>('smart-check', res.stdout, (v) => {
+    const plan = asRecord(v);
+    if (!plan) return 'Claude’s answer wasn’t a filing plan.';
+    if (!plan.targetFile) return 'Claude didn’t say which file to file this into.';
+    if (typeof plan.newContent !== 'string') return 'Claude didn’t include the file’s new content.';
     return null;
   });
   if (!read.ok) return read;
@@ -254,12 +272,13 @@ function buildLookupPrompt(files: GatheredFile[], question: string, currentRel: 
 
 // Keep only sources that name a real file inside the vault — a made-up citation is
 // worse than none, and the renderer turns each one into a click that opens the file.
-function sanitizeSources(raw: any, baseFolder: string): LookupSource[] {
+function sanitizeSources(raw: unknown, baseFolder: string): LookupSource[] {
   if (!Array.isArray(raw)) return [];
   const out: LookupSource[] = [];
   const seen = new Set<string>();
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
+  for (const entry of raw) {
+    const item = asRecord(entry);
+    if (!item) continue;
     const file = typeof item.file === 'string' ? item.file.trim() : '';
     if (!file) continue;
     let target;
@@ -294,9 +313,12 @@ handle('smart-lookup', async (baseFolder, currentFile, question) => {
   const res = await runClaude(baseFolder, buildLookupPrompt(files, question, currentRel));
   if (!res.ok) return res;
 
-  const read = readClaudeJson('smart-lookup', res.stdout, (v) => {
-    if (!v || typeof v !== 'object') return 'Claude’s answer wasn’t in the expected shape.';
-    if (typeof v.answer !== 'string' || !v.answer.trim()) return 'Claude didn’t answer the question.';
+  const read = readClaudeJson<LookupReply>('smart-lookup', res.stdout, (v) => {
+    const answer = asRecord(v);
+    if (!answer) return 'Claude’s answer wasn’t in the expected shape.';
+    if (typeof answer.answer !== 'string' || !answer.answer.trim()) {
+      return 'Claude didn’t answer the question.';
+    }
     return null;
   });
   if (!read.ok) return read;
@@ -345,12 +367,13 @@ function escapeHtmlText(s: string) {
 
 // Keep only a well-formed { alt, description }: both single-line (the block is
 // written without blank lines so it stays one HTML block) and length-capped.
-function sanitizeAnalysis(raw: any) {
-  if (!raw || typeof raw !== 'object') return null;
+function sanitizeAnalysis(raw: unknown) {
+  const r = asRecord(raw);
+  if (!r) return null;
   const flatten = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
   // `]` would close the Markdown alt early; brackets add nothing to a description.
-  let alt = flatten(raw.alt).replace(/[[\]]/g, '').slice(0, 120).trim();
-  let description = escapeHtmlText(flatten(raw.description)).slice(0, 2000).trim();
+  let alt = flatten(r.alt).replace(/[[\]]/g, '').slice(0, 120).trim();
+  let description = escapeHtmlText(flatten(r.description)).slice(0, 2000).trim();
   if (!alt && !description) return null;
   if (!alt) alt = description.slice(0, 100).trim();
   return { alt, description };
@@ -375,7 +398,7 @@ handle('analyze-image', async (baseFolder, imagePath) => {
   const res = await runClaude(baseFolder, buildImagePrompt(rel));
   if (!res.ok) return res;
 
-  const read = readClaudeJson('analyze-image', res.stdout, (v) =>
+  const read = readClaudeJson<unknown>('analyze-image', res.stdout, (v) =>
     sanitizeAnalysis(v) ? null : 'Claude didn’t describe the image.'
   );
   if (!read.ok) return read;

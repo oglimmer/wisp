@@ -107,7 +107,7 @@ function replaceBufferKeepingCaret(next: string) {
   let at = 0;
   while (at < prev.length && at < next.length && prev[at] === next[at]) at++;
   const delta = next.length - prev.length;
-  const shift = (p) => (p > at ? p + delta : p);
+  const shift = (p: number) => (p > at ? p + delta : p);
   const start = editorEl.selectionStart;
   const end = editorEl.selectionEnd;
   const scroll = editorEl.scrollTop;

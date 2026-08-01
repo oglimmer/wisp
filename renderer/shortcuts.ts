@@ -14,7 +14,7 @@ const K_MOD = MAC_KEYS ? '⌘' : 'Ctrl';
 const K_ALT = MAC_KEYS ? '⌥' : 'Alt';
 const K_SHIFT = MAC_KEYS ? '⇧' : 'Shift';
 
-function chord(...keys) {
+function chord(...keys: string[]) {
   return keys.join(MAC_KEYS ? '' : '+');
 }
 
@@ -70,7 +70,7 @@ function shortcutsModal() {
   if (dialogOpen()) return;
 
   // Enter closes too — there is nothing else to confirm.
-  const { box, close } = openModal({
+  const { box, close } = openModal<null>({
     boxClass: 'modal-box sc-box',
     onKey: (e, close) => {
       if (e.key !== 'Enter') return false;

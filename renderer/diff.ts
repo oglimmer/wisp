@@ -5,7 +5,8 @@ import { currentFileEl, diffViewEl, editorEl, treeEl } from './dom.js';
 import { cancelPendingSave, flushSave, openFile } from './editor.js';
 import { refreshFind } from './find.js';
 import { GIT_LETTER, WORD_DIFF_MAX_CELLS, gitFileStatus, gitState } from './git.js';
-import { diffOps, lcsOps, type Op } from './lcs.js';
+import { diffOps, lcsOps, type Op, type OpType } from './lcs.js';
+import type { GitFileDiff } from '../types/ipc';
 import { restorePosition } from './positions.js';
 import { state } from './state.js';
 import { showContextMenu } from './tree.js';
@@ -21,7 +22,7 @@ import { applyView, setViewMode } from './views.js';
 let diffToken = 0;
 
 // Show a file's changes, from the tree's context menu or the git bar's list.
-export async function showDiffFor(target) {
+export async function showDiffFor(target: string) {
   if (!gitState || !target) return;
   await flushSave();
   const entry = gitFileStatus.get(target);
@@ -93,7 +94,7 @@ export async function renderDiffPane() {
 
 // The git bar's list of everything that has changed. A plain popup menu, not a
 // dialog: picking an entry opens that file's diff in the editor pane.
-export function showChangedFiles(anchorEl) {
+export function showChangedFiles(anchorEl: HTMLElement) {
   if (!gitState) return;
   if (!gitState.files.length) {
     setStatus('No changes — the vault is clean.');
@@ -109,7 +110,7 @@ export function showChangedFiles(anchorEl) {
   );
 }
 
-function diffMessage(text) {
+function diffMessage(text: string) {
   const el = document.createElement('div');
   el.className = 'diff-empty';
   el.textContent = text;
@@ -118,7 +119,7 @@ function diffMessage(text) {
 
 // git's unified patch, coloured by line kind. Shown verbatim — this is the view for
 // when you want to see exactly what git sees.
-function renderRawDiff(res) {
+function renderRawDiff(res: GitFileDiff) {
   if (!res.raw) {
     return diffMessage(
       res.binary ? 'Binary file — no textual diff.' : 'No textual change against HEAD.'
@@ -150,7 +151,7 @@ const MAX_DIFF_ROWS = 20000;
 
 // Side-by-side: HEAD on the left, the working tree on the right, with the words that
 // actually changed picked out inside a modified line.
-function renderVisualDiff(res) {
+function renderVisualDiff(res: GitFileDiff) {
   if (res.binary) return diffMessage('Binary file — no textual diff.');
   const head = res.head === null ? '' : res.head;
   const work = res.work === null ? '' : res.work;
@@ -191,7 +192,7 @@ function renderVisualDiff(res) {
 // than starting an empty one, and empty text is no lines at all — without both,
 // every file picks up a phantom blank line at the end and a deleted file shows one
 // empty line opposite its former contents.
-function splitLines(text) {
+function splitLines(text: string) {
   if (text === '') return [];
   const lines = text.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
@@ -280,7 +281,7 @@ function condenseRows(rows: PairedRow[]): DiffRow[] {
   return out;
 }
 
-function diffRowEl(row) {
+function diffRowEl(row: DiffRow) {
   const el = document.createElement('div');
   el.className = 'diff-row diff-' + row.type;
   if (row.type === 'gap') {
@@ -292,8 +293,13 @@ function diffRowEl(row) {
   // on the line the reader was on in another pane (see renderer/positions.js).
   if (row.rn !== null && row.rn !== undefined) el.dataset.line = String(row.rn);
 
-  // Only a replaced line has two versions to compare word by word.
-  const words = row.type === 'mod' ? wordSegments(row.left, row.right) : null;
+  // Only a replaced line has two versions to compare word by word — and only a
+  // `mod` row has text on both sides, which is the checked pair `wordSegments()`
+  // needs (its own type says `string | null` for each).
+  const words =
+    row.type === 'mod' && row.left !== null && row.right !== null
+      ? wordSegments(row.left, row.right)
+      : null;
   el.appendChild(numCell(row.ln));
   el.appendChild(textCell(row.left, words ? words.left : null, 'left'));
   el.appendChild(numCell(row.rn));
@@ -301,7 +307,7 @@ function diffRowEl(row) {
   return el;
 }
 
-function numCell(n) {
+function numCell(n: number | null) {
   const el = document.createElement('div');
   el.className = 'diff-num';
   el.textContent = n === null || n === undefined ? '' : String(n);
@@ -310,7 +316,7 @@ function numCell(n) {
 
 // A null line means "this side has nothing here" — rendered as an empty filler cell
 // so the two columns stay aligned rather than sliding past each other.
-function textCell(text, segments, side) {
+function textCell(text: string | null, segments: Op[] | null, side: 'left' | 'right') {
   const el = document.createElement('div');
   el.className = 'diff-text diff-' + side;
   if (text === null) {
@@ -337,13 +343,13 @@ function textCell(text, segments, side) {
 // Word-level diff of one replaced line, as the two sides' segment lists. Returns
 // null when the lines are too long to be worth an O(n×m) table — the row then just
 // renders as whole-line add/remove, which is still correct, only less precise.
-function wordSegments(left, right) {
+function wordSegments(left: string, right: string) {
   const A = left.match(/\s+|\S+/g) || [];
   const B = right.match(/\s+|\S+/g) || [];
   if ((A.length + 1) * (B.length + 1) > WORD_DIFF_MAX_CELLS) return null;
 
-  const out = { left: [], right: [] };
-  const push = (side, type, text) => {
+  const out: { left: Op[]; right: Op[] } = { left: [], right: [] };
+  const push = (side: 'left' | 'right', type: OpType, text: string) => {
     const list = out[side];
     const last = list[list.length - 1];
     if (last && last.type === type) last.text += text; // merge runs, fewer spans

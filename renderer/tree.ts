@@ -13,6 +13,7 @@ import { newReminder } from './reminders-ui.js';
 import { state } from './state.js';
 import { cssEscape, relativePath, setStatus } from './util.js';
 import { applyView, isImage } from './views.js';
+import type { TreeNode } from '../types/ipc';
 
 export const expanded = new Set<string>(); // dir paths currently expanded
 
@@ -29,8 +30,7 @@ export type TreeMode = 'tree' | 'recent';
 
 let treeMode: TreeMode = localStorage.getItem('rawNotes.treeMode') === 'recent' ? 'recent' : 'tree';
 
-/** @param {TreeMode} mode */
-export async function setTreeMode(mode) {
+export async function setTreeMode(mode: TreeMode) {
   if (mode === treeMode) return;
   treeMode = mode;
   localStorage.setItem('rawNotes.treeMode', mode);
@@ -96,7 +96,7 @@ export async function refreshTree() {
   refreshGit();
 }
 
-function emptyNote(message) {
+function emptyNote(message: string) {
   const empty = document.createElement('div');
   empty.style.padding = '8px';
   empty.style.color = 'var(--text-dim)';
@@ -117,9 +117,8 @@ function markActiveRow() {
 // Every file under `nodes`, folders flattened away. Folders are dropped rather
 // than listed: "what changed" is a question about notes, and a folder's own mtime
 // answers a different one (something was added to it, or removed).
-/** @param {import('../types/ipc').TreeNode[]} nodes */
-function flattenFiles(nodes) {
-  const files: import('../types/ipc').TreeNode[] = [];
+function flattenFiles(nodes: TreeNode[]) {
+  const files: TreeNode[] = [];
   for (const node of nodes) {
     if (node.type === 'dir') files.push(...flattenFiles(node.children || []));
     else files.push(node);
@@ -130,7 +129,7 @@ function flattenFiles(nodes) {
 // Newest first, name as the tie-break so the order is stable between refreshes —
 // two files written in the same millisecond (a checkout, a copied folder) would
 // otherwise swap places on every rebuild.
-function byRecency(a, b) {
+function byRecency(a: TreeNode, b: TreeNode) {
   const bySeen = (b.mtime || 0) - (a.mtime || 0);
   return bySeen || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 }
@@ -138,7 +137,7 @@ function byRecency(a, b) {
 // How long ago, in the shortest form that still says it: minutes within the hour,
 // then hours, then days, then the date. A list ordered by time is read for its
 // order first, so the exact stamp goes in the tooltip rather than the row.
-function relativeTime(ms) {
+function relativeTime(ms: number | undefined) {
   if (!ms) return '';
   const secs = Math.max(0, (Date.now() - ms) / 1000);
   if (secs < 60) return 'now';
@@ -157,7 +156,7 @@ function relativeTime(ms) {
 // dragged, right-clicked and decorated here exactly as it can there; what this
 // adds is the two things a flat list has to say for itself — which folder the file
 // is in, and when it changed.
-function renderRecentNode(node) {
+function renderRecentNode(node: TreeNode) {
   const wrapper = document.createElement('div');
   wrapper.className = 'tree-node';
 
@@ -189,7 +188,7 @@ function renderRecentNode(node) {
 // context menu. Everything keyed off `.node-row[data-path]` elsewhere in the app —
 // the git decorations, the active-file highlight, every `querySelector` by path —
 // is satisfied by this alone, which is what lets the recency list reuse it.
-function makeRow(node) {
+function makeRow(node: TreeNode) {
   const row = document.createElement('div');
   row.className = 'node-row';
   row.dataset.path = node.path;
@@ -217,7 +216,7 @@ function makeRow(node) {
 }
 
 // Build a DOM node for a tree entry.
-function renderNode(node, depth) {
+function renderNode(node: TreeNode, depth: number) {
   const wrapper = document.createElement('div');
   wrapper.className = 'tree-node';
 
@@ -233,7 +232,7 @@ function renderNode(node, depth) {
     const childrenEl = document.createElement('div');
     childrenEl.className = 'node-children';
     if (!isOpen) childrenEl.classList.add('hidden');
-    for (const child of node.children) {
+    for (const child of node.children || []) {
       childrenEl.appendChild(renderNode(child, depth + 1));
     }
     wrapper.appendChild(childrenEl);
@@ -255,10 +254,10 @@ function renderNode(node, depth) {
   return wrapper;
 }
 
-function attachRowMenu(row, node) {
+function attachRowMenu(row: HTMLElement, node: TreeNode) {
   row.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    const items: any[] = [];
+    const items: MenuItem[] = [];
     // Only offered for a file git actually has something to say about.
     const entry = node.type === 'file' ? gitFileStatus.get(node.path) : null;
     if (entry) {
@@ -306,7 +305,7 @@ function attachRowMenu(row, node) {
 let dragPath: string | null = null;
 let dropEl: HTMLElement | null = null;
 
-function markDropTarget(el) {
+function markDropTarget(el: HTMLElement) {
   if (dropEl === el) return;
   clearDropTarget();
   dropEl = el;
@@ -318,7 +317,7 @@ function clearDropTarget() {
   dropEl = null;
 }
 
-function parentDir(p) {
+function parentDir(p: string) {
   const cut = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
   return cut === -1 ? '' : p.slice(0, cut);
 }
@@ -326,7 +325,7 @@ function parentDir(p) {
 // Whether dropping the dragged entry into `destDir` is a move worth offering.
 // Main refuses the rest anyway, but a highlight that can only lead to an error
 // message is worse than no highlight at all.
-function canDrop(destDir) {
+function canDrop(destDir: string) {
   if (!dragPath || !destDir) return false;
   const sep = dragPath.includes('\\') ? '\\' : '/';
   // Into itself or into something below it: the folder would move out of existence.
@@ -334,7 +333,7 @@ function canDrop(destDir) {
   return destDir !== parentDir(dragPath); // already there
 }
 
-function attachDragSource(row, node) {
+function attachDragSource(row: HTMLElement, node: TreeNode) {
   row.draggable = true;
   row.addEventListener('dragstart', (e) => {
     dragPath = node.path;
@@ -402,7 +401,7 @@ attachDropTarget(
 //
 // The expanded set matters for more than tidiness — without it a moved folder,
 // and anything expanded under it, comes back collapsed.
-async function rekeyMovedPaths(oldPath, newPath) {
+async function rekeyMovedPaths(oldPath: string, newPath: string) {
   const sep = oldPath.includes('\\') ? '\\' : '/';
   const prefix = oldPath + sep;
   for (const dir of [...expanded]) {
@@ -414,7 +413,7 @@ async function rekeyMovedPaths(oldPath, newPath) {
   await remapReminderFiles(relativePath(oldPath), relativePath(newPath));
 }
 
-async function moveNode(source, destDir) {
+async function moveNode(source: string, destDir: string) {
   const sep = source.includes('\\') ? '\\' : '/';
   const open = state.currentFile;
   const movingOpen = !!open && (open === source || open.startsWith(source + sep));
@@ -480,7 +479,7 @@ export async function newFolder() {
 }
 
 // Make sure every ancestor dir of a path is expanded so it's visible.
-export function expandAncestors(filePath) {
+export function expandAncestors(filePath: string) {
   const root = state.baseFolder || '';
   let dir = filePath;
   const sep = filePath.includes('\\') ? '\\' : '/';
@@ -491,10 +490,16 @@ export function expandAncestors(filePath) {
 }
 
 // ---- Context menu ----
-// `items` is a list of { label, fn } — shared by the tree and the reminder list.
+// Shared by the tree and the reminder list.
 let menuEl: HTMLElement | null = null;
 
-export function showContextMenu(e: { clientX: number; clientY: number }, items: any[]) {
+/** One row of a context menu. `fn` may be async — nothing awaits it. */
+export interface MenuItem {
+  label: string;
+  fn: () => void;
+}
+
+export function showContextMenu(e: { clientX: number; clientY: number }, items: MenuItem[]) {
   removeContextMenu();
   menuEl = document.createElement('div');
   Object.assign(menuEl.style, {
@@ -511,7 +516,7 @@ export function showContextMenu(e: { clientX: number; clientY: number }, items: 
     boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
   });
 
-  const mkItem = (text, fn) => {
+  const mkItem = (text: string, fn: () => void) => {
     const item = document.createElement('div');
     item.textContent = text;
     Object.assign(item.style, { padding: '6px 12px', cursor: 'pointer', borderRadius: '3px' });
@@ -547,7 +552,8 @@ treeEl.addEventListener('contextmenu', (e) => {
   showContextMenu(e, [
     {
       label: 'Discard all changes…',
-      fn: () => discardChanges(state.baseFolder, 'dir', 'the whole vault'),
+      // gitState is non-null, so a vault is open and baseFolder is set.
+      fn: () => discardChanges(state.baseFolder as string, 'dir', 'the whole vault'),
     },
   ]);
 });
@@ -561,13 +567,13 @@ function revealLabel() {
 
 // Select the entry in the OS file manager. Flush first for the open file, so what
 // the user finds on disk matches what they see in the editor.
-async function revealNode(node) {
+async function revealNode(node: TreeNode) {
   if (state.currentFile === node.path) await flushSave();
   const res = await api.revealPath(state.baseFolder, node.path);
   if (!res.ok) setStatus('Error: ' + res.error, true);
 }
 
-async function renameNode(node) {
+async function renameNode(node: TreeNode) {
   const newName = await promptModal('Rename to:', node.name);
   if (!newName || newName === node.name) return;
   const sep = node.path.includes('\\') ? '\\' : '/';
@@ -599,7 +605,7 @@ async function renameNode(node) {
   if (res.updated) setStatus(`Renamed — refs updated in ${res.updated} note(s)`);
 }
 
-async function deleteNode(node) {
+async function deleteNode(node: TreeNode) {
   if (!window.confirm(`Delete "${node.name}"? This cannot be undone.`)) return;
   // Drop any queued autosave so it can't re-create the file we're deleting.
   if (state.currentFile === node.path) cancelPendingSave();

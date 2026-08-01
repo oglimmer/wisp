@@ -35,7 +35,14 @@ export const REMINDER_TICK_MS = 60000;
 // the bare duration — the row menu writes it as `Extend by 1 day`. The steps are
 // whole days and months because the due date is a day; `months` is clamped to the
 // target month's last day.
-export const EXTEND_OPTIONS = [
+/** One step of "extend due to": whole days, or whole months. Never both. */
+export interface ExtendStep {
+  label: string;
+  days?: number;
+  months?: number;
+}
+
+export const EXTEND_OPTIONS: ExtendStep[] = [
   { label: '1 day', days: 1 },
   { label: '3 days', days: 3 },
   { label: '1 week', days: 7 },
@@ -50,7 +57,7 @@ export function newReminderId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-function pad2(n) {
+function pad2(n: number) {
   return String(n).padStart(2, '0');
 }
 
@@ -59,12 +66,12 @@ function pad2(n) {
 // local-midnight `Date` for the arithmetic in between.
 
 /** A local Date (midnight) as `YYYY-MM-DD`. */
-export function dateKey(d) {
+export function dateKey(d: Date) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 /** `YYYY-MM-DD` as a local-midnight Date, or null if it isn't one. */
-export function parseDate(due) {
+export function parseDate(due: string | null | undefined) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(due || ''));
   if (!m) return null;
   const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
@@ -84,7 +91,7 @@ export function defaultDue() {
 // Whatever a stored file holds, as a date. A reminder written by an earlier
 // version is a UTC ISO *instant*, so it is read back in local time and reduced to
 // the day it fell on — which is the day it was set for.
-export function toDueDate(value) {
+export function toDueDate(value: unknown) {
   if (typeof value !== 'string' || !value) return null;
   const plain = parseDate(value.slice(0, 10));
   if (plain) return dateKey(plain);
@@ -93,18 +100,22 @@ export function toDueDate(value) {
 }
 
 // Whole days between two `YYYY-MM-DD` dates.
-function dayDelta(from, to) {
+function dayDelta(from: string, to: string) {
   const a = parseDate(from);
   const b = parseDate(to);
   if (!a || !b) return 0;
   return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
 
-export function formatDue(due) {
+// Takes the null `extendedDue()` answers with for a date it could not parse: the
+// em dash this already shows for an unreadable date is the right thing there too.
+export function formatDue(due: string | null) {
   const d = parseDate(due);
   if (!d) return '—';
   const now = new Date();
-  const days = dayDelta(dateKey(now), due);
+  // `dateKey(d)` rather than `due`: it is the same string for anything that
+  // parsed, and it is the one the checker knows is a string.
+  const days = dayDelta(dateKey(now), dateKey(d));
   if (days === 0) return 'Today';
   if (days === 1) return 'Tomorrow';
   if (days === -1) return 'Yesterday';
@@ -124,7 +135,10 @@ export function formatDue(due) {
 // (`Intl.Locale.prototype.getWeekInfo`), but a list that regroups itself by where
 // the app is running is harder to reason about than one that simply says Monday,
 // and the boundary only ever moves a row between two adjacent groups.
-export const BUCKET_LABELS = {
+/** The groups the list renders under, nearest first. */
+export type DueBucket = 'overdue' | 'today' | 'thisWeek' | 'nextWeek' | 'later';
+
+export const BUCKET_LABELS: Record<DueBucket, string> = {
   overdue: 'Overdue',
   today: 'Today',
   thisWeek: 'This week',
@@ -132,32 +146,36 @@ export const BUCKET_LABELS = {
   later: 'Later',
 };
 
-function addDays(d, days) {
+function addDays(d: Date, days: number) {
   const out = new Date(d);
   out.setDate(out.getDate() + days);
   return out;
 }
 
-function startOfWeek(d) {
+function startOfWeek(d: Date) {
   return addDays(d, -((d.getDay() + 6) % 7)); // Sunday is 0, so shift to Monday-first
 }
 
 // Which group a due date falls in. `now` is passed in so a whole render shares
 // one day — a list rendered across midnight would otherwise be grouped against a
 // date that moved mid-loop.
-export function dueBucket(due, now = today()) {
+export function dueBucket(due: string, now = today()): DueBucket {
   const d = parseDate(due);
   if (!d) return 'later';
   if (due < now) return 'overdue';
   if (due === now) return 'today';
-  const week = startOfWeek(parseDate(now));
+  // `now` comes from `today()` and always parses; an unparseable one has no week
+  // to measure against, so it falls in with the undated entries.
+  const nowDate = parseDate(now);
+  if (!nowDate) return 'later';
+  const week = startOfWeek(nowDate);
   if (due < dateKey(addDays(week, 7))) return 'thisWeek';
   return due < dateKey(addDays(week, 14)) ? 'nextWeek' : 'later';
 }
 
 // `months` on from `d`, clamped to the target month's last day, so extending a
 // month-end date doesn't skip a month (31 Jan + 1 month is 28 Feb, not 3 Mar).
-function addMonths(d, months) {
+function addMonths(d: Date, months: number) {
   const out = new Date(d);
   const day = out.getDate();
   out.setDate(1); // avoid setMonth overflowing on the way past
@@ -169,7 +187,7 @@ function addMonths(d, months) {
 // A list name as stored: trimmed, and never empty — an entry that predates lists
 // (or was hand-written without one) belongs to the default rather than to a
 // nameless list of its own.
-export function normalizeList(value) {
+export function normalizeList(value: unknown) {
   const name = typeof value === 'string' ? value.trim() : '';
   return name || DEFAULT_LIST;
 }
@@ -188,18 +206,21 @@ export function reminderLists() {
 }
 
 // Tolerate a hand-edited reminders file: drop anything without a usable title/date.
-function normalizeReminder(r) {
+function normalizeReminder(r: unknown): Reminder | null {
   if (!r || typeof r !== 'object') return null;
-  const title = typeof r.title === 'string' ? r.title.trim() : '';
-  const due = toDueDate(r.due);
+  // The file is hand-editable, so every field is checked rather than trusted; the
+  // cast only buys the right to *ask* about each one.
+  const raw = r as Record<string, unknown>;
+  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+  const due = toDueDate(raw.due);
   if (!title || !due) return null;
   return {
-    id: typeof r.id === 'string' && r.id ? r.id : newReminderId(),
+    id: typeof raw.id === 'string' && raw.id ? raw.id : newReminderId(),
     title,
     due,
-    list: normalizeList(r.list),
-    note: typeof r.note === 'string' ? r.note : '',
-    file: typeof r.file === 'string' ? r.file : '',
+    list: normalizeList(raw.list),
+    note: typeof raw.note === 'string' ? raw.note : '',
+    file: typeof raw.file === 'string' ? raw.file : '',
   };
 }
 
@@ -230,7 +251,7 @@ async function persistReminders() {
 // A reminder points at its note by vault-relative path, so a moved note has to
 // take its reminders with it or the list's "open note" button goes nowhere. Same
 // prefix rule as the positions store: a moved folder moves everything under it.
-export async function remapReminderFiles(oldRel, newRel) {
+export async function remapReminderFiles(oldRel: string, newRel: string) {
   if (!oldRel || !newRel || oldRel === newRel) return;
   const sep = oldRel.includes('\\') ? '\\' : '/';
   const prefix = oldRel + sep;
@@ -244,7 +265,7 @@ export async function remapReminderFiles(oldRel, newRel) {
   if (touched) await persistReminders();
 }
 
-export async function upsertReminder(rem) {
+export async function upsertReminder(rem: Reminder) {
   const i = reminders.findIndex((r) => r.id === rem.id);
   if (i === -1) reminders.push(rem);
   else reminders[i] = rem;
@@ -254,7 +275,7 @@ export async function upsertReminder(rem) {
 // Completing a reminder and deleting it are now the same operation: without a
 // repeat rule there is nothing to roll a completed one forward to, so the ✓
 // button and the menu's Delete both land here rather than pretending otherwise.
-export async function removeReminder(id) {
+export async function removeReminder(id: string) {
   const i = reminders.findIndex((r) => r.id === id);
   if (i === -1) return;
   reminders.splice(i, 1);
@@ -265,7 +286,7 @@ export async function removeReminder(id) {
 // later — today, or its own due date. Both readings of "extend" are the right one
 // somewhere: a pending reminder moves by the step the user asked for, while an
 // overdue one lands the step from today rather than somewhere still in the past.
-export async function extendReminder(id, step) {
+export async function extendReminder(id: string, step: ExtendStep) {
   const rem = reminders.find((r) => r.id === id);
   if (!rem) return;
   const due = extendedDue(rem.due, step);
@@ -275,9 +296,11 @@ export async function extendReminder(id, step) {
 }
 
 // The date `extendReminder` would land on, so the UI can show it before committing.
-export function extendedDue(due, step) {
+export function extendedDue(due: string, step: ExtendStep) {
   const now = today();
   const from = parseDate(due && due > now ? due : now);
   if (!from) return null;
-  return dateKey(step.months ? addMonths(from, step.months) : addDays(from, step.days));
+  // A step naming neither days nor months is no step at all, which leaves the due
+  // date where it was — the only sane reading of an option with nothing in it.
+  return dateKey(step.months ? addMonths(from, step.months) : addDays(from, step.days ?? 0));
 }
