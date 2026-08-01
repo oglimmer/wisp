@@ -4,12 +4,13 @@ import { api } from './api.js';
 import { chooseFolder, init } from './app.js';
 import { dialogOpen } from './dialogs.js';
 import { showChangedFiles } from './diff.js';
-import { byId, diffRawBtn, diffVisualBtn, editorEl, gitDiffBtn, gitPullBtn, gitPushBtn, newReminderBtn, renderedEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, treeModeRecentBtn, treeModeTreeBtn, viewDiffBtn, viewMdBtn, viewRawBtn, viewWysBtn } from './dom.js';
+import { byId, diffRawBtn, diffVisualBtn, editorEl, gitDiffBtn, gitPullBtn, gitPushBtn, newReminderBtn, renderedEl, smartAddBtn, smartCheckBtn, smartInputEl, smartLookupBtn, treeModeRecentBtn, treeModeTreeBtn, viewDiffBtn, viewMdBtn, viewRawBtn, viewWysBtn, wysiwygEl } from './dom.js';
 import { cancelPendingSave, flushSave } from './editor.js';
 import { closeFind, findOpen, findStep, openFind } from './find.js';
 import { formatOpFor, runFormatOp } from './format.js';
 import { gitPull, refreshGit } from './git.js';
 import { gitCommitPush } from './git-commit.js';
+import { linkTargetAt } from './markdown.js';
 import { flushPositions } from './positions.js';
 import { newReminder } from './reminders-ui.js';
 // Imported for their side effects and nothing else: shortcuts.js registers the
@@ -69,6 +70,35 @@ renderedEl.addEventListener('click', (e) => {
   if (!a) return;
   e.preventDefault();
   const href = a.getAttribute('href');
+  if (href) api.openExternal(href);
+});
+
+// The two *editing* panes follow a link on ⌘-click (Ctrl elsewhere) instead: a
+// plain click there has to keep placing the caret, which is the only way to type
+// where a link is. The platform's own modifier rather than either, because on
+// macOS Ctrl-click is the context menu and never arrives as a click at all.
+const followClick = (e: MouseEvent) =>
+  api.platform === 'darwin' ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+
+// The Editor pane holds real anchors, like the preview — but in a contenteditable
+// Chromium would otherwise take a ⌘-click as "open in a new tab" itself.
+wysiwygEl.addEventListener('click', (e) => {
+  if (!followClick(e)) return;
+  const href = (e.target as Element).closest('a')?.getAttribute('href');
+  if (!href) return;
+  e.preventDefault();
+  api.openExternal(href);
+});
+
+// Raw holds Markdown source, so the link has to be read out of the text. The
+// character the pointer landed on is where the browser has just put the caret
+// (worked out on mousedown, soft wrapping and all) — unless the click ended a
+// drag, which is a selection rather than a click on a link.
+editorEl.addEventListener('click', (e) => {
+  if (!followClick(e)) return;
+  const at = editorEl.selectionStart;
+  if (at === null || at !== editorEl.selectionEnd) return;
+  const href = linkTargetAt(editorEl.value, at);
   if (href) api.openExternal(href);
 });
 

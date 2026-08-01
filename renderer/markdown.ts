@@ -71,6 +71,58 @@ function isFrontmatterNode(node: Node | null) {
     && (node as Element).classList.contains(FRONTMATTER_CLASS);
 }
 
+// ---- Links in the source ----
+// The Raw pane is plain text, so a link there is a link only because of how it is
+// written — and following one (⌘-click) means finding the construct the click
+// landed in, the label as much as the target, since both read as the link. Three
+// forms marked renders as one: an inline `[text](target)`, an autolink `<url>`,
+// and a bare URL (GFM). A reference link's label is deliberately not among them —
+// its target sits on another line, and that definition line holds a bare URL to
+// click instead.
+//
+// The alternatives are ordered longest-construct-first, so a target inside
+// `[text](…)` is claimed by the whole link rather than matched again as a bare URL.
+const SOURCE_LINK_RE = new RegExp(
+  [
+    // The inline form, with the target read as `MD_REF_RE` in main/refs.mts reads
+    // it: one level of balanced parens, and an unescaped space ends it (which is
+    // what marked does too). `!` includes the image form, whose target is a path
+    // rather than a URL and so is refused below.
+    /!?\[[^\]\n]*\]\([ \t]*(<[^<>\n]*>|[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)[^)\n]*\)/,
+    /<((?:https?:|mailto:)[^<>\s]+)>/,
+    // A bare URL. The last character can't be sentence punctuation — a trailing
+    // `.` or `,` belongs to the prose, and GFM trims those too.
+    /(?:https?:\/\/|mailto:)[^\s<>()[\]]*[^\s<>()[\]!?.,;:'"]/,
+  ]
+    .map((re) => re.source)
+    .join('|'),
+  'gi',
+);
+
+// Only what the main process will actually open: a link to somewhere else in the
+// vault is a path, and there is nothing for a browser to do with it.
+const EXTERNAL_URL_RE = /^(?:https?:|mailto:)/i;
+
+/**
+ * The URL of the link written at `at` in Markdown source, or null if there isn't
+ * one there (or its target is not a URL a browser can open).
+ * @param at an offset into `text` — a caret position, so either edge of the link counts
+ */
+export function linkTargetAt(text: string, at: number): string | null {
+  for (const m of (text || '').matchAll(SOURCE_LINK_RE)) {
+    const start = m.index ?? 0;
+    if (at < start) break; // matches arrive in order: past the click already
+    if (at > start + m[0].length) continue;
+    // Group 1 is an inline link's target, group 2 an autolink's; a bare URL is the
+    // whole match. A construct the click *is* in but which doesn't name a URL is
+    // the answer — there is no second link under the same characters.
+    const raw = (m[1] ?? m[2] ?? m[0]).trim();
+    const url = raw.startsWith('<') && raw.endsWith('>') ? raw.slice(1, -1).trim() : raw;
+    return EXTERNAL_URL_RE.test(url) ? url : null;
+  }
+  return null;
+}
+
 // ---- Which lines a rendered block came from ----
 // The panes lay the same file out completely differently, so putting the reader
 // back on the line they were on means knowing which source lines each rendered

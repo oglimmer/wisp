@@ -191,6 +191,14 @@ edit *inside* a bullet list must leave every other line of it byte-for-byte, whi
 turndown does run over lines nobody edited — because "only the edited block is rewritten" is exactly what
 no static check can see. It screenshots each pane on the way through.
 
+**Following a link has five checks of its own**, for the same reason: in the Raw pane the link is
+Markdown source rather than an anchor, so which characters the pointer landed on is the textarea's
+own soft-wrapped geometry (the run measures the click point through a `.text-metrics` copy, exactly as
+`positions.js` does). ⌘-click on a link's *label* must open its target and ⌘-click on prose must open
+nothing, in Raw and in the Editor pane, and a plain click in either must still only place the caret.
+What records the open is main's own `shell.openExternal`, stubbed through `app.evaluate` — a driven
+run must not put a real browser on screen.
+
 **The reading position has five checks of its own**, for the same reason: whether a view switch lands in
 the right place is a question about laid-out geometry, which nothing static can answer. Against a note
 longer than the pane, Raw → Preview → Raw must come back to the same scroll offset *and* caret, Raw ↔
@@ -556,6 +564,21 @@ wherever it happens to live, quite possibly inside a folder that is collapsed.
 ### View modes / WYSIWYG editor
 
 The `<textarea>` (`editorEl`) holds the **canonical buffer** and is what gets saved — the other two panes are projections of it. `applyView()` shows exactly one pane for the active `viewMode`; `renderMarkdown()`/`renderWysiwyg()` reproject `editorEl.value` into the Preview/Editor panes on entry.
+
+**A link opens in the browser, never in the window** — a navigation would take the app off its own
+page with no way back, so the preview's click handler `preventDefault`s and hands the href to
+`open-external`, which passes http(s)/mailto and drops everything else. The two *editing* panes follow
+one on **⌘-click (Ctrl-click elsewhere)** instead, because a plain click there is how the caret gets to
+where the link is. It tests for the platform's own modifier rather than either of them: on macOS
+Ctrl-click is the context menu and never arrives as a click at all. The Editor pane holds real anchors
+like the preview (and the `preventDefault` matters more there — in a contenteditable Chromium would
+otherwise take a ⌘-click as "open in a new tab" itself). **Raw holds Markdown source, so the link has
+to be read back out of the text**: the click's caret offset is where the browser put it on mousedown,
+soft wrapping and all, and `linkTargetAt()` in `markdown.js` finds the construct that offset falls in —
+an inline `[text](target)` from its label as much as its target, an autolink, or a bare URL. Its
+target still has to *be* a URL, which is what keeps an image's `images/foo.png` from being handed to a
+browser. A reference link's label is deliberately not among the forms: its target is on another line,
+and that definition line holds a bare URL to click instead.
 
 The WYSIWYG **Editor** pane is a `contenteditable` div. `marked` renders the source into it (Markdown→HTML); **turndown** (`node_modules/turndown`, loaded as a UMD global `window.TurndownService`) does the reverse on save. The key invariant: **edits only fold back to the buffer through `syncWysiwygToEditor()`, and only when `dirty`** — so a file the user merely *viewed* in Editor mode is never rewritten by turndown's normalisation (round-tripping is inherently lossy on formatting, so this guard matters). `saveCurrent()`, the pre-switch step in `setViewMode()`, drag & drop, and `beforeunload` all fold back through it before touching disk. If turndown fails to load, the Editor button is hidden and the mode degrades to Raw (edits could otherwise not be saved). Image round-trip: `hydrateImages()` stashes the original vault-relative path in `data-md-src` before swapping in the data URL, and a turndown `img` rule re-emits that path instead of the inlined base64.
 

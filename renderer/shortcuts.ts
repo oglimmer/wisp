@@ -26,6 +26,10 @@ const SHORTCUT_GROUPS: Array<[string, Array<[string, string]>]> = [
       ['Tab', 'Indent: the lines the selection touches in Raw, the list item in the Editor'],
       [chord(K_SHIFT, 'Tab'), 'Outdent the same'],
       [`${chord(K_MOD, 'B')} / ${chord(K_MOD, 'I')}`, 'Bold / italic, in the Editor view'],
+      [
+        chord(K_MOD, 'Click'),
+        'Open the link under the pointer in the browser (in Preview a plain click does)',
+      ],
     ],
   ],
   [

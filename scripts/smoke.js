@@ -257,6 +257,39 @@ async function setView(win, id) {
   await win.waitForTimeout(300);
 }
 
+// The editing panes follow a link on ⌘-click (Ctrl elsewhere), which Playwright's
+// `mouse.click` has no option for — so the key is held around the click. The
+// platform's own modifier, exactly as the renderer tests for it.
+async function modClick(win, x, y) {
+  const key = process.platform === 'darwin' ? 'Meta' : 'Control';
+  await win.keyboard.down(key);
+  await win.mouse.click(x, y);
+  await win.keyboard.up(key);
+}
+
+// Where a source offset lands on screen in the Raw pane. Measured the way
+// renderer/positions.js measures a line: a copy of the text with the textarea's
+// own typography (`.text-metrics`, absolutely positioned over its box), so the
+// span around that one character has the character's rect. The textarea soft-wraps,
+// so there is no arithmetic that would answer this.
+async function rawPoint(win, offset) {
+  return win.evaluate((at) => {
+    const ta = document.getElementById('editor');
+    const box = document.createElement('div');
+    box.className = 'text-metrics';
+    box.style.width = ta.clientWidth + 'px';
+    const mark = document.createElement('span');
+    mark.textContent = ta.value.slice(at, at + 1) || '​';
+    box.appendChild(document.createTextNode(ta.value.slice(0, at)));
+    box.appendChild(mark);
+    box.appendChild(document.createTextNode(ta.value.slice(at + 1)));
+    ta.parentElement.appendChild(box);
+    const r = mark.getBoundingClientRect();
+    box.remove();
+    return { x: r.left + r.width / 2 - ta.scrollLeft, y: r.top + r.height / 2 - ta.scrollTop };
+  }, offset);
+}
+
 const text = (win, sel) => win.evaluate((s) => document.querySelector(s)?.textContent ?? null, sel);
 const visible = (win, sel) =>
   win.evaluate((s) => {
@@ -332,11 +365,41 @@ async function main() {
   }
   check('reminder list shows its empty state', (await text(win, '#reminder-list'))?.includes('No reminders'));
 
+  // A followed link is handed to the shell, which on a driven run would open a
+  // real browser — so main's own `shell.openExternal` is what records it, and the
+  // renderer is none the wiser. The channel answers nothing, so the calls below
+  // give the round trip a moment before asking what arrived.
+  await app.evaluate(({ shell }) => {
+    globalThis.__opened = [];
+    shell.openExternal = (url) => {
+      globalThis.__opened.push(url);
+      return Promise.resolve();
+    };
+  });
+  const opened = async () => {
+    await win.waitForTimeout(250);
+    return app.evaluate(() => globalThis.__opened.splice(0));
+  };
+
   // --- Raw: the buffer is what is on disk ----------------------------------
   await openNote(win, vault, 'hello.md');
   const buffer = await win.inputValue('#editor');
   checkEqual('Raw buffer is the file, byte for byte', buffer, HELLO);
   await win.screenshot({ path: path.join(out, '1-raw.png') });
+
+  // --- Raw: ⌘-click follows a link written as Markdown ---------------------
+  // Nothing static can see this: the pane is a textarea, so the link is source
+  // rather than an anchor, and which characters the pointer landed on is the
+  // textarea's own soft-wrapped geometry. Clicked on the *label*, which is the
+  // half that carries no URL — the whole construct has to be found around it.
+  const label = await rawPoint(win, HELLO.indexOf('link](') + 1);
+  await modClick(win, label.x, label.y);
+  checkEqual('Raw: ⌘-click follows the link under the pointer', (await opened())[0], 'https://example.com');
+  const prose = await rawPoint(win, HELLO.indexOf('smoke test'));
+  await modClick(win, prose.x, prose.y);
+  checkEqual('Raw: ⌘-click on prose opens nothing', (await opened()).length, 0);
+  await win.mouse.click(label.x, label.y);
+  checkEqual('Raw: a plain click still just places the caret', (await opened()).length, 0);
 
   // --- Preview: marked + DOMPurify through the app:// scheme ---------------
   await setView(win, 'view-md-btn');
@@ -371,6 +434,17 @@ async function main() {
   checkEqual('Editor pane renders the heading', wys.h1, 'Hello');
   check('Editor pane renders the table', wys.table);
   await win.screenshot({ path: path.join(out, '3-editor.png') });
+
+  // The same gesture in the Editor pane, where the link *is* an anchor — a plain
+  // click there has to keep placing the caret, so only the modifier follows it.
+  const anchor = await win.evaluate(() => {
+    const r = document.querySelector('#wysiwyg a').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  await modClick(win, anchor.x, anchor.y);
+  checkEqual('Editor: ⌘-click follows the anchor', (await opened())[0], 'https://example.com');
+  await win.mouse.click(anchor.x, anchor.y);
+  checkEqual('Editor: a plain click opens nothing', (await opened()).length, 0);
 
   // --- the fold: an Editor edit rewrites only its own block ---------------
   // The whole point of foldToMarkdown(). Type into the paragraph and the table
