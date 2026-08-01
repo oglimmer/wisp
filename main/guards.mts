@@ -129,3 +129,15 @@ export function assertTextContent(content: string, maxBytes = MAX_TEXT_BYTES) {
   }
   return content;
 }
+
+// A NUL byte in the first block is git's own heuristic for "binary". A vault holds
+// pictures — this app imports them itself — so anything that reads *every* file
+// has to ask this before treating the bytes as text: the diff view, which would
+// otherwise lay a PNG out as lines, and the smart prompt, which would otherwise
+// hand a NUL to spawn().
+export function isBinaryBuffer(buf: Buffer | null) {
+  if (!buf) return false;
+  const n = Math.min(buf.length, 8000);
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
+  return false;
+}

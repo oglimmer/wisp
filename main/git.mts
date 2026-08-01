@@ -3,7 +3,7 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import { handle } from './ipc.mjs';
 import { claudeEnv, hostCommand } from './host.mjs';
-import { vaultPath, isInside, MAX_TEXT_BYTES } from './guards.mjs';
+import { vaultPath, isInside, isBinaryBuffer, MAX_TEXT_BYTES } from './guards.mjs';
 import type { GitStatusKind } from '../types/ipc';
 
 const fsp = fs.promises;
@@ -464,12 +464,3 @@ handle('git-diff', async (baseFolder, target) => {
     raw: raw.trim() ? raw : '',
   };
 });
-
-// A NUL byte in the first block is git's own heuristic for "binary" — good enough
-// to keep the visual diff from trying to lay out a PNG as lines of text.
-function isBinaryBuffer(buf: Buffer | null) {
-  if (!buf) return false;
-  const n = Math.min(buf.length, 8000);
-  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
-  return false;
-}

@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { handle } from './ipc.mjs';
-import { vaultPath, isInside, assertReadableFile, assertTextContent, formatBytesLimit, MAX_TEXT_BYTES, MAX_IMAGE_BYTES } from './guards.mjs';
+import { vaultPath, isInside, assertReadableFile, assertTextContent, formatBytesLimit, isBinaryBuffer, MAX_TEXT_BYTES, MAX_IMAGE_BYTES } from './guards.mjs';
 import { isIgnored } from './tree.mjs';
 import { noteOwnWrite } from './watch.mjs';
 import type { LookupSource } from '../types/ipc';
@@ -22,7 +22,7 @@ const ANALYZABLE_IMAGE = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const INLINE_FILE_MAX = 16 * 1024; // don't inline a single file bigger than this
 const INLINE_TOTAL_MAX = 96 * 1024; // stop inlining once we've included this much
 // One vault file as the prompt sees it: `content` is null for anything too big to
-// inline, which Claude may still `Read` on demand.
+// inline — or not text at all — which Claude may still `Read` on demand.
 interface GatheredFile {
   rel: string;
   content: string | null;
@@ -67,8 +67,17 @@ async function gatherFiles(baseFolder: string): Promise<GatheredFile[]> {
       try {
         const stat = await fsp.stat(full);
         if (stat.size <= INLINE_FILE_MAX && budget - stat.size >= 0) {
-          content = await fsp.readFile(full, 'utf8');
-          budget -= stat.size;
+          const buf = await fsp.readFile(full);
+          // A vault holds pictures, and a small one is well under the inline
+          // budget — so decoding every file as UTF-8 put a PNG's bytes into the
+          // prompt. Worse than noise: a NUL byte is a character `spawn()` refuses
+          // in an argument outright, so one imported image failed *every* smart
+          // insert and lookup in that vault with a TypeError. Listed by name like
+          // an oversized file, which is what the model can Read on demand anyway.
+          if (!isBinaryBuffer(buf)) {
+            content = buf.toString('utf8');
+            budget -= stat.size;
+          }
         }
       } catch {}
       out.push({ rel, content });

@@ -424,7 +424,18 @@ async function main() {
   await win.keyboard.type('\nA line typed in Raw view.\n');
   const typed = await waitForDisk(vault, 'hello.md', (c) => c.includes('A line typed in Raw view.'));
   check('a Raw edit autosaves to disk', typed.includes('A line typed in Raw view.'));
-  checkEqual('status line reports the save', (await text(win, '#status'))?.trim(), 'Saved');
+  // Waited for rather than sampled: the bytes reach disk inside the `write-file`
+  // handler, so waitForDisk above returns a moment *before* the reply that sets
+  // the status gets back to the renderer. Sampling caught 'Saving…' on the slower
+  // of the two packaged runs — a race in the check, not in the app.
+  const saved = await win
+    .waitForFunction(
+      () => document.getElementById('status')?.textContent?.trim() === 'Saved',
+      undefined,
+      { timeout: 5000 },
+    )
+    .then(() => true, () => false);
+  check('status line reports the save', saved, `status reads ${JSON.stringify(await text(win, '#status'))}`);
 
   // --- paste: an inlined image becomes a file and a reference --------------
   // Several note apps put `![](data:image/…;base64,…)` on the clipboard, and a
