@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm install` — install dependencies (Electron, `node-pty` and typescript 7 all ship platform-specific native binaries; **never copy `node_modules` between machines/OSes** — reinstall on the target, or you'll get `spawn ENOEXEC`). The `postinstall` hook is load-bearing, see **Packaging & release**.
 
 **Installing from the wrong OS is the one mistake here that escapes the machine you make it on**, so `deps` refuses to. When this repo is mounted into a Linux container from a mac, an install on the Linux side replaces the *host's* Electron bundle and `node-pty` binary, and the damage outlives the container. It is not hypothetical, and the trap is `test` rather than `deps`: **typescript 7's compiler is a native binary** delivered as one optional dependency per platform, so on Linux a mac-installed tree's `tsc` cannot run — which is exactly the "tsc is not runnable, reinstall" case `cmd_test` handles by installing. One `./oglimmer.sh test` in a container was enough. `assert_native_node_modules()` now reads the platform off `electron/path.txt` and node-pty's binary magic and refuses the install with a pointer to `./oglimmer.sh linux`; `./oglimmer.sh linux checks` runs this same static suite inside the mirror, where the tree is the right platform's.
-- `npm run build` — compile the TypeScript sources in place (`scripts/build.js` → `tsc -p tsconfig.build.json`). Everything below runs it first; it is a no-op when the output is current. See **Types, and the build**.
+- `npm run build` — compile the TypeScript sources in place (`scripts/build.js` → `tsc -p tsconfig.build.json`). Everything below runs it first; it is a no-op when every emit is present and at least as new as its source (and the configs that feed the compile). See **Types, and the build**.
 - `npm start` — build, then launch the app (`electron .`).
 - `npm run dist` — build, then package a macOS arm64 `.dmg` + `.zip` into `dist/` via electron-builder (macOS host only).
 
@@ -17,12 +17,13 @@ main.mjs/main/*/preload/renderer/*/scripts/*, an Acorn
 unbound-name scan of renderer and main modules (`scripts/check-unbound.js` — catches
 missing imports after the module splits, and any module that has dropped out
 of the graph reachable from its tree's entry, which never runs at all),
-`tsc --noEmit` over what is still JavaScript (see **Types, and the build**),
+`tsc --noEmit` over `scripts/` (see **Types, and the build**),
 packaging/HTML/cask consistency, yamllint, and shellcheck on `oglimmer.sh` + `scripts/*.sh`.
 
 **Compiling first is what makes those checks true**, and it is why they read emitted output rather
 than sources: `node --check` and Acorn both see exactly what ships. The compile is also the app's
-own type check — `tsc` reports as it emits — so the separate `--noEmit` pass is only `scripts/`.
+own type check — `tsc` reports as it emits under `tsconfig.build.json` — so the separate `--noEmit`
+pass is only `scripts/` (and any remaining hand-written JS still listed in `tsconfig.json`).
 
 The *dynamic* half is `./oglimmer.sh linux smoke`, which launches the real app and
 clicks through it — see **Testing on Linux**. It is deliberately not part of `test`.
@@ -288,9 +289,10 @@ passes the payload on but never the event object, which carries a handle on the 
 
 ### The renderer's modules
 
-`renderer/` is ES modules — no bundler. `index.html` loads the compiled `renderer/index.ts` with
-`type="module"` and the browser fetches the graph; the sources are `renderer/*.ts` beside it, and
-their import specifiers already name the emitted `.js` (see **Types, and the build**).
+`renderer/` is ES modules — no bundler. `index.html` loads the compiled `renderer/index.js` (from
+`renderer/index.ts`) with `type="module"` and the browser fetches the graph; the sources are
+`renderer/*.ts` beside the emits, and their import specifiers already name the emitted `.js`
+(see **Types, and the build**). Packaged builds exclude `*.ts`, so only the emit ships.
 
 **This is why the window is served from a custom `app://` scheme rather than `loadFile()`.**
 Chromium refuses a `<script type="module">` on a `file://` page: module fetches go through CORS
@@ -346,7 +348,10 @@ Two things about module state are load-bearing:
 tsconfig.build.json`) writes each module's JavaScript *beside its source*: `main/git.mts` →
 `main/git.mjs`, `renderer/diff.ts` → `renderer/diff.js`, `preload.ts` → `preload.js`. The output is
 gitignored and derived; `npm start`, both `dist` scripts, `./oglimmer.sh test` and the linux mirror
-all run the build first.
+all run the build first. `scripts/build.js` skips `tsc` when every emit (and its `.map`) is present
+and at least as new as its source, the shared configs, and `types/*.d.ts`; it also removes orphan
+emits whose source has gone. A failed compile does not wipe the previous emits, so the last good
+app stays runnable.
 
 **In place, rather than into an output directory, because the runtime pins the layout.**
 `main/protocol.mts` computes `APP_ROOT` as one level above `main/`, `main/window.mts` resolves the

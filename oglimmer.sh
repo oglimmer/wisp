@@ -7,7 +7,7 @@
 #   ./oglimmer.sh test               static checks (no test suite exists yet)
 #   ./oglimmer.sh build [--unsigned] package a macOS arm64 dmg + zip into dist/
 #   ./oglimmer.sh release <version>  bump, tag and push — CI builds and publishes
-#   ./oglimmer.sh clean              remove dist/ (and node_modules with --all)
+#   ./oglimmer.sh clean              remove dist/ and in-place TS emits (and node_modules with --all)
 #   ./oglimmer.sh linux <cmd>        run/smoke/build on Linux in a mirrored tree
 #
 # See ./oglimmer.sh help for the details of each command.
@@ -152,7 +152,7 @@ cmd_test() {
   # The app is TypeScript compiled in place, so every check below this line reads
   # emitted output — which is the point: node --check and the reachability scan see
   # exactly what ships, not what it was written as. Compiling first is what makes
-  # them true. It is a no-op on a tree with no .ts sources yet.
+  # them true. scripts/build.js is a no-op when every emit is already current.
   #
   # tsc is a native binary delivered as a platform-specific optional dependency,
   # the same trap as Electron's — a node_modules predating this dependency, or
@@ -166,7 +166,7 @@ cmd_test() {
     cmd_deps
   fi
   if npm run --silent build; then
-    ok "build up to date"
+    ok "build ok"
   else
     die "build failed — nothing below this would be meaningful"
   fi
@@ -196,13 +196,13 @@ cmd_test() {
     failed=1
   fi
 
-  say "type-checking what is still JavaScript (tsc --noEmit)"
-  # The .ts sources were type-checked by the compile above — tsc reports as it
-  # emits. This is the other half: tsconfig.json is checkJs + noEmit over the
-  # modules not yet converted, still typed by JSDoc, plus scripts/. It is what
-  # keeps main/, the preload and the renderer agreeing about the IPC contract —
-  # a three-file change nothing else verifies. It ends up a no-op over the app
-  # once the migration finishes, and goes on covering scripts/.
+  say "type-checking scripts/ (tsc --noEmit)"
+  # The app sources were type-checked by the compile above — tsc reports as it
+  # emits under tsconfig.build.json, and that is what keeps main/, the preload
+  # and the renderer agreeing about the IPC contract. This pass is the other
+  # half: tsconfig.json is checkJs + noEmit over scripts/ (which stay JavaScript
+  # on purpose — build.js and the postinstall hook must run without a prior
+  # compile). It does not re-check the app.
   if npx --no-install tsc --noEmit; then
     ok "no type errors"
   else
@@ -355,7 +355,8 @@ cmd_build() {
 
   say "packaging Wisp $(pkg_version) for macOS arm64"
   # `npm run dist` compiles first; the --unsigned path calls electron-builder
-  # directly, so it needs the build doing here. A no-op when it is already current.
+  # directly, so it needs the build doing here. scripts/build.js skips tsc when
+  # every emit is already current.
   npm run --silent build || die "build failed"
   if [ "$unsigned" -eq 1 ]; then
     # Same flags CI uses when no signing secrets are present. Produces a build
@@ -474,6 +475,13 @@ cmd_clean() {
     say "removing dist/"
     rm -rf dist
   fi
+  # Same in-place emits scripts/build.js produces and .gitignore lists. Without
+  # this, `clean` leaves a tree that still runs yesterday's compile; with it, a
+  # fresh checkout shape is one `npm run build` away.
+  say "removing compiled TypeScript output"
+  rm -f main.mjs main.mjs.map preload.js preload.js.map
+  rm -f main/*.mjs main/*.mjs.map
+  rm -f renderer/*.js renderer/*.js.map
   if [ "$all" -eq 1 ] && [ -d node_modules ]; then
     say "removing node_modules/"
     rm -rf node_modules
@@ -503,13 +511,14 @@ COMMANDS
                        Extra arguments are passed through to electron.
 
   test                 Every check that can fail a release, since there is no
-                       unit-test suite: syntax-check main.mjs + main/*, preload,
-                       renderer/*, scripts/*, unbound-name + reachability scan of
-                       renderer and main modules, a tsc --noEmit
-                       type-check against the JSDoc types, JSON validity,
-                       the electron-builder `files` allowlist, the node_modules
-                       paths index.html loads, cask/package version agreement,
-                       yamllint on the workflows, shellcheck on self.
+                       unit-test suite: compile the TypeScript sources, then
+                       syntax-check main.mjs + main/*, preload, renderer/*,
+                       scripts/*, unbound-name + reachability scan of renderer
+                       and main modules, a tsc --noEmit type-check of scripts/,
+                       JSON validity, the electron-builder `files` allowlist,
+                       the node_modules paths index.html loads, cask/package
+                       version agreement, yamllint on the workflows, shellcheck
+                       on self.
 
   build [--unsigned]   Package a macOS arm64 .dmg + .zip into dist/. macOS host
                        only. Signing and notarization come from the environment
@@ -524,7 +533,9 @@ COMMANDS
                        Homebrew cask — it prompts before anything leaves the
                        machine. --no-push stops after tagging locally.
 
-  clean [--all]        Remove dist/; --all also removes node_modules/.
+  clean [--all]        Remove dist/ and the in-place TypeScript emits
+                       (main*.mjs, preload.js, renderer/*.js and their maps);
+                       --all also removes node_modules/.
 
   linux <command>      Run the app on Linux from a mirrored tree, so a linux
                        install never overwrites the mac binaries in this

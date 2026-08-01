@@ -1,21 +1,24 @@
 // The IPC contract, in one place.
 //
 // Adding a filesystem operation is a three-file change — handler in a `main/`
-// module, method in `preload.js`, call in a `renderer/` module — and nothing
+// module, method in `preload.ts`, call in a `renderer/` module — and nothing
 // used to check that the three agreed. This file is what they agree *on*: each
 // channel's signature is declared once as a named type, and both sides refer to it.
 //
-//   main/       `handle()` (ipc.mjs) is generic over `IpcHandlers`, so the channel name
+//   main/       `handle()` (ipc.mts) is generic over `IpcHandlers`, so the channel name
 //               types the callback's parameters and its return value.
-//   preload.js  the exposed object is annotated `@type {WispApi}`, so a method
-//               that is missing, misspelled or wired to the wrong channel is an
-//               error rather than an `undefined` the renderer finds at runtime.
+//   preload.ts  `const api: WispApi` is the exposed object, so a method that is
+//               missing, misspelled or wired to the wrong channel is an error
+//               rather than an `undefined` the renderer finds at runtime.
 //   renderer/   `window.api` is declared below, so every call site is checked —
 //               including the `{ ok }` narrowing that keeps a failure result
 //               from being read as a successful one.
 //
-// It is a `.d.ts` because it declares types and nothing else: there is no build
-// step and nothing here is emitted or loaded at runtime. See CLAUDE.md.
+// It is a `.d.ts` because it declares types and nothing else: nothing here is
+// emitted or loaded at runtime. The three sides are type-checked together when
+// `npm run build` runs `tsc -p tsconfig.build.json` (see CLAUDE.md **Types, and
+// the build**). `scripts/` stay JavaScript and are checked by the separate
+// `tsc --noEmit` pass under `tsconfig.json`.
 
 // ---- Result envelopes ----
 
@@ -372,7 +375,7 @@ export interface IpcHandlers {
 
 // ---- The bridge ----
 
-/** Exactly what `preload.js` puts on `window.api` — the renderer's whole way out. */
+/** Exactly what `preload.ts` puts on `window.api` — the renderer's whole way out. */
 export interface WispApi {
   getLastFolder: () => Promise<string | null>;
   chooseFolder: () => Promise<string | null>;

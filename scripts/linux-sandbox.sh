@@ -296,7 +296,7 @@ ensure_deps() {
   # — so sync_sources, which mirrors what git lists, copies the sources and none of
   # the output. Without this the mirror would hold .ts files and no app at all.
   # Every command here goes through ensure_deps, so this is the one place it needs
-  # doing. It is a no-op on a tree with no .ts sources yet.
+  # doing. scripts/build.js skips tsc when every emit is already current.
   say "compiling the TypeScript sources in the mirror"
   (cd "$TREE" && npm run --silent build) || die "build failed in the mirror"
 }

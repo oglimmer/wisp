@@ -74,8 +74,7 @@ jobs:
 
       # The app is TypeScript compiled in place and the emitted .js/.mjs is
       # gitignored, so a fresh checkout has sources and no runnable app. Every
-      # electron-builder call needs this first; it is a no-op on a tree with no
-      # .ts sources yet.
+      # electron-builder call needs this first.
       - name: Compile the TypeScript sources
         run: npm run build
 
